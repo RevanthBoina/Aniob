@@ -39,6 +39,7 @@ fun AniobSettingsScreen(
     onAutoRouterModeChanged: (String) -> Unit = {},
     onAblationModeChanged: (AblationMode) -> Unit = {},
     onStudyPassChanged: (StudyPass) -> Unit = {},
+    onSeedRememberCache: () -> Unit = {},
     onFastPathChanged: (Boolean) -> Unit = {},
     onSafetyGateChanged: (Boolean) -> Unit = {},
     onBack: () -> Unit = {},
@@ -201,6 +202,19 @@ fun AniobSettingsScreen(
                             )
                         }
                     }
+
+                    OutlinedButton(
+                        onClick = onSeedRememberCache,
+                        modifier = Modifier.fillMaxWidth().testTag("btn_seed_remember_cache")
+                    ) {
+                        Text("Seed Remember Cache from Presets")
+                    }
+
+                    Text(
+                        text = "Warm replay needs a filled cache. Seeding writes the first hop of each of the 15 benchmark tasks, so FULL_HUMAN_SPEED can be measured without a cold batch first; the steps after it are still learned from verified runs.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
                     Text(
                         text = "Each finished task is appended to research_runs.csv; averages are kept in research_summary_table.csv inside the app's files folder.",

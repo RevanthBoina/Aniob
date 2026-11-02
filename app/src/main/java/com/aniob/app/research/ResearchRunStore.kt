@@ -54,11 +54,16 @@ internal class ResearchRunStore(
         }.onFailure { report("rewrite runs", it) }
     }
 
-    /** Recomputes and overwrites `research_summary_table.csv` from the current runs file. */
+    /**
+     * Recomputes `research_summary_table.csv` from the current runs file, keeping any mode that was
+     * already measured. One row per evaluated ablation condition, never fewer after a mode switch.
+     */
     fun rewriteSummary() {
         runCatching {
+            val previous = summaryFile().takeIf { it.exists() }
+                ?.let { runCatching { it.readText() }.getOrNull() }
             val rows = ResearchSummaryTable.build(read())
-            atomicWrite(summaryFile(), ResearchSummaryTable.toCsv(rows))
+            atomicWrite(summaryFile(), ResearchSummaryTable.mergeWithExisting(previous, rows))
         }.onFailure { report("rewrite summary", it) }
     }
 

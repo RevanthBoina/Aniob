@@ -36,6 +36,8 @@ sealed interface DispatchCommand {
         val nodeId: Int,
         val text: String,
         val clearFirst: Boolean = false,
+        /** Press the IME action once the text is committed (search boxes, dialer). */
+        val submit: Boolean = false,
         override val targetDescription: String
     ) : DispatchCommand
 

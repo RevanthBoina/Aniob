@@ -80,6 +80,7 @@ object AniobActionExecutor {
             nodeId = resolved.node.id,
             text = action.text,
             clearFirst = action.clearFirst,
+            submit = action.submit,
             targetDescription = action.target.describe()
         )
     }

@@ -213,4 +213,30 @@ class ActionBurstTest {
         val byBounds = BurstTargetGuard.retarget(AniobAction.Tap(SemanticTarget.SomIndex(6)), bare) as AniobAction.Tap
         assertTrue(byBounds.target is SemanticTarget.BoundingBox)
     }
+
+    @Test
+    fun `input text carries an optional submit flag`() {
+        val parsed = AniobActionSchema.parseActionJson(
+            """{"thought":"search","tool":"INPUT_TEXT","target":{"kind":"som_index","value":2},"text":"pizza","submit":true}"""
+        ) as AniobAction.InputText
+        assertTrue(parsed.submit)
+
+        val plain = AniobActionSchema.parseActionJson(
+            """{"thought":"type","tool":"INPUT_TEXT","target":{"kind":"som_index","value":2},"text":"pizza"}"""
+        ) as AniobAction.InputText
+        assertFalse(plain.submit)
+
+        val serialized = AniobActionSchema.toActionJson(parsed)
+        assertTrue(serialized.contains("\"submit\":true"))
+        assertEquals(parsed, AniobActionSchema.parseActionJson(serialized))
+    }
+
+    @Test
+    fun `burst elements accept submit too`() {
+        val burst = AniobActionSchema.parseActionBurstOrNull(
+            """{"thought":"search","is_complete":true,"actions":[{"type":"input","id":3,"text":"pizza","submit":true}]}"""
+        )
+        val action = burst?.actions?.first() as AniobAction.InputText
+        assertTrue(action.submit)
+    }
 }

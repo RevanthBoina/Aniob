@@ -53,6 +53,29 @@ class AniobExecutionRouter(
      */
     var rememberLookup: ((String, AniobScreenState) -> List<AniobAction>?)? = null
 
+    /** Task the dispatch memory below belongs to; a new signature starts a new memory. */
+    private var shortcutSignature: String? = null
+
+    /** Shortcuts already fired for [shortcutSignature]; one intent per hop, never once per round. */
+    private val dispatchedShortcuts = HashSet<String>()
+
+    /**
+     * True the first time [shortcut] is asked for in this task. A shortcut that carries parameters
+     * may be dispatched past step 0, and without this memory every planning round would re-fire it
+     * — reopening an alarm editor the run already filled in.
+     */
+    private fun shouldDispatchShortcut(taskSignature: String, shortcut: ResolvedIntentShortcut): Boolean {
+        if (shortcutSignature != taskSignature) {
+            shortcutSignature = taskSignature
+            dispatchedShortcuts.clear()
+        }
+        val key = listOf(
+            shortcut.action, shortcut.targetPackage, shortcut.uriString, shortcut.dataType,
+            shortcut.extras.toSortedMap().toString()
+        ).joinToString("|")
+        return dispatchedShortcuts.add(key)
+    }
+
     /**
      * App-name resolver supplied by the app layer: (goal) -> the app the task names, resolved
      * against the installed-app catalog. Turns "open Clock and set an alarm" into a direct launch
@@ -139,10 +162,19 @@ class AniobExecutionRouter(
         if (intentShortcutsEnabled) {
             AniobLaunchHub.reset(taskSignature)
             val firstStep = stepIndex == 0
+            val intentShortcut = AniobIntentResolver.resolve(taskPrompt)
+            // A shortcut that already answers part of the prompt (an alarm with its time, a
+            // settings panel, a search URL, the alarm list) is cheaper than opening the app and
+            // planning there, so it outranks the app-launch hook. A shortcut that merely names an
+            // app is an app launch and nothing else; that is the one case the branch below owns.
+            val carriesParameters = intentShortcut != null && (
+                !intentShortcut.requiresObservation || intentShortcut.action != AniobIntentResolver.ACTION_MAIN
+                )
             val pending = runCatching {
                 if (firstStep) appLaunchResolver?.invoke(taskPrompt) else midTaskLaunchResolver?.invoke(taskPrompt)
             }.getOrNull()
-            if (pending != null &&
+            if (!carriesParameters &&
+                pending != null &&
                 pending.packageName != screenState.packageName &&
                 !AniobLaunchHub.wasLaunched(pending.packageName)
             ) {
@@ -159,10 +191,18 @@ class AniobExecutionRouter(
                 )
             }
 
-            val intentShortcut = AniobIntentResolver.resolve(taskPrompt)
-            // Reflexes fire once, at step 0, exactly as before: a dial/torch/URL dispatch that is
-            // repeated on every planning round is how a failed reflex becomes an infinite loop.
-            if (firstStep && intentShortcut != null && !intentShortcut.requiresObservation) {
+            // A shortcut that carries parameters, and that the caller then observes, may be
+            // dispatched past step 0 — that is what turns the second hop of "open clock then set an
+            // alarm for 7:30" into a dispatch instead of a model call. A silent shortcut still fires
+            // at step 0 only: closing a run mid-trajectory needs the criteria re-check the caller
+            // does, and a dial/torch/URL dispatch repeated every round is how a failed reflex
+            // becomes an infinite loop. `shouldDispatchShortcut` bounds both cases to one dispatch
+            // per task. Only an app *launch* is excluded here: it has a package and no parameters,
+            // and the branch below handles it as an observed OpenApp.
+            if (carriesParameters && intentShortcut != null &&
+                (intentShortcut.requiresObservation || firstStep) &&
+                shouldDispatchShortcut(taskSignature, intentShortcut)
+            ) {
                 return ExecutionPlanResult.DirectIntent(
                     shortcut = intentShortcut,
                     reason = "Direct intent shortcut resolved in <15ms"

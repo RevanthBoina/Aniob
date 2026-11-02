@@ -1,5 +1,6 @@
 package com.aniob.core.ladder
 
+import com.aniob.core.intent.AniobTaskIntentClassifier
 import com.aniob.core.knowledge.AniobAppRegistry
 import com.aniob.core.knowledge.AppLookup
 
@@ -18,6 +19,8 @@ data class ResolvedIntentShortcut(
     val uriString: String? = null,
     val category: String? = null,
     val extras: Map<String, String> = emptyMap(),
+    /** `Intent.setType` — the contact insert intent is addressed by its MIME type. */
+    val dataType: String? = null,
     /** Fully-qualified `<pkg>/<pkg>.Activity` when the registry knew it; explicit beats implicit. */
     val launchActivity: String? = null,
     /** True when the only honest way to confirm this is to observe the screen after dispatch. */
@@ -58,6 +61,48 @@ object AniobIntentResolver {
     const val ACTION_FLASHLIGHT = "android.intent.action.FLASHLIGHT"
 
     const val ACTION_SET_ALARM = "android.intent.action.SET_ALARM"
+    const val ACTION_SET_TIMER = "android.intent.action.SET_TIMER"
+    const val ACTION_SHOW_ALARMS = "android.intent.action.SHOW_ALARMS"
+    const val ACTION_SHOW_TIMERS = "android.intent.action.SHOW_TIMERS"
+    const val ACTION_INSERT = "android.intent.action.INSERT"
+    const val ACTION_SETTINGS = "android.settings.SETTINGS"
+
+    // Clock extras (android.provider.AlarmClock) and contact extras (ContactsContract.Intents.Insert).
+    const val EXTRA_ALARM_HOUR = "android.intent.extra.alarm.HOUR"
+    const val EXTRA_ALARM_MINUTES = "android.intent.extra.alarm.MINUTES"
+    const val EXTRA_ALARM_LENGTH = "android.intent.extra.alarm.LENGTH"
+    const val EXTRA_ALARM_SKIP_UI = "android.intent.extra.alarm.SKIP_UI"
+    const val EXTRA_CONTACT_NAME = "name"
+    const val EXTRA_CONTACT_PHONE = "phone"
+    const val EXTRA_CONTACT_EMAIL = "email"
+    const val CONTACT_MIME_TYPE = "vnd.android.cursor.dir/contact"
+
+    // Settings panels: stable, documented actions instead of a walk through the Settings tree.
+    const val ACTION_WIFI_SETTINGS = "android.settings.WIFI_SETTINGS"
+    const val ACTION_BLUETOOTH_SETTINGS = "android.settings.BLUETOOTH_SETTINGS"
+    const val ACTION_BATTERY_SAVER_SETTINGS = "android.settings.BATTERY_SAVER_SETTINGS"
+
+    /**
+     * The battery *usage* screen (`Settings.ACTION_BATTERY_SAVER_SETTINGS`'s sibling). Opening the
+     * saver toggle when the prompt asked to see the battery level is a wrong turn, so the two
+     * screens are separate shortcuts.
+     */
+    const val ACTION_BATTERY_USAGE = "android.intent.action.POWER_USAGE_SUMMARY"
+    const val ACTION_DATA_USAGE_SETTINGS = "android.settings.DATA_USAGE_SETTINGS"
+    const val ACTION_DISPLAY_SETTINGS = "android.settings.DISPLAY_SETTINGS"
+    const val ACTION_SOUND_SETTINGS = "android.settings.SOUND_SETTINGS"
+    const val ACTION_LOCATION_SOURCE_SETTINGS = "android.settings.LOCATION_SOURCE_SETTINGS"
+    const val ACTION_APPLICATION_SETTINGS = "android.settings.APPLICATION_SETTINGS"
+    const val ACTION_NOTIFICATION_SETTINGS = "android.settings.NOTIFICATION_SETTINGS"
+    const val ACTION_ACCESSIBILITY_SETTINGS = "android.settings.ACCESSIBILITY_SETTINGS"
+    const val ACTION_AIRPLANE_MODE_SETTINGS = "android.settings.AIRPLANE_MODE_SETTINGS"
+    const val ACTION_DATE_SETTINGS = "android.settings.DATE_SETTINGS"
+    const val ACTION_SECURITY_SETTINGS = "android.settings.SECURITY_SETTINGS"
+    const val ACTION_STORAGE_SETTINGS = "android.settings.INTERNAL_STORAGE_SETTINGS"
+    const val ACTION_LOCALE_SETTINGS = "android.settings.LOCALE_SETTINGS"
+    const val ACTION_DEVELOPMENT_SETTINGS = "android.settings.APPLICATION_DEVELOPMENT_SETTINGS"
+
+    const val GOOGLE_SEARCH_URL = "https://www.google.com/search?q="
     const val CATEGORY_APP_CALCULATOR = "android.intent.category.APP_CALCULATOR"
     const val CATEGORY_APP_CALENDAR = "android.intent.category.APP_CALENDAR"
     const val CATEGORY_APP_BROWSER = "android.intent.category.APP_BROWSER"
@@ -84,7 +129,11 @@ object AniobIntentResolver {
         if (raw.isEmpty()) return null
         val lower = raw.lowercase().trim().trimEnd('?', '.', '!', ' ', ',', ';')
 
-        return systemReflex(lower)
+        // Parameterised shortcuts run first: "set an alarm for 7:30" must not fall into the bare
+        // "set alarm" branch that only opens the editor, and "open Wi-Fi settings" must not be
+        // answered by launching the Settings app.
+        return parameterised(raw, lower)
+            ?: systemReflex(lower)
             ?: dial(lower)
             ?: url(raw, lower)
             ?: maps(raw, lower)
@@ -102,6 +151,20 @@ object AniobIntentResolver {
         "open the flashlight", "flashlight" -> ResolvedIntentShortcut(
             action = ACTION_FLASHLIGHT,
             extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_FLASHLIGHT)
+        )
+        // "show alarms" / "open timers" used to fall through to a bare category intent
+        // (ACTION_SHOW_TIMERS was declared and never used). They are the two documented ways to
+        // land straight on the list, so they answer themselves — but the list a person asked to see
+        // is still observed before the run may close.
+        "show alarms", "open alarms", "show my alarms", "see my alarms" -> ResolvedIntentShortcut(
+            action = ACTION_SHOW_ALARMS,
+            requiresObservation = true,
+            label = "Alarms"
+        )
+        "show timers", "open timers", "show my timers", "see my timers" -> ResolvedIntentShortcut(
+            action = ACTION_SHOW_TIMERS,
+            requiresObservation = true,
+            label = "Timers"
         )
         "check battery", "battery status", "what is my battery", "check battery level", "battery" ->
             ResolvedIntentShortcut(
@@ -247,6 +310,357 @@ object AniobIntentResolver {
         }
         if (categoryIntent == null) return null
         return ResolvedIntentShortcut(action = ACTION_MAIN, category = categoryIntent, requiresObservation = true)
+    }
+
+
+    // ---------------------------------------------------------------------------------------------
+    // Parameterised shortcuts
+    //
+    // Each of these turns a sentence that names its own parameters into the one intent that
+    // carries them: a clock time into SET_ALARM, a duration into SET_TIMER, a panel name into its
+    // documented Settings action, a name+number into the prefilled contact editor. `requiresObservation`
+    // is set per case: a silent alarm is done when dispatched, an alarm the prompt wants to *see*
+    // is not, and the contact editor always needs its Save tap.
+    // ---------------------------------------------------------------------------------------------
+
+    /** `7:30`, `7.30`, `7:30pm` — a separator or a meridiem is required to be a clock time. */
+    private val TIME_WITH_MINUTES =
+        Regex("""\b(\d{1,2})[:.](\d{2})\s*(a\.?m\.?|p\.?m\.?)?\b""", RegexOption.IGNORE_CASE)
+    private val TIME_WITH_MERIDIEM =
+        Regex("""\b(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)\b""", RegexOption.IGNORE_CASE)
+    private val DURATION_PART =
+        Regex("""(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b""", RegexOption.IGNORE_CASE)
+    private val PHONE_NUMBER = Regex("""\+?\d[\d\s()\-]{4,}""")
+    private val BROWSER_CUES = listOf("google", "chrome", "browser", "the web", "web")
+
+    /** Prompts that demand something visible on screen cannot complete silently. */
+    private val WANTS_VISIBLE_RESULT = listOf("leaving", "showing", "on screen", "visible", "display")
+
+    /**
+     * A prompt that names a second clause is not finished by the first clause's dispatch:
+     * "set an alarm for 7:30 and open instagram" still owes the instagram half.
+     */
+    private val SECOND_GOAL = Regex(
+        """\b(then|and then|after that|also|and open|and set|and start|and turn|and enable|and disable|and add|and create|and search|and check)\b"""
+    )
+
+    /** A status request has to be read off the screen, not opened: "open settings and check battery". */
+    private val STATUS_QUESTION = Regex("""\b(check|how much|how many|what is|what's|tell me|read the)\b""")
+
+    /** A create verb close to the noun; "cancel my alarm" must never set one. */
+    private val ALARM_SET_VERB = Regex("""\b(set|create|add|put)\b[^.]{0,25}\balarm\b""")
+    private val TIMER_SET_VERB = Regex("""\b(start|set|create|add)\b[^.]{0,25}\btimer\b""")
+    private val CANCEL_PREFIXES = listOf("cancel ", "delete ", "remove ", "dismiss ", "stop ", "pause ")
+
+    private val OPEN_VERBS = listOf("open", "show", "launch", "start", "go to", "navigate to", "take me to", "view")
+    private val TOGGLE_VERBS = listOf("turn on", "turn off", "enable", "disable", "switch on", "switch off")
+
+    private class SettingsPanel(val action: String, val label: String, val keys: List<String>) {
+        /** Compiled once: the embedded scan runs against every prompt that reaches this object. */
+        val patterns: List<Regex> = keys.map { Regex("\\b" + Regex.escape(it) + "\\b") }
+    }
+
+    /**
+     * Long enough to cover what the panel screens are normally called, short enough that one key
+     * does not swallow ordinary sentences: a key matches the *whole* prompt once the opening verb
+     * and a trailing "settings" are stripped, never a substring of a longer task.
+     */
+    private val SETTINGS_PANELS = listOf(
+        SettingsPanel(ACTION_WIFI_SETTINGS, "Wi-Fi settings", listOf("wifi", "wi-fi", "wireless", "wlan")),
+        SettingsPanel(ACTION_BLUETOOTH_SETTINGS, "Bluetooth settings", listOf("bluetooth")),
+        SettingsPanel(
+            ACTION_BATTERY_USAGE,
+            "Battery usage",
+            listOf("battery usage", "battery screen", "battery level", "battery")
+        ),
+        SettingsPanel(
+            ACTION_BATTERY_SAVER_SETTINGS,
+            "Battery saver settings",
+            listOf("battery saver", "power saving", "power saving mode")
+        ),
+        SettingsPanel(ACTION_DATA_USAGE_SETTINGS, "Data usage settings", listOf("data usage", "mobile data", "cellular data")),
+        SettingsPanel(ACTION_DISPLAY_SETTINGS, "Display settings", listOf("display", "brightness", "screen timeout")),
+        SettingsPanel(ACTION_SOUND_SETTINGS, "Sound settings", listOf("sound", "volume", "ringtone", "vibration")),
+        SettingsPanel(ACTION_LOCATION_SOURCE_SETTINGS, "Location settings", listOf("location", "location services", "gps")),
+        SettingsPanel(ACTION_APPLICATION_SETTINGS, "Apps settings", listOf("apps", "applications", "installed apps", "app list")),
+        SettingsPanel(ACTION_NOTIFICATION_SETTINGS, "Notification settings", listOf("notifications", "notification settings")),
+        SettingsPanel(ACTION_ACCESSIBILITY_SETTINGS, "Accessibility settings", listOf("accessibility")),
+        SettingsPanel(ACTION_AIRPLANE_MODE_SETTINGS, "Airplane mode settings", listOf("airplane mode", "flight mode")),
+        SettingsPanel(ACTION_DATE_SETTINGS, "Date and time settings", listOf("date and time", "date settings")),
+        SettingsPanel(ACTION_SECURITY_SETTINGS, "Security settings", listOf("security", "screen lock", "lock screen")),
+        SettingsPanel(ACTION_STORAGE_SETTINGS, "Storage settings", listOf("storage", "internal storage")),
+        SettingsPanel(ACTION_LOCALE_SETTINGS, "Language settings", listOf("language", "language and input", "keyboard settings")),
+        SettingsPanel(ACTION_DEVELOPMENT_SETTINGS, "Developer options", listOf("developer options", "developer settings"))
+    )
+
+    private fun parameterised(raw: String, lower: String): ResolvedIntentShortcut? {
+        if (lower.contains("alarm")) parseAlarm(lower)?.let { return it }
+        if (lower.contains("timer")) parseTimer(lower)?.let { return it }
+        parseSettingsPanel(lower)?.let { return it }
+        parseContactInsert(raw, lower)?.let { return it }
+        parseWebSearch(lower)?.let { return it }
+        return null
+    }
+
+    /**
+     * `set an alarm for 7:30 am` -> SET_ALARM with hour/minute, plus `SKIP_UI` when the prompt does
+     * not ask to see the result. Without a recognisable time this returns null on purpose: opening
+     * an empty editor is still the right first step, but it is not the finished task.
+     */
+    private fun parseAlarm(text: String): ResolvedIntentShortcut? {
+        if (CANCEL_PREFIXES.any { text.startsWith(it) }) return null
+        if (!ALARM_SET_VERB.containsMatchIn(text)) return null
+        val (hour, minute) = parseClockTime(text) ?: return null
+        // "leaving the alarm list showing 7:30 AM" asks for a visible end state: the silent
+        // SKIP_UI path would set an alarm that the requested screen cannot show. A second clause or
+        // a status question is the same situation for a different reason: the dispatch is only the
+        // first half of the prompt, so the run must continue from the editor.
+        val wantsVisible = WANTS_VISIBLE_RESULT.any { text.contains(it) } ||
+            SECOND_GOAL.containsMatchIn(text) || STATUS_QUESTION.containsMatchIn(text)
+        return ResolvedIntentShortcut(
+            action = ACTION_SET_ALARM,
+            extras = buildMap {
+                put(EXTRA_ALARM_HOUR, hour.toString())
+                put(EXTRA_ALARM_MINUTES, minute.toString())
+                if (!wantsVisible) put(EXTRA_ALARM_SKIP_UI, "true")
+            },
+            requiresObservation = wantsVisible,
+            label = "Alarm ${"%02d:%02d".format(hour, minute)}"
+        )
+    }
+
+    /** `set a timer for 10 minutes` -> SET_TIMER with the length in seconds. */
+    private fun parseTimer(text: String): ResolvedIntentShortcut? {
+        if (CANCEL_PREFIXES.any { text.startsWith(it) }) return null
+        if (!TIMER_SET_VERB.containsMatchIn(text)) return null
+        val seconds = parseDurationSeconds(text) ?: return null
+        // Same rule as the alarm: a second clause means the timer is not the whole prompt.
+        val wantsVisible = WANTS_VISIBLE_RESULT.any { text.contains(it) } ||
+            SECOND_GOAL.containsMatchIn(text) || STATUS_QUESTION.containsMatchIn(text)
+        return ResolvedIntentShortcut(
+            action = ACTION_SET_TIMER,
+            extras = buildMap {
+                put(EXTRA_ALARM_LENGTH, seconds.toString())
+                if (!wantsVisible) put(EXTRA_ALARM_SKIP_UI, "true")
+            },
+            requiresObservation = wantsVisible,
+            label = "Timer ${seconds}s"
+        )
+    }
+
+    /** Hour/minute from a clock time, or null when the text contains no unambiguous time. */
+    internal fun parseClockTime(text: String): Pair<Int, Int>? {
+        TIME_WITH_MINUTES.find(text)?.let { match ->
+            val rawHour = match.groupValues[1].toIntOrNull() ?: return null
+            val minute = match.groupValues[2].toIntOrNull() ?: return null
+            val meridiem = match.groupValues[3].lowercase()
+            if (minute !in 0..59) return null
+            val hour = if (meridiem.isEmpty()) {
+                rawHour
+            } else {
+                if (rawHour !in 1..12) return null
+                (rawHour % 12) + if (meridiem.startsWith("p")) 12 else 0
+            }
+            if (hour !in 0..23) return null
+            return hour to minute
+        }
+        TIME_WITH_MERIDIEM.find(text)?.let { match ->
+            val rawHour = match.groupValues[1].toIntOrNull() ?: return null
+            if (rawHour !in 1..12) return null
+            val pm = match.groupValues[2].lowercase().startsWith("p")
+            return ((rawHour % 12) + if (pm) 12 else 0) to 0
+        }
+        return null
+    }
+
+    /** Total seconds in a duration phrase ("1 hour 30 minutes"), or null when there is none. */
+    internal fun parseDurationSeconds(text: String): Int? {
+        var total = 0
+        var found = false
+        for (match in DURATION_PART.findAll(text)) {
+            val amount = match.groupValues[1].toIntOrNull() ?: continue
+            val unit = match.groupValues[2].lowercase()
+            val multiplier = when {
+                unit.startsWith("h") -> 3600
+                unit.startsWith("m") -> 60
+                else -> 1
+            }
+            total += amount * multiplier
+            found = true
+        }
+        if (!found || total <= 0 || total > 86_400) return null
+        return total
+    }
+
+    /**
+     * `open Wi-Fi settings` -> the documented panel action, so the agent does not walk the
+     * Settings tree. A toggle verb keeps the run alive: opening the panel is not turning Wi-Fi on.
+     */
+    private fun parseSettingsPanel(text: String): ResolvedIntentShortcut? {
+        val stripped = AniobTaskIntentClassifier.stripPreamble(text)
+        var core = stripped
+        for (verb in TOGGLE_VERBS + OPEN_VERBS) {
+            if (core.startsWith("$verb ")) {
+                core = core.removePrefix("$verb ").trim()
+                break
+            }
+        }
+        core = core.removePrefix("the ").removeSuffix(" settings").removeSuffix(" panel").trim()
+        if (core.isNotEmpty()) {
+            val panel = SETTINGS_PANELS.firstOrNull { candidate -> candidate.keys.any { it == core } }
+            if (panel != null) {
+                val toggling = TOGGLE_VERBS.any { stripped.startsWith("$it ") }
+                // A status question ("check battery") is not answered by opening the panel.
+                val status = STATUS_QUESTION.containsMatchIn(text)
+                return ResolvedIntentShortcut(
+                    action = panel.action,
+                    requiresObservation = toggling || status,
+                    label = panel.label
+                )
+            }
+        }
+
+        // "open settings and open Wi-Fi settings, leaving the screen showing Wi-Fi" names the panel
+        // inside a longer sentence. Worth opening directly — but only a prompt whose remaining words
+        // just describe what to look at can end there; anything else keeps the run alive.
+        // Only a sentence that actually asks to open something may end at a panel: "check battery"
+        // is a status question, and answering it with a settings screen would be a wrong turn.
+        if (OPEN_VERBS.none { text.contains("$it ") }) return null
+        val (panel, end) = embeddedPanel(text) ?: return null
+        var tail = text.substring(end).trim()
+        for (suffix in listOf("settings", "screen", "panel")) {
+            if (tail.startsWith(suffix)) tail = tail.removePrefix(suffix).trim()
+        }
+        tail = tail.trimStart(',', '.', ' ').trim()
+        // The tail may describe the result ("leaving the screen showing Wi-Fi") or name another
+        // goal ("and wifi settings", "and turn it off"); only the former ends the run here.
+        val secondGoal = SECOND_GOAL.containsMatchIn(tail)
+        val tailIsJustTheResult = tail.isEmpty() ||
+            (WANTS_VISIBLE_RESULT.any { tail.startsWith(it) } && !secondGoal)
+        val statusQuestion = STATUS_QUESTION.containsMatchIn(text)
+        return ResolvedIntentShortcut(
+            action = panel.action,
+            requiresObservation = !tailIsJustTheResult || statusQuestion,
+            label = panel.label
+        )
+    }
+
+    /** First settings-panel name in the sentence, with the index just past its name. */
+    /**
+     * The settings panel named **first** in the sentence, with the index just past its name.
+     *
+     * Table order is not sentence order: "open airplane mode and wifi settings" has to open
+     * Airplane mode, so the earliest match wins. When two keys start at the same offset ("battery"
+     * inside "battery saver") the longer key wins, because the longer name is the specific one.
+     */
+    private fun embeddedPanel(text: String): Pair<SettingsPanel, Int>? {
+        var matchPanel: SettingsPanel? = null
+        var matchStart = Int.MAX_VALUE
+        var matchEnd = 0
+        var matchLength = 0
+        for (panel in SETTINGS_PANELS) {
+            for (pattern in panel.patterns) {
+                val match = pattern.find(text) ?: continue
+                val length = match.range.last - match.range.first + 1
+                val earlier = match.range.first < matchStart
+                val longerAtSameOffset = match.range.first == matchStart && length > matchLength
+                if (earlier || longerAtSameOffset) {
+                    matchPanel = panel
+                    matchStart = match.range.first
+                    matchEnd = match.range.last + 1
+                    matchLength = length
+                }
+            }
+        }
+        return matchPanel?.let { it to matchEnd }
+    }
+
+    /**
+     * `add contact John with number 5551234` -> INSERT with NAME/PHONE on the contact editor.
+     *
+     * The editor still needs its Save tap, so this is always a partial shortcut: it removes the
+     * form filling (the part the model usually fumbles) and leaves one visible, verified step.
+     */
+    private fun parseContactInsert(command: String, text: String): ResolvedIntentShortcut? {
+        if (!text.contains("contact")) return null
+        val inserting = listOf("add ", "create ", "new ", "save ", "insert ").any { text.startsWith(it) } ||
+            text.contains("add a contact") || text.contains("new contact") || text.contains("add contact")
+        if (!inserting) return null
+        val phoneDigits = PHONE_NUMBER.find(text)?.value?.filter { it.isDigit() || it == '+' } ?: return null
+        if (phoneDigits.count { it.isDigit() } < 5) return null
+        val name = contactNameFrom(command) ?: ""
+        val extras = buildMap {
+            put(EXTRA_CONTACT_PHONE, phoneDigits)
+            if (name.isNotBlank()) put(EXTRA_CONTACT_NAME, name)
+        }
+        return ResolvedIntentShortcut(
+            action = ACTION_INSERT,
+            dataType = CONTACT_MIME_TYPE,
+            extras = extras,
+            requiresObservation = true,
+            label = if (name.isBlank()) "New contact" else "New contact $name"
+        )
+    }
+
+    /** Best-effort display name from "add contact John …", title-cased; null when unsure. */
+    private fun contactNameFrom(command: String): String? {
+        val afterContact = command.substringAfter("contact", "").trim()
+        if (afterContact.isEmpty()) return null
+        val lower = afterContact.lowercase()
+        var cut = lower.length
+        for (marker in listOf(" with ", " phone", " number")) {
+            val index = lower.indexOf(marker)
+            if (index in 0 until cut) cut = index
+        }
+        var head = afterContact.substring(0, cut).trim().trimEnd(',', '.')
+        for (prefix in listOf("named ", "name ", "called ", "for ")) {
+            if (head.startsWith(prefix, ignoreCase = true)) {
+                head = head.substring(prefix.length).trim()
+                break
+            }
+        }
+        head = head.trim('"', '\'', ' ').trim()
+        if (head.isEmpty() || head.length > 40) return null
+        if (!head.matches(Regex("[A-Za-z][A-Za-z .'\\-]{0,39}"))) return null
+        if (head.any { it.isDigit() }) return null
+        return head.split(' ').filter { it.isNotBlank() }
+            .joinToString(" ") { word -> word.replaceFirstChar { it.uppercaseChar() } }
+    }
+
+    /**
+     * `search for pizza on google` -> ACTION_VIEW on a Google query URL. Deliberately does not
+     * touch web-research prompts ("search the web …"): those belong to the answer path.
+     */
+    private fun parseWebSearch(text: String): ResolvedIntentShortcut? {
+        if (AniobTaskIntentClassifier.isWebResearch(text)) return null
+        val cue = BROWSER_CUES.firstOrNull { text.contains(it) } ?: return null
+        val raw = when {
+            text.contains("search") -> text.substringAfterLast("search").trim()
+            text.startsWith("google ") -> text.removePrefix("google ").trim()
+            text.startsWith("look up ") -> text.removePrefix("look up ").trim()
+            text.startsWith("open $cue and look up ") -> text.removePrefix("open $cue and look up ").trim()
+            else -> return null
+        }
+        val query = raw
+            .removePrefix("for ")
+            .removePrefix("google for ")
+            .substringBefore(" on google")
+            .substringBefore(" in google")
+            .substringBefore(" on chrome")
+            .substringBefore(" in chrome")
+            .substringBefore(" on the web")
+            .removePrefix("on google ")
+            .removePrefix("in chrome ")
+            .trim()
+            .trimEnd('?', '.', '!')
+        if (query.length < 2) return null
+        if (query.contains("settings", ignoreCase = true)) return null
+        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        return ResolvedIntentShortcut(
+            action = ACTION_VIEW,
+            uriString = GOOGLE_SEARCH_URL + encoded,
+            label = "Search \"$query\""
+        )
     }
 
     /** Kept public: URL validation is a security-relevant pure function, and it is unit-tested. */

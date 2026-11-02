@@ -254,6 +254,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
                 onAblationModeChanged = { mode -> viewModel.setAblationMode(mode) },
                 onStudyPassChanged = { pass -> viewModel.setStudyPass(pass) },
+                onSeedRememberCache = { viewModel.seedRememberPresets() },
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },
                 onSafetyGateChanged = { viewModel.setSafetyGateEnabled(it) },
                 onBack = { viewModel.navigateBack() },

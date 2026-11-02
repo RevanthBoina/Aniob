@@ -44,10 +44,16 @@ sealed class AniobAction {
     }
 
     // 4. input_text
+    /**
+     * [submit] presses the IME action (search/go/enter) after the text is committed. A search box
+     * that only holds the query is not a search, and every extra step spent hunting a hidden
+     * keyboard button is a step the model has to pay for.
+     */
     data class InputText(
         val target: SemanticTarget,
         val text: String,
         val clearFirst: Boolean = false,
+        val submit: Boolean = false,
         override val thought: String = "Typing text into target element"
     ) : AniobAction() {
         override val toolName: String = "input_text"

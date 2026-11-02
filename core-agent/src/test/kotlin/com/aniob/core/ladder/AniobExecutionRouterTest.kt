@@ -7,6 +7,7 @@ import com.aniob.core.knowledge.AppCatalogEntry
 import com.aniob.core.tools.DevicePowerState
 import org.junit.Before
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -45,6 +46,67 @@ class AniobExecutionRouterTest {
         assertNotNull("Summary must be produced by the planning agent", dispatch.progressSummary)
         assertTrue(dispatch.progressSummary!!.contains("Task: Open wifi settings"))
         assertTrue(dispatch.progressSummary!!.contains("Completed 1"))
+    }
+
+    @Test
+    fun `a parameterised shortcut is dispatched once per task signature, mid-task included`() {
+        val router = AniobExecutionRouter()
+        // Carries parameters (7:30) and needs observation, so the caller continues afterwards.
+        val prompt = "open clock then set an alarm for 7:30"
+        val signature = prompt.lowercase()
+
+        // Step 1: the second hop of a multi-goal task, after the first hop already ran.
+        val first = router.planStep(
+            taskPrompt = prompt,
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = signature,
+            powerState = power
+        )
+        assertTrue("mid-task parameterised shortcut must dispatch", first is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (first as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals(AniobIntentResolver.ACTION_SET_ALARM, shortcut.action)
+        assertTrue(shortcut.requiresObservation)
+
+        // The next planning round of the same task must not re-fire it.
+        val second = router.planStep(
+            taskPrompt = prompt,
+            screenState = screen,
+            stepIndex = 2,
+            taskSignature = signature,
+            powerState = power
+        )
+        assertFalse(
+            "the same shortcut must not be dispatched twice in one task",
+            second is AniobExecutionRouter.ExecutionPlanResult.DirectIntent
+        )
+
+        // A new task starts with a clean slate.
+        val otherTask = router.planStep(
+            taskPrompt = prompt,
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "a different task",
+            powerState = power
+        )
+        assertTrue(
+            "dispatch memory is per task",
+            otherTask is AniobExecutionRouter.ExecutionPlanResult.DirectIntent
+        )
+    }
+
+    @Test
+    fun `a silent shortcut still fires only at step 0`() {
+        val router = AniobExecutionRouter()
+        // WIFI_SETTINGS is silent: it finishes a run, so it may not fire mid-trajectory.
+        val result = router.planStep(
+            taskPrompt = "open wifi settings",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+        assertFalse(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
     }
 
     @Test
@@ -241,21 +303,21 @@ class AniobExecutionRouterTest {
         val router = AniobExecutionRouter(planningAgent = null)
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { goal ->
-            if (goal.startsWith("Open Clock")) AppLaunchTarget("com.google.android.deskclock", "Clock") else null
+            if (goal.startsWith("Open Contacts")) AppLaunchTarget("com.android.contacts", "Contacts") else null
         }
 
         val result = router.planStep(
-            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            taskPrompt = "Open Contacts and search for John",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open clock and set an alarm",
+            taskSignature = "open contacts and search for john",
             powerState = power
         )
 
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
         val launch = result as AniobExecutionRouter.ExecutionPlanResult.AppLaunch
-        assertEquals("com.google.android.deskclock", launch.packageName)
-        assertEquals("Clock", launch.appName)
+        assertEquals("com.android.contacts", launch.packageName)
+        assertEquals("Contacts", launch.appName)
     }
 
     @Test
@@ -297,19 +359,122 @@ class AniobExecutionRouterTest {
     }
 
     @Test
-    fun `an unresolved prompt falls through to the model`() {
+    fun `an alarm prompt becomes a complete direct intent, ahead of the app launch`() {
         val router = AniobExecutionRouter(planningAgent = null)
-        router.appLaunchResolver = { null }
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock and set an alarm",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals("android.intent.action.SET_ALARM", shortcut.action)
+        assertTrue(
+            "a two-goal prompt is not finished by the alarm half",
+            shortcut.requiresObservation
+        )
+    }
+
+    @Test
+    fun `an alarm the prompt wants to see is dispatched and then observed`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM, leaving the alarm list showing \"7:30 AM\".",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock and set an alarm for 7:30 am",
+            powerState = power
+        )
+
+        // The intent still opens the editor with the time filled in, but the run continues so the
+        // agent can press Save and show the alarm list the prompt asked for.
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals("android.intent.action.SET_ALARM", shortcut.action)
+        assertEquals("7", shortcut.extras[AniobIntentResolver.EXTRA_ALARM_HOUR])
+        assertTrue(shortcut.requiresObservation)
+    }
+
+    @Test
+    fun `a single goal alarm still completes from the dispatch alone`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+
+        val result = router.planStep(
+            taskPrompt = "set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "set an alarm for 7:30 am",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals("android.intent.action.SET_ALARM", shortcut.action)
+        assertEquals("true", shortcut.extras[AniobIntentResolver.EXTRA_ALARM_SKIP_UI])
+        assertFalse("one goal, fully answered by the intent", shortcut.requiresObservation)
+    }
+
+    @Test
+    fun `a settings panel prompt is resolved before any model call`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
 
         val result = router.planStep(
             taskPrompt = "Open Wi-Fi settings",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open wi-fi settings",
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        assertEquals(
+            "android.settings.WIFI_SETTINGS",
+            (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut.action
+        )
+    }
+
+    @Test
+    fun `an unresolved prompt falls through to the model`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { null }
+
+        val result = router.planStep(
+            taskPrompt = "Book a cab to downtown",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "book a cab to downtown",
             powerState = power
         )
 
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
+    @Test
+    fun `a named app in a longer task becomes an observable app launch, not a finished intent`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { null }
+
+        val result = router.planStep(
+            taskPrompt = "Open the camera and take a photo",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open the camera and take a photo",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
     }
 
     @Test
@@ -318,10 +483,10 @@ class AniobExecutionRouterTest {
         router.appLaunchResolver = { error("catalog exploded") }
 
         val result = router.planStep(
-            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            taskPrompt = "Open Contacts and search for John",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open clock",
+            taskSignature = "open contacts",
             powerState = power
         )
 

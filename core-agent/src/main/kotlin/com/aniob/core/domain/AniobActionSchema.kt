@@ -31,6 +31,7 @@ object AniobActionSchema {
   "tool": "TAP|LONG_PRESS|INPUT_TEXT|SWIPE|OPEN_APP|SYSTEM_KEY|WAIT|FINISH|FAIL",
   "target": {"kind": "som_index|resource_id|text|content_desc", "value": "..."},
   "text": "for INPUT_TEXT",
+  "submit": true,
   "direction": "UP|DOWN|LEFT|RIGHT for SWIPE",
   "distance_px": 600,
   "package_name": "for OPEN_APP",
@@ -40,6 +41,8 @@ object AniobActionSchema {
   "reason": "for FAIL"
 }
 Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT.
+Set "submit": true when the text is a query or a phone number and the field must be confirmed
+(press the keyboard's search/go key) for the action to have any effect.
 """
 
     /** Fields that would smuggle pixel coordinates into the action vocabulary. */
@@ -102,6 +105,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
                 target = requireTarget(candidate, tool),
                 text = str(candidate, "text") ?: throw ActionSchemaException("INPUT_TEXT requires 'text'"),
                 clearFirst = bool(candidate, "clear_first") ?: false,
+                submit = bool(candidate, "submit") ?: false,
                 thought = thought
             )
             "SWIPE", "SCROLL" -> AniobAction.Swipe(
@@ -177,7 +181,13 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
             "input", "type", "input_text" -> {
                 val text = str(element, "text").orEmpty()
                 if (target != null && text.isNotBlank()) {
-                    AniobAction.InputText(target, text, clearFirst = bool(element, "clear_first") ?: false, thought = thought)
+                    AniobAction.InputText(
+                        target,
+                        text,
+                        clearFirst = bool(element, "clear_first") ?: false,
+                        submit = bool(element, "submit") ?: false,
+                        thought = thought
+                    )
                 } else {
                     null
                 }
@@ -268,7 +278,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     fun toActionJson(action: AniobAction): String = when (action) {
         is AniobAction.Tap -> """{"thought":"${esc(action.thought)}","tool":"TAP","target":${targetJson(action.target)}}"""
         is AniobAction.LongPress -> """{"thought":"${esc(action.thought)}","tool":"LONG_PRESS","target":${targetJson(action.target)},"duration_ms":${action.durationMs}}"""
-        is AniobAction.InputText -> """{"thought":"${esc(action.thought)}","tool":"INPUT_TEXT","target":${targetJson(action.target)},"text":"${esc(action.text)}","clear_first":${action.clearFirst}}"""
+        is AniobAction.InputText -> """{"thought":"${esc(action.thought)}","tool":"INPUT_TEXT","target":${targetJson(action.target)},"text":"${esc(action.text)}","clear_first":${action.clearFirst},"submit":${action.submit}}"""
         is AniobAction.Swipe -> """{"thought":"${esc(action.thought)}","tool":"SWIPE","direction":"${action.direction}","distance_px":${action.distancePx}}"""
         is AniobAction.OpenApp -> """{"thought":"${esc(action.thought)}","tool":"OPEN_APP","package_name":"${esc(action.packageName)}"}"""
         is AniobAction.SystemKey -> """{"thought":"${esc(action.thought)}","tool":"SYSTEM_KEY","key":"${action.key}"}"""
