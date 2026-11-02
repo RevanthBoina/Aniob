@@ -1025,6 +1025,36 @@ class AniobViewModel(
     }
 
     /**
+     * Seeds `remember_cache.json` with the first hop of every benchmark task, from the settings
+     * screen, so a warm `FULL_HUMAN_SPEED` batch can be measured without a cold run first.
+     *
+     * Only the app each task starts in is seeded (see `RememberPresets`); every later step is still
+     * learned from a verified run, and a replayed hop is observed like any other step.
+     */
+    fun seedRememberPresets() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cache = app.rememberCacheFile.load()
+            val isInstalled: (String) -> Boolean = { pkg ->
+                runCatching { app.packageManager.getLaunchIntentForPackage(pkg) != null }
+                    .getOrDefault(false)
+            }
+            val written = com.aniob.core.memory.RememberPresets.seed(cache, isInstalled)
+            app.rememberCacheFile.save(cache)
+            rememberCache = cache
+            app.eventLogger.info(
+                "AniobViewModel",
+                "Remember presets seeded: $written/${com.aniob.core.memory.RememberPresets.studyBattery.size} tasks -> ${app.rememberCacheFile.path()}"
+            )
+            _uiState.update {
+                it.copy(
+                    researchStatusLine = "Remember cache seeded: $written of " +
+                        "${com.aniob.core.memory.RememberPresets.studyBattery.size} benchmark first hops"
+                )
+            }
+        }
+    }
+
+    /**
      * Applies a mode to the mechanisms that exist today. Called on init, on every mode change and
      * at the start of each task, so a stale switch can never survive into a measured run.
      */

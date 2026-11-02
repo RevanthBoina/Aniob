@@ -93,7 +93,12 @@ class RememberCache(
         if (normalized.isBlank()) return null
         val hash = screenKey(screen.screenHash.ifBlank { screen.treeHash })
         if (hash.isBlank()) return null
-        val entry = entries[keyOf(normalized, screen.packageName, hash)] ?: return null
+        val entry = entries[keyOf(normalized, screen.packageName, hash)]
+            // A preset (see [RememberPresets]) applies to whichever screen the app opens on. Every
+            // action still has to resolve uniquely on the live screen, so the wildcard only saves
+            // the planning, never the observation.
+            ?: entries[keyOf(normalized, screen.packageName, WILDCARD_SCREEN)]
+            ?: return null
         if (entry.actions.isEmpty()) return null
 
         // The trace is stored with {PARAM_n} for the values that came from the prompt; a goal that
@@ -117,6 +122,9 @@ class RememberCache(
     companion object {
         const val MAX_ENTRIES = 300
         const val FILE_NAME = "remember_cache.json"
+
+        /** Screen component of a preset entry: it applies to any screen of its package. */
+        const val WILDCARD_SCREEN = "*"
 
         /** Separator is part of the on-disk key; never change it without a cache version bump. */
         const val KEY_SEPARATOR = "|"
