@@ -147,6 +147,42 @@ object ResearchSummaryTable {
         rows.forEach { append(it.toCsvRow()).append('\n') }
     }
 
+    /**
+     * Rebuilds the table without dropping a mode that was already measured.
+     *
+     * `research_summary_table.csv` is the paper's artifact and a batch is run mode by mode, so
+     * switching the ablation radio button must never cost the earlier rows. The table is normally
+     * recomputed from `research_runs.csv`, which is append-only — but if that file is reset or
+     * pruned between modes, a mode that has no runs left would silently vanish and the final table
+     * would report fewer conditions than were actually evaluated. Any mode already present in
+     * [existingCsv] therefore keeps its row verbatim.
+     */
+    fun mergeWithExisting(existingCsv: String?, rows: List<ResearchSummaryRow>): String {
+        val previous = previousRowsByMode(existingCsv)
+        val current = rows.associateBy { it.mode }
+        val merged = AblationMode.entries.mapNotNull { mode ->
+            current[mode]?.toCsvRow() ?: previous[mode]
+        }
+        return buildString {
+            append(HEADER).append('\n')
+            merged.forEach { append(it).append('\n') }
+        }
+    }
+
+    /** `Mode_Code` -> row line, from a previously written table. Damaged lines are ignored. */
+    private fun previousRowsByMode(existingCsv: String?): Map<AblationMode, String> {
+        if (existingCsv.isNullOrBlank()) return emptyMap()
+        val byId = AblationMode.entries.associateBy { it.id }
+        return existingCsv.lineSequence()
+            .drop(1)
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                val code = line.split(CsvCodec.DELIMITER).getOrNull(1) ?: return@mapNotNull null
+                byId[code]?.let { it to line }
+            }
+            .toMap()
+    }
+
     /** Convenience for the HUD: the running row for one mode, or `null` when it has no runs. */
     fun rowFor(runs: List<ResearchRun>, mode: AblationMode): ResearchSummaryRow? =
         build(runs).firstOrNull { it.mode == mode }
