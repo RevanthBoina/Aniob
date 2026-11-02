@@ -547,7 +547,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         val children = ArrayList<ObserveSnapshot>(node.childCount)
         for (i in 0 until node.childCount) {
             val child = if (Build.VERSION.SDK_INT >= 33) {
-                node.getChild(i, 4) ?: node.getChild(i)
+                node.getChild(i, AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID) ?: node.getChild(i)
             } else {
                 node.getChild(i)
             } ?: continue
@@ -710,7 +710,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         for (i in 0 until node.childCount) {
             // Batched IPC hint: on API 33+ descendants can be prefetched
             val child = if (Build.VERSION.SDK_INT >= 33) {
-                node.getChild(i, 4) ?: node.getChild(i)
+                node.getChild(i, AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID) ?: node.getChild(i)
             } else {
                 node.getChild(i)
             } ?: continue

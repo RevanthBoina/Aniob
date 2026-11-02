@@ -3581,8 +3581,9 @@ class AniobViewModel(
      */
     private suspend fun awaitIntentScreen(beforePackage: String?, timeoutMs: Long): AniobScreenState? {
         val deadline = System.currentTimeMillis() + timeoutMs
+        val service = AniobAccessibilityService.instance
         while (System.currentTimeMillis() < deadline) {
-            val screen = accessibility?.captureCurrentScreenState()
+            val screen = service?.captureCurrentScreenState()
             if (screen != null && (beforePackage == null ||
                     !screen.packageName.equals(beforePackage, ignoreCase = true))
             ) {
@@ -3590,7 +3591,7 @@ class AniobViewModel(
             }
             delay(120)
         }
-        return accessibility?.captureCurrentScreenState()
+        return service?.captureCurrentScreenState()
     }
 
     private fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut): Boolean {
@@ -3643,10 +3644,11 @@ class AniobViewModel(
                             // setClassName wants the class name only, and a flattened one builds a
                             // component that cannot be resolved.
                             val activityClass = AniobLaunchHub.activityClassName(shortcut.launchActivity)
-                            if (activityClass != null && shortcut.targetPackage != null) {
-                                setClassName(shortcut.targetPackage, activityClass)
+                            val targetPkg = shortcut.targetPackage
+                            if (activityClass != null && targetPkg != null) {
+                                setClassName(targetPkg, activityClass)
                             } else {
-                                shortcut.targetPackage?.let { setPackage(it) }
+                                targetPkg?.let { setPackage(it) }
                             }
                         }
                         shortcut.uriString?.let { data = Uri.parse(it) }
