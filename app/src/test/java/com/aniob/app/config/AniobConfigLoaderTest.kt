@@ -45,7 +45,7 @@ class AniobConfigLoaderTest {
     @Test
     fun agentLimitsComeFromBundledAgentYaml() {
         val limits = loader.agentLimits()
-        assertEquals(25, limits.maxStepsPerTask)
+        assertEquals(50, limits.maxStepsPerTask)
         assertEquals(15_000L, limits.stepTimeoutMs)
     }
 

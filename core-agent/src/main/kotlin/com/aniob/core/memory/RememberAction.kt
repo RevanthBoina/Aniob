@@ -47,10 +47,14 @@ data class RememberAction(
     }
 
     /** This descriptor with `{PARAM_n}` filled from the new prompt; null when one is missing. */
-    fun injected(params: List<String>): RememberAction? = copy(
-        inputText = RememberTemplate.inject(inputText, params) ?: return null,
-        text = RememberTemplate.inject(text, params) ?: return null
-    )
+    fun injected(params: List<String>): RememberAction? {
+        val newIn = RememberTemplate.inject(inputText, params) ?: return null
+        val newText = RememberTemplate.inject(text, params) ?: return null
+        return copy(
+            inputText = newIn,
+            text = newText
+        )
+    }
 
     companion object {
         const val TAP = "tap"
