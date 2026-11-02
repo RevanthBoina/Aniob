@@ -2918,9 +2918,21 @@ class AniobViewModel(
                                 if (accessibility.scrollForwardOnce()) {
                                     delay(com.aniob.core.perception.PreObserveScroll.SETTLE_MS)
                                     val revealed = accessibility.captureCurrentScreenState()
-                                    // Retry the same action live: if it was only below the fold,
-                                    // this ends the step without another model call.
-                                    ok = executeActionSync(accessibility, act)
+                                    // The scroll re-indexed every element, so the planned index now
+                                    // points at whatever sits where the target used to be. Re-express
+                                    // the same action by the widget's stable identity and retry; if
+                                    // it has none there is no safe retry and the merged viewport goes
+                                    // to the next plan instead.
+                                    val retry = com.aniob.core.perception.PreObserveScroll
+                                        .retargetForRetry(act, dispatchOrigin)
+                                    if (retry != null) {
+                                        ok = executeActionSync(accessibility, retry)
+                                    } else {
+                                        app.eventLogger.info(
+                                            "AniobViewModel",
+                                            "Pre-observe scroll: no stable identity for ${act.describeAction()}, not retried"
+                                        )
+                                    }
                                     screenAfter = awaitTransition(act) ?: revealed
                                     if (ok) {
                                         app.eventLogger.info(
