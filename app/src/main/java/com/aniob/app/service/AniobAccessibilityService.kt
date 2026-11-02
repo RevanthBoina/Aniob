@@ -884,12 +884,12 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         val root = rootInActiveWindow ?: return callback(false)
         try {
             val targetNode = liveScreen.findNodeById(command.nodeId) ?: return callback(false)
-            val found = findAccessibilityNodeByBounds(root, targetNode.bounds) ?: return callback(false)
-            try {
-                applySetText(found, command, callback)
-            } finally {
-                if (found !== root) recycleQuietly(found)
-            }
+            val bounds = Rect(
+                targetNode.bounds.left, targetNode.bounds.top,
+                targetNode.bounds.right, targetNode.bounds.bottom
+            )
+            val viewId = targetNode.viewId
+            applySetTextFresh({ findFreshNode(viewId, bounds) }, command, callback)
         } finally {
             recycleQuietly(root)
         }
@@ -909,54 +909,114 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         command: DispatchCommand.SetText,
         callback: (Boolean) -> Unit
     ) {
+        val alreadyFocused = try { node.isFocused } catch (_: Exception) { false }
+        focusField(node, command)
+        // A click that raises the keyboard re-measures the layout; typing into the same handle
+        // before that settles is the race that lost the first characters.
+        val settle = if (alreadyFocused) 0L else FOCUS_SETTLE_MS
         val work = Runnable {
-            try {
-                val arguments = Bundle()
-                arguments.putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    command.text
-                )
-                val committed = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-                if (!committed) {
-                    Log.w(TAG, "ACTION_SET_TEXT rejected on '${command.targetDescription}'")
-                    callback(false)
-                    return@Runnable
-                }
-                val submitted = if (command.submit) pressImeAction(node) else true
-                if (command.submit && !submitted) {
-                    // The text is in; only the submit could not be delivered. Report success so the
-                    // verifier judges the screen instead of replaying the typing.
-                    Log.w(TAG, "IME submit unavailable on '${command.targetDescription}'")
-                }
-                callback(true)
-            } catch (e: Exception) {
-                Log.w(TAG, "ACTION_SET_TEXT failed: ${e.message}")
+            // The cached handle belongs to the observation pipeline and may have been refreshed
+            // away by a newer capture while this write was waiting out the settle window.
+            val fresh = try { node.refresh() } catch (_: Exception) { false }
+            if (!fresh) {
+                Log.w(TAG, "field went stale before the commit on '${command.targetDescription}'")
                 callback(false)
+                return@Runnable
             }
+            commitText(node, command, callback)
         }
+        if (settle == 0L) work.run() else mainHandler.postDelayed(work, settle)
+    }
 
-        val alreadyFocused = try {
-            node.isFocused
-        } catch (_: Exception) {
-            false
+    /**
+     * Commits text on a node re-resolved inside the delay window; the handle is recycled here.
+     *
+     * The fallback path used to hand [applySetText] a node obtained from the live tree, which the
+     * caller recycled as soon as that call returned — so the delayed write ran on a recycled object
+     * on API 30-32 and reported false. Re-resolving after the settle keeps the handle ours.
+     */
+    private fun applySetTextFresh(
+        locate: () -> AccessibilityNodeInfo?,
+        command: DispatchCommand.SetText,
+        callback: (Boolean) -> Unit
+    ) {
+        val probe = try { locate() } catch (_: Exception) { null }
+        val alreadyFocused = try { probe?.isFocused == true } catch (_: Exception) { false }
+        if (probe != null) focusField(probe, command)
+        val settle = if (alreadyFocused) 0L else FOCUS_SETTLE_MS
+        val work = Runnable {
+            val node = try { locate() } catch (_: Exception) { null }
+            if (node == null) {
+                Log.w(TAG, "field vanished before the commit on '${command.targetDescription}'")
+                callback(false)
+                return@Runnable
+            }
+            try { commitText(node, command, callback) } finally { recycleQuietly(node) }
         }
+        if (settle == 0L) work.run() else mainHandler.postDelayed(work, settle)
+    }
+
+    private fun focusField(node: AccessibilityNodeInfo, command: DispatchCommand.SetText) {
         try {
             if (command.clearFirst) {
                 val clearArgs = Bundle()
                 clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
                 node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
             }
-            if (!alreadyFocused) {
+            if (!node.isFocused) {
                 node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                // Only click when focus did not make it editable: a click on an omnibox-style widget
+                // can navigate instead of just raising the keyboard.
+                if (!node.isEditable) node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
-            // A click that raises the keyboard re-measures the layout; typing into the same handle
-            // before that settles is the race that lost the first characters.
-            val settle = if (alreadyFocused) 0L else FOCUS_SETTLE_MS
-            if (settle == 0L) work.run() else mainHandler.postDelayed(work, settle)
         } catch (e: Exception) {
-            Log.w(TAG, "focus/click on '${command.targetDescription}' failed: ${e.message}")
-            mainHandler.post(work)
+            Log.w(TAG, "focus on '${command.targetDescription}' failed: ${e.message}")
+        }
+    }
+
+    /** Fresh handle for a field across a delay: view id first, bounds as the fallback. */
+    private fun findFreshNode(viewId: String, bounds: Rect): AccessibilityNodeInfo? {
+        val root = try { rootInActiveWindow } catch (_: Exception) { null } ?: return null
+        return try {
+            val byId = if (viewId.isNotBlank()) {
+                root.findAccessibilityNodeInfosByViewId(viewId)?.firstOrNull()
+            } else null
+            byId ?: findAccessibilityNodeByBounds(
+                root,
+                AniobRect(bounds.left, bounds.top, bounds.right, bounds.bottom)
+            )
+        } catch (_: Exception) {
+            null
+        } finally {
+            recycleQuietly(root)
+        }
+    }
+
+    private fun commitText(
+        node: AccessibilityNodeInfo,
+        command: DispatchCommand.SetText,
+        callback: (Boolean) -> Unit
+    ) {
+        try {
+            val arguments = Bundle()
+            arguments.putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                command.text
+            )
+            if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                Log.w(TAG, "ACTION_SET_TEXT rejected on '${command.targetDescription}'")
+                callback(false)
+                return
+            }
+            if (command.submit && !pressImeAction(node)) {
+                // The text is in; only the submit could not be delivered. The verifier judges the
+                // screen instead of the typing being replayed.
+                Log.w(TAG, "IME submit unavailable on '${command.targetDescription}'")
+            }
+            callback(true)
+        } catch (e: Exception) {
+            Log.w(TAG, "ACTION_SET_TEXT failed: ${e.message}")
+            callback(false)
         }
     }
 
