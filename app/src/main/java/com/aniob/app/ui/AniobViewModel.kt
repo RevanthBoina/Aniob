@@ -2537,9 +2537,11 @@ class AniobViewModel(
                                 // success nobody looked at is not a success this app reports.
                                 // `currentStep + 1` because this dispatch already happened; the
                                 // criterion set includes a min-steps check that would fail otherwise.
-                                val verdict = landed
-                                    ?.let { resolvedCriteria?.evaluateCriteria(it, currentStep + 1) }
-                                    .orEmpty()
+                                val verdict = if (resolvedCriteria?.hasObservableCheck == true) {
+                                    landed?.let { resolvedCriteria.evaluateCriteria(it, currentStep + 1) }.orEmpty()
+                                } else {
+                                    emptyList()
+                                }
                                 when {
                                     verdict.isNotEmpty() && verdict.all {
                                         it.state == com.aniob.core.domain.CriterionState.PASSED

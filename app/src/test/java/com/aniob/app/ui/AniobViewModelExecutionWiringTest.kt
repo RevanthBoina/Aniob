@@ -81,4 +81,36 @@ class AniobViewModelExecutionWiringTest {
         // Clean up test state
         vm.updateSettings(apiKey = "", model = "auto", baseUrl = "")
     }
+
+    @Test
+    fun intentShortcutClosingRequiresObservableScreenCriteria() {
+        val bareCriteria = com.aniob.core.domain.SuccessCriteria(minSteps = 1)
+        assertFalse("Bare minSteps has no observable check", bareCriteria.hasObservableCheck)
+
+        val observableCriteria = com.aniob.core.domain.SuccessCriteria(
+            minSteps = 1,
+            mustContainText = listOf("Wi-Fi")
+        )
+        assertTrue("Criteria with text expectation has observable check", observableCriteria.hasObservableCheck)
+
+        val landedScreen = com.aniob.core.domain.AniobScreenState(
+            packageName = "com.android.settings",
+            nodes = listOf(com.aniob.core.domain.AniobNode(id = 1, className = "android.widget.TextView", text = "Wi-Fi"))
+        )
+
+        val bareVerdict = if (bareCriteria.hasObservableCheck) {
+            bareCriteria.evaluateCriteria(landedScreen, 1)
+        } else {
+            emptyList()
+        }
+        assertTrue("Bare criteria produces empty verdict falling through to UNVERIFIED", bareVerdict.isEmpty())
+
+        val observableVerdict = if (observableCriteria.hasObservableCheck) {
+            observableCriteria.evaluateCriteria(landedScreen, 1)
+        } else {
+            emptyList()
+        }
+        assertTrue("Observable criteria evaluates to non-empty verdict", observableVerdict.isNotEmpty())
+        assertTrue("All criteria passed on landed screen", observableVerdict.all { it.state == com.aniob.core.domain.CriterionState.PASSED })
+    }
 }
