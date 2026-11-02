@@ -2,33 +2,54 @@ package com.aniob.core.knowledge
 
 import java.io.File
 
+/**
+ * Legacy value type kept for source compatibility with the app module and existing tests.
+ *
+ * [launchActivity] is carried through from [RegisteredApp] so a caller that only holds catalog
+ * entries can still dispatch an explicit `<pkg>/<pkg>.Activity` intent.
+ */
 data class AppCatalogEntry(
     val packageName: String,
     val appName: String,
     val isSystemApp: Boolean = false,
-    val aliases: List<String> = emptyList()
-)
+    val aliases: List<String> = emptyList(),
+    val launchActivity: String? = null
+) {
+    fun toRegistered(launchActivity: String? = this.launchActivity): RegisteredApp =
+        RegisteredApp(packageName, appName, isSystemApp, launchActivity, aliases)
+
+    companion object {
+        fun from(app: RegisteredApp): AppCatalogEntry =
+            AppCatalogEntry(app.packageName, app.label, app.isSystemApp, app.aliases, app.launchActivity)
+    }
+}
 
 /**
- * Persistent App Catalog (Phase 2.2).
- * Enables instant (<15ms) app name resolution without invoking PackageManager queries repeatedly.
+ * Compatibility facade over [AniobAppRegistry].
+ *
+ * The old class was the *only* store and it was write-only in practice: the accessibility service
+ * and the package receiver wrote `app_catalog.json`, nothing read it back, and the in-memory map was
+ * therefore empty at cold start. Every call site that still says `AniobAppCatalog` now talks to the
+ * registry instead, so no call site had to change — but the data is persisted **and hydrated**, and
+ * it is launchable-only, because the bootstrap builds it from `queryIntentActivities(MAIN/LAUNCHER)`.
+ *
+ * Nothing here is a second source of truth: `saveToFile` writes the registry's own cache.
  */
 class AniobAppCatalog private constructor() {
 
-    private val catalog = mutableMapOf<String, AppCatalogEntry>()
+    private val registry: AniobAppRegistry get() = AniobAppRegistry.getInstance()
 
     @Synchronized
-    fun registerApp(entry: AppCatalogEntry) {
-        catalog[entry.packageName] = entry
-    }
+    fun registerApp(entry: AppCatalogEntry) = registry.upsert(entry.toRegistered())
 
     @Synchronized
-    fun removeApp(packageName: String) {
-        catalog.remove(packageName)
-    }
+    fun registerApp(entry: RegisteredApp) = registry.upsert(entry)
 
     @Synchronized
-    fun getAll(): List<AppCatalogEntry> = catalog.values.toList()
+    fun removeApp(packageName: String) = registry.remove(packageName)
+
+    @Synchronized
+    fun getAll(): List<AppCatalogEntry> = registry.all().map { AppCatalogEntry.from(it) }
 
     sealed class AppResolution {
         data class ExactMatch(val entry: AppCatalogEntry) : AppResolution()
@@ -37,53 +58,39 @@ class AniobAppCatalog private constructor() {
     }
 
     @Synchronized
-    fun findCandidates(query: String): List<AppCatalogEntry> {
-        val q = query.trim().lowercase()
-        if (q.isBlank()) return emptyList()
-
-        catalog[q]?.let { return listOf(it) }
-
-        val exactMatches = catalog.values.filter { entry ->
-            entry.appName.lowercase() == q || entry.aliases.any { it.lowercase() == q }
-        }
-        if (exactMatches.isNotEmpty()) return exactMatches
-
-        return catalog.values.filter { entry ->
-            entry.appName.lowercase().contains(q) || entry.aliases.any { it.lowercase().contains(q) }
-        }
+    fun findCandidates(query: String): List<AppCatalogEntry> = when (val found = registry.resolve(query)) {
+        is AppLookup.Match -> listOf(AppCatalogEntry.from(found.app))
+        is AppLookup.Ambiguous -> found.candidates.map { AppCatalogEntry.from(it) }
+        is AppLookup.Miss -> emptyList()
     }
 
     @Synchronized
-    fun resolveApp(query: String): AppResolution {
-        val candidates = findCandidates(query)
-        return when {
-            candidates.isEmpty() -> AppResolution.NotFound
-            candidates.size == 1 -> AppResolution.ExactMatch(candidates.first())
-            else -> AppResolution.Ambiguous(candidates)
-        }
+    fun resolveApp(query: String): AppResolution = when (val found = registry.resolve(query)) {
+        is AppLookup.Match -> AppResolution.ExactMatch(AppCatalogEntry.from(found.app))
+        is AppLookup.Ambiguous -> AppResolution.Ambiguous(found.candidates.map { AppCatalogEntry.from(it) })
+        is AppLookup.Miss -> AppResolution.NotFound
     }
 
+    /**
+     * Package for a spoken name, or null when the name is ambiguous.
+     *
+     * Ambiguity deliberately returns null instead of "best guess": picking between "Settings" and
+     * "Settings Hub" is exactly the decision that must go back to the user, or to a rung that can
+     * ask.
+     */
     @Synchronized
-    fun findPackageForName(query: String): String? {
-        return when (val res = resolveApp(query)) {
-            is AppResolution.ExactMatch -> res.entry.packageName
-            is AppResolution.Ambiguous -> null // Ambiguous match requires chooser
-            is AppResolution.NotFound -> null
-        }
+    fun findPackageForName(query: String): String? = when (val found = registry.resolve(query)) {
+        is AppLookup.Match -> found.app.packageName
+        is AppLookup.Ambiguous -> null
+        is AppLookup.Miss -> null
     }
-
-    private fun escapeJson(s: String): String =
-        s.replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
 
     @Synchronized
     fun toJson(): String {
-        val entries = catalog.values.joinToString(",") { entry ->
+        val entries = getAll().joinToString(",") { entry ->
             val aliasJson = entry.aliases.joinToString(",") { "\"${escapeJson(it)}\"" }
-            """{"packageName":"${escapeJson(entry.packageName)}","appName":"${escapeJson(entry.appName)}","isSystem":${entry.isSystemApp},"aliases":[$aliasJson]}"""
+            """{"packageName":"${escapeJson(entry.packageName)}","appName":"${escapeJson(entry.appName)}",""" +
+                """"isSystem":${entry.isSystemApp},"aliases":[$aliasJson]}"""
         }
         return "[$entries]"
     }
@@ -94,24 +101,45 @@ class AniobAppCatalog private constructor() {
         sb.appendLine("# Aniob Installed Applications Catalog")
         sb.appendLine("| App Name | Package Name | System App |")
         sb.appendLine("|---|---|---|")
-        catalog.values.sortedBy { it.appName.lowercase() }.forEach {
+        getAll().sortedBy { it.appName.lowercase() }.forEach {
             val safeName = it.appName.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
             sb.appendLine("| $safeName | `${it.packageName}` | ${if (it.isSystemApp) "Yes" else "No"} |")
         }
         return sb.toString()
     }
 
+    /**
+     * Writes the human-readable artefacts the accessibility service used to write **and** the
+     * machine cache that cold start reads. The cache is the fix: a file that is only ever written is
+     * a file that cannot help the next launch.
+     */
     @Synchronized
     fun saveToFile(jsonFile: File, mdFile: File) {
         try {
             jsonFile.writeText(toJson())
+            mdFile.parentFile?.mkdirs()
             mdFile.writeText(toMarkdown())
+            registry.saveTo(File(jsonFile.parentFile ?: File("."), CACHE_FILE_NAME))
         } catch (e: Exception) {
             System.err.println("AniobAppCatalog saveToFile error: ${e.message}")
         }
     }
 
+    /** Cold-start hydration from the cache written by [saveToFile]. Returns true when it had data. */
+    @Synchronized
+    fun loadFromFile(directory: File): Boolean = registry.loadFrom(File(directory, CACHE_FILE_NAME))
+
+    private fun escapeJson(s: String): String =
+        s.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+
     companion object {
+        /** Cache file name, shared with `AniobAppBootstrap` so there is one path convention. */
+        const val CACHE_FILE_NAME = "app_registry.tsv"
+
         private val instance = AniobAppCatalog()
         fun getInstance(): AniobAppCatalog = instance
     }

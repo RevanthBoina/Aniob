@@ -4,8 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.aniob.app.knowledge.AniobAppBootstrap
 import com.aniob.core.knowledge.AniobAppCatalog
-import com.aniob.core.knowledge.AppCatalogEntry
+import com.aniob.core.knowledge.RegisteredApp
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,8 +15,14 @@ import kotlinx.coroutines.launch
 
 /**
  * Reflex 1: Package-change spinal reflex (Tasker/macroDroid trigger provider).
- * PACKAGE_ADDED / PACKAGE_REMOVED / PACKAGE_REPLACED update the persistent AppCatalog
- * JSON + markdown with zero LLM involvement, mirroring the accessibility-service build.
+ *
+ * `PACKAGE_ADDED` / `PACKAGE_REMOVED` / `PACKAGE_REPLACED` update the *same* registry the ladder
+ * resolves app names from, so an app that was just installed can be opened by the very next task and
+ * an uninstalled one is never offered again. A full background refresh follows, because a package
+ * change can also move a *role* (the newly installed browser becomes "the browser").
+ *
+ * Both writes go through [AniobAppCatalog], which is a facade over `AniobAppRegistry` — there is one
+ * source of truth, and the TSV cache cold start reads is rewritten by the same call.
  */
 class AniobPackageReceiver : BroadcastReceiver() {
 
@@ -27,6 +34,9 @@ class AniobPackageReceiver : BroadcastReceiver() {
         ) return
 
         val packageName = intent.data?.schemeSpecificPart ?: return
+        // EXTRA_REPLACING is set when a package is removed as part of an update/upgrade: the app is
+        // still installed, so the entry must not be dropped in the middle of the replacement.
+        val replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
         val appContext = context.applicationContext
         val pendingResult = goAsync()
 
@@ -37,15 +47,29 @@ class AniobPackageReceiver : BroadcastReceiver() {
                     ACTION_PACKAGE_ADDED, ACTION_PACKAGE_REPLACED -> {
                         val pm = appContext.packageManager
                         val appInfo = pm.getApplicationInfo(packageName, 0)
-                        val appName = pm.getApplicationLabel(appInfo)?.toString() ?: packageName
-                        val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                        catalog.registerApp(AppCatalogEntry(packageName, appName, isSystem))
+                        val label = pm.getApplicationLabel(appInfo)?.toString() ?: packageName
+                        val isSystem =
+                            (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                        // Only a package with a launcher entry is an app the agent can open; storing
+                        // it otherwise would offer "installed but unlaunchable" as a target.
+                        val launchIntent = runCatching { pm.getLaunchIntentForPackage(packageName) }.getOrNull()
+                        if (launchIntent != null) {
+                            val component = launchIntent.component
+                            catalog.registerApp(
+                                RegisteredApp(
+                                    packageName = packageName,
+                                    label = label,
+                                    isSystemApp = isSystem,
+                                    launchActivity = component?.let { "${it.packageName}/${it.className}" }
+                                )
+                            )
+                        }
                     }
-                    ACTION_PACKAGE_REMOVED -> {
-                        catalog.removeApp(packageName)
-                    }
+                    ACTION_PACKAGE_REMOVED -> if (!replacing) catalog.removeApp(packageName)
                 }
                 saveCatalog(appContext, catalog)
+                // Roles can change with an install/uninstall: re-ask the platform in the background.
+                AniobAppBootstrap.refreshAsync(appContext)
             } catch (e: Exception) {
                 Log.w(TAG, "Package reflex failed for $packageName", e)
             } finally {

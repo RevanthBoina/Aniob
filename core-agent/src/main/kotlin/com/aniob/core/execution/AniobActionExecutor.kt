@@ -30,7 +30,12 @@ object AniobActionExecutor {
         is AniobAction.LongPress -> groundToLongPress(action, liveScreen)
         is AniobAction.InputText -> groundToSetText(action, liveScreen)
         is AniobAction.Swipe -> planSwipe(action, liveScreen, screenWidth, screenHeight)
-        is AniobAction.OpenApp -> DispatchCommand.SystemIntent("OPEN_APP", action.packageName)
+        is AniobAction.OpenApp -> DispatchCommand.SystemIntent(
+            name = "OPEN_APP",
+            argument = action.packageName,
+            targetDescription = "open_app:${action.packageName}",
+            component = action.activityName
+        )
         is AniobAction.SystemKey -> DispatchCommand.SystemIntent("SYSTEM_KEY", action.key.name)
         is AniobAction.PressKey -> DispatchCommand.SystemIntent("SYSTEM_KEY", action.key.name)
         is AniobAction.Clipboard -> DispatchCommand.SystemIntent("CLIPBOARD", action.operation.name)

@@ -17,6 +17,12 @@
         tools:ignore="ProtectedPermissions" />
 
     <queries>
+        <!-- Android 11 package visibility: without this, queryIntentActivities(MAIN/LAUNCHER)
+             returns a partial list and the app registry silently under-reports installed apps. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>

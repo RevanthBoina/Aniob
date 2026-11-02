@@ -61,6 +61,13 @@ class AniobExecutionRouter(
      */
     var appLaunchResolver: ((String) -> AppLaunchTarget?)? = null
 
+    /**
+     * Mid-task app resolver: (goal) -> an app the goal names that this task has not opened yet.
+     * Optional; when null, mid-task switches are simply not attempted and the ladder behaves as
+     * before. Supplied by the app layer with the same installed-check as [appLaunchResolver].
+     */
+    var midTaskLaunchResolver: ((String) -> AppLaunchTarget?)? = null
+
     /** UX-5: skills the user disabled are skipped by both matchers. */
     private var disabledSkills: Set<String> = emptySet()
 
@@ -77,10 +84,19 @@ class AniobExecutionRouter(
     sealed class ExecutionPlanResult {
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
         /**
-         * Step 0 opens a named app directly. The package came from the installed-app catalog, so
+         * Step 0 opens a named app directly. The package came from the installed-app registry, so
          * the step costs no model call; the next step plans on the app's own screen.
+         *
+         * [launchActivity] is the registry's explicit launcher component (`<pkg>/<pkg>.Activity`)
+         * when it is known, so the dispatch can bypass a resolver chooser and the UI-automation
+         * verifier can confirm the foreground package it expects.
          */
-        data class AppLaunch(val packageName: String, val appName: String, val reason: String) : ExecutionPlanResult()
+        data class AppLaunch(
+            val packageName: String,
+            val appName: String,
+            val reason: String,
+            val launchActivity: String? = null
+        ) : ExecutionPlanResult()
         /**
          * A verified transition replayed from the remember cache. The list is dispatched in order
          * without any model call, so it costs 0 LLM requests.
@@ -109,29 +125,89 @@ class AniobExecutionRouter(
         userRoutingMode: String = "auto",
         lastObservedResult: String? = null
     ): ExecutionPlanResult {
-        // Step 0: Direct Intent Shortcut (0ms LLM). The ablation switch gates the lookup itself.
-        if (stepIndex == 0 && intentShortcutsEnabled) {
+        // ----------------------------------------------------------------------------------- //
+        // Step 0 / app switch: opening an app is a LOOKUP, never a model call.
+        //
+        //  · at step 0 the app named at the start of the task is opened;
+        //  · mid-task, an app named later in the task is opened once, if it is not already in front.
+        //
+        // An app shortcut is NEVER returned as a DirectIntent. A DirectIntent finishes without an
+        // observable post-condition, so the step pipeline rejects it and the task ends FAILED — that
+        // is exactly how "Open Clock" used to fail while the clock app was open. Only reflexes whose
+        // effect *is* the dispatch (torch, battery, dial, open URL) may finish immediately.
+        // ----------------------------------------------------------------------------------- //
+        if (intentShortcutsEnabled) {
+            AniobLaunchHub.reset(taskSignature)
+            val firstStep = stepIndex == 0
             val intentShortcut = AniobIntentResolver.resolve(taskPrompt)
-            if (intentShortcut != null) {
+            // A shortcut that already carries every parameter (an alarm with its time, a settings
+            // panel, a search URL, a prefilled contact) is cheaper than opening the app and
+            // planning there, so it outranks the app-launch hook. An app-opening shortcut names a
+            // package and nothing else; that is the only case the launch below owns.
+            val carriesParameters = intentShortcut != null && (
+                !intentShortcut.requiresObservation ||
+                    (intentShortcut.targetPackage == null &&
+                        (intentShortcut.uriString != null ||
+                            intentShortcut.extras.isNotEmpty() ||
+                            intentShortcut.dataType != null))
+                )
+            val pending = runCatching {
+                if (firstStep) appLaunchResolver?.invoke(taskPrompt) else midTaskLaunchResolver?.invoke(taskPrompt)
+            }.getOrNull()
+            if (!carriesParameters &&
+                pending != null &&
+                pending.packageName != screenState.packageName &&
+                !AniobLaunchHub.wasLaunched(pending.packageName)
+            ) {
+                AniobLaunchHub.noteLaunched(pending.packageName)
+                return ExecutionPlanResult.AppLaunch(
+                    packageName = pending.packageName,
+                    appName = pending.appName,
+                    launchActivity = pending.launchActivity,
+                    reason = if (firstStep) {
+                        "App shortcut: '${pending.appName}' is installed (0 LLM calls)"
+                    } else {
+                        "App switch: '${pending.appName}' is named later in the task and is not open (0 LLM calls)"
+                    }
+                )
+            }
+
+            // Reflexes fire once, at step 0, exactly as before: a dial/torch/URL dispatch that is
+            // repeated on every planning round is how a failed reflex becomes an infinite loop.
+            //
+            // A shortcut that carries parameters but still needs a look at the screen (an alarm
+            // editor filled in for 7:30, a prefilled contact form) is dispatched here too, and the
+            // caller then continues from the screen it landed on. Only an app *launch* is excluded:
+            // it has a package and no parameters, and the branch below handles it as an OpenApp.
+            if (firstStep && carriesParameters && intentShortcut != null) {
                 return ExecutionPlanResult.DirectIntent(
                     shortcut = intentShortcut,
                     reason = "Direct intent shortcut resolved in <15ms"
                 )
             }
-        }
-
-        // Step 0.25: App launch (0 LLM). The task names an app the catalog already knows, so the
-        // first action is a single OpenApp intent instead of a model round trip that would have to
-        // decide the same thing from a screen full of icons.
-        if (stepIndex == 0 && intentShortcutsEnabled) {
-            val launch = runCatching { appLaunchResolver?.invoke(taskPrompt) }.getOrNull()
-            if (launch != null) {
+            // A shortcut that opens an app must be observed, so it is dispatched as an OpenApp
+            // action — which the UI-automation verifier confirms against the real foreground
+            // package — instead of a DirectIntent that would finish with no post-condition.
+            // Only at step 0: mid-task switches belong to the mid-task hook above, which knows what
+            // this task already opened, and never to a re-read of the raw prompt.
+            if (firstStep &&
+                intentShortcut != null &&
+                intentShortcut.requiresObservation &&
+                intentShortcut.targetPackage != null &&
+                intentShortcut.targetPackage != screenState.packageName &&
+                !AniobLaunchHub.wasLaunched(intentShortcut.targetPackage)
+            ) {
+                AniobLaunchHub.noteLaunched(intentShortcut.targetPackage)
+                val label = intentShortcut.label ?: intentShortcut.targetPackage
                 return ExecutionPlanResult.AppLaunch(
-                    packageName = launch.packageName,
-                    appName = launch.appName,
-                    reason = "App shortcut: '${launch.appName}' is installed (0 LLM calls)"
+                    packageName = intentShortcut.targetPackage,
+                    appName = label,
+                    launchActivity = intentShortcut.launchActivity,
+                    reason = "App shortcut: '$label' resolved by the intent resolver and will be observed (0 LLM calls)"
                 )
             }
+            // A shortcut that names no package cannot be verified. Fall through to the rungs that
+            // can observe, rather than dispatching something we cannot check.
         }
 
         // Step 0.5: Remember replay (0 LLM). Sits after the intent shortcut and before every

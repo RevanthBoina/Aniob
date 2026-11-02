@@ -154,24 +154,19 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         instance = this
         isServiceConnected = true
         notifySystemState()
-        // Build AppCatalog off the main thread to avoid ANR on devices with hundreds of apps
+        // Refresh the app registry off the main thread to avoid ANR on devices with hundreds of
+        // apps. This is the *launchable* inventory (MAIN/LAUNCHER), hydrated at application start
+        // by AniobAppBootstrap — never a getInstalledApplications() dump of packages that have no
+        // launcher entry and therefore cannot be opened by the UI-automation loop.
         serviceScope.launch {
             try {
-                val catalog = com.aniob.core.knowledge.AniobAppCatalog.getInstance()
-                val pm = packageManager
-                val apps = pm.getInstalledApplications(0)
-                for (appInfo in apps) {
-                    val appName = pm.getApplicationLabel(appInfo).toString()
-                    val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                    catalog.registerApp(com.aniob.core.knowledge.AppCatalogEntry(appInfo.packageName, appName, isSystem))
-                }
-                val jsonFile = java.io.File(filesDir, "app_catalog.json")
-                val mdFile = java.io.File(filesDir, "apps/app-registry.md")
-                mdFile.parentFile?.mkdirs()
-                catalog.saveToFile(jsonFile, mdFile)
-                Log.i(TAG, "AppCatalog built ${catalog.getAll().size} apps")
+                val launchable = com.aniob.app.knowledge.AniobAppBootstrap.refresh(
+                    this@AniobAccessibilityService,
+                    force = com.aniob.core.knowledge.AniobAppRegistry.getInstance().isEmpty()
+                )
+                Log.i(TAG, "App registry ready: $launchable launchable apps")
             } catch (e: Exception) {
-                Log.e(TAG, "Catalog build failed", e)
+                Log.e(TAG, "App registry refresh failed", e)
             }
         }
         if (com.aniob.app.BuildConfig.DEBUG) {
@@ -1066,10 +1061,19 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     ) {
         when (command.name) {
             "OPEN_APP" -> {
-                val intent = packageManager.getLaunchIntentForPackage(command.argument.orEmpty())
+                val packageName = command.argument.orEmpty()
+                val intent = buildOpenAppIntent(
+                    packageName = packageName,
+                    activityClass = command.component
+                        ?: com.aniob.core.knowledge.AniobAppRegistry.getInstance()
+                            .byPackage(packageName)?.launchActivity
+                            ?.substringAfter('/', "")
+                )
                 if (intent != null) {
-                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
+                    // Ranking only: a package the user launches often wins a tie between two
+                    // equally plausible names. It never overrides an exact match.
+                    com.aniob.core.knowledge.AniobAppRegistry.getInstance().noteLaunch(packageName)
                     callback(true)
                 } else {
                     callback(false)
@@ -1112,6 +1116,32 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             "FAIL" -> callback(false)
             else -> callback(false)
         }
+    }
+
+    /**
+     * Builds the launch intent for an app.
+     *
+     * An explicit component from the registry is preferred: it is the only form of launch that no
+     * resolver/chooser dialog can intercept, so the step never lands on a "Open with…" sheet that
+     * the UI-automation verifier would then read as the wrong package. `getLaunchIntentForPackage`
+     * remains the fallback (and the null check the caller depends on).
+     */
+    private fun buildOpenAppIntent(packageName: String, activityClass: String?): android.content.Intent? {
+        if (packageName.isBlank()) return null
+        if (!activityClass.isNullOrBlank()) {
+            val explicit = android.content.Intent().setClassName(packageName, activityClass)
+            val resolvable = runCatching {
+                packageManager.resolveActivity(explicit, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+            }.getOrNull()
+            if (resolvable != null) {
+                explicit.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                return explicit
+            }
+        }
+        val implicit = runCatching { packageManager.getLaunchIntentForPackage(packageName) }.getOrNull()
+            ?: return null
+        implicit.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        return implicit
     }
 
     /**

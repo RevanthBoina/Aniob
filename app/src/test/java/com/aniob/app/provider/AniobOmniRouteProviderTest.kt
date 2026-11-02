@@ -81,5 +81,17 @@ class AniobOmniRouteProviderTest {
 
         val reasoningJson = """{"choices":[{"message":{"content":"","reasoning_content":"{\"action\":\"wait\"}"}}]}"""
         assertEquals("""{"action":"wait"}""", AniobOmniRouteProvider.extractAssistantContent(reasoningJson))
+
+        val sseStream = """
+            data: {"choices":[{"delta":{"role":"assistant"}}]}
+            
+            data: {"choices":[{"delta":{"content":"{\"tool\":\"OPEN_APP\",\"package_name\":\"com.android.chrome\"}"}}]}
+            
+            data: [DONE]
+        """.trimIndent()
+        assertEquals(
+            """{"tool":"OPEN_APP","package_name":"com.android.chrome"}""",
+            AniobOmniRouteProvider.extractAssistantContent(sseStream)
+        )
     }
 }

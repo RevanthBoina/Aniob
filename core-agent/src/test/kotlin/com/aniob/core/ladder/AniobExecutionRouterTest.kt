@@ -5,7 +5,9 @@ import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.knowledge.AppCatalogEntry
 import com.aniob.core.tools.DevicePowerState
+import org.junit.Before
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -19,6 +21,12 @@ class AniobExecutionRouterTest {
         treeHash = "settings-hash-1"
     )
     private val power = DevicePowerState()
+
+    /** Per-task launch memory is process-wide state; a fresh signature must not leak between tests. */
+    @Before
+    fun resetLaunchMemory() {
+        AniobLaunchHub.clearMemory()
+    }
 
     @Test
     fun `model dispatch carries condensed progress summary when planning agent present`() {
@@ -212,10 +220,12 @@ class AniobExecutionRouterTest {
         }
 
         val result = router.planStep(
-            taskPrompt = "open settings",
+            // A *reflex* is what may finish immediately. "open settings" is an app launch, which
+            // must be observed first, so it is no longer a DirectIntent (see AniobMidTaskLaunchTest).
+            taskPrompt = "turn on flashlight",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open settings",
+            taskSignature = "turn on flashlight",
             powerState = power
         )
 
@@ -304,7 +314,30 @@ class AniobExecutionRouterTest {
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
         val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
         assertEquals("android.intent.action.SET_ALARM", shortcut.action)
-        assertTrue("the clock app sets it without UI", shortcut.completesTask)
+        assertFalse("the silent alarm needs no further observation", shortcut.requiresObservation)
+    }
+
+    @Test
+    fun `an alarm the prompt wants to see is dispatched and then observed`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM, leaving the alarm list showing \"7:30 AM\".",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock and set an alarm for 7:30 am",
+            powerState = power
+        )
+
+        // The intent still opens the editor with the time filled in, but the run continues so the
+        // agent can press Save and show the alarm list the prompt asked for.
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals("android.intent.action.SET_ALARM", shortcut.action)
+        assertEquals("7", shortcut.extras[AniobIntentResolver.EXTRA_ALARM_HOUR])
+        assertTrue(shortcut.requiresObservation)
     }
 
     @Test
@@ -333,6 +366,23 @@ class AniobExecutionRouterTest {
         router.appLaunchResolver = { null }
 
         val result = router.planStep(
+            taskPrompt = "Book a cab to downtown",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "book a cab to downtown",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
+    @Test
+    fun `a named app in a longer task becomes an observable app launch, not a finished intent`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { null }
+
+        val result = router.planStep(
             taskPrompt = "Open the camera and take a photo",
             screenState = screen,
             stepIndex = 0,
@@ -340,7 +390,7 @@ class AniobExecutionRouterTest {
             powerState = power
         )
 
-        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
     }
 
     @Test

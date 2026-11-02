@@ -1,123 +1,131 @@
 package com.aniob.core
 
+import com.aniob.core.knowledge.AniobAppCatalog
+import com.aniob.core.knowledge.AniobAppRegistry
 import com.aniob.core.ladder.AniobIntentResolver
+import com.aniob.core.ladder.ResolvedIntentShortcut
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
+/**
+ * Shortcut resolution, with the *policy* made explicit:
+ *
+ *  - a shortcut that opens an app must be observable (`requiresObservation = true`) and must name a
+ *    package, because an intent that names nothing cannot be verified — that is the defect this
+ *    patch removes from "Open Clock";
+ *  - a reflex (torch, battery, dial, URL) may finish immediately, because the dispatch *is* the
+ *    outcome.
+ */
 class AniobIntentResolverTest {
 
-    @Test
-    fun testOpenSettingsResolvesDirectly() {
-        val result = AniobIntentResolver.resolve("Open Settings")
-        assertNotNull(result)
-        assertEquals("com.android.settings", result?.targetPackage)
-        assertEquals(AniobIntentResolver.ACTION_MAIN, result?.action)
+    @Before
+    fun setUp() {
+        AniobAppRegistry.resetForTest()
+    }
+
+    @After
+    fun tearDown() {
+        AniobAppRegistry.resetForTest()
     }
 
     @Test
-    fun testCallNumberResolvesToDialIntent() {
+    fun testOpenSettingsResolvesToTheSettingsPackage() {
+        val result = AniobIntentResolver.resolve("Open Settings")
+        assertNotNull(result)
+        assertEquals(AniobIntentResolver.ACTION_MAIN, result?.action)
+        assertEquals("com.android.settings", result?.targetPackage)
+        assertTrue("opening an app must be observable", result?.requiresObservation == true)
+    }
+
+    @Test
+    fun testCallNumberIsADialIntent() {
         val result = AniobIntentResolver.resolve("call 9876543210")
         assertNotNull(result)
         assertEquals(AniobIntentResolver.ACTION_DIAL, result?.action)
         assertEquals("tel:9876543210", result?.uriString)
+        assertFalse("a dial intent needs no observation", result?.requiresObservation == true)
     }
 
     @Test
-    fun testComplexTaskReturnsNullForIntent() {
-        val result = AniobIntentResolver.resolve("Book a cab to downtown")
-        assertNull("Complex task should not be resolved as single intent shortcut", result)
+    fun testUnknownCommandReturnsNull() {
+        assertNull(AniobIntentResolver.resolve("Book a cab to downtown"))
+        assertNull(AniobIntentResolver.resolve(""))
     }
 
     @Test
-    fun testTurnOnFlashlightResolvesToReflex() {
-        val result = AniobIntentResolver.resolve("Turn on flashlight")
-        assertNotNull(result)
-        assertEquals(AniobIntentResolver.ACTION_FLASHLIGHT, result?.action)
+    fun testFlashlightAndBatteryAreReflexes() {
+        val torch = AniobIntentResolver.resolve("Turn on flashlight")
+        assertEquals(AniobIntentResolver.ACTION_FLASHLIGHT, torch?.action)
         assertEquals(
             AniobIntentResolver.SYSTEM_ACTION_FLASHLIGHT,
-            result?.extras?.get(AniobIntentResolver.EXTRA_SYSTEM_ACTION)
+            torch?.extras?.get(AniobIntentResolver.EXTRA_SYSTEM_ACTION)
         )
-    }
+        assertFalse(torch?.requiresObservation == true)
 
-    @Test
-    fun testCheckBatteryResolvesToReflex() {
-        val result = AniobIntentResolver.resolve("Check battery")
-        assertNotNull(result)
+        val battery = AniobIntentResolver.resolve("Check battery")
         assertEquals(
             AniobIntentResolver.SYSTEM_ACTION_GET_DEVICE_INFO,
-            result?.extras?.get(AniobIntentResolver.EXTRA_SYSTEM_ACTION)
+            battery?.extras?.get(AniobIntentResolver.EXTRA_SYSTEM_ACTION)
         )
-    }
 
-    @Test
-    fun testFlashlightVariantsResolveCaseInsensitive() {
         assertNotNull(AniobIntentResolver.resolve("Flashlight ON"))
         assertNotNull(AniobIntentResolver.resolve("open the flashlight"))
         assertNotNull(AniobIntentResolver.resolve("What is my battery?"))
     }
 
     @Test
-    fun testOpenWebsitePreservesCasingAndQuery() {
+    fun testUrlShortcutsStayValidated() {
         val result = AniobIntentResolver.resolve("open website https://example.com/PathWithCaps?Param=Value123")
-        assertNotNull(result)
         assertEquals(AniobIntentResolver.ACTION_VIEW, result?.action)
         assertEquals("https://example.com/PathWithCaps?Param=Value123", result?.uriString)
+
+        assertNull(AniobIntentResolver.resolve("open website https://user:pass@example.com/secret"))
+        assertNull(AniobIntentResolver.resolve("open website https://example.com/\u0000bad"))
+        assertNull(AniobIntentResolver.resolve("open website javascript:alert(1)"))
+        assertEquals(
+            "https://example.com",
+            AniobIntentResolver.resolve("browse example.com")?.uriString
+        )
     }
 
-    @Test
-    fun testOpenWebsiteRejectsCredentialsAndControlChars() {
-        val credResult = AniobIntentResolver.resolve("open website https://user:pass@example.com/secret")
-        assertNull("URLs with embedded credentials must be rejected", credResult)
-
-        val ctrlResult = AniobIntentResolver.resolve("open website https://example.com/\u0000bad")
-        assertNull("URLs with control characters must be rejected", ctrlResult)
-
-        val jsResult = AniobIntentResolver.resolve("open website javascript:alert(1)")
-        assertNull("JavaScript scheme must be rejected", jsResult)
-    }
+    // ------------------------------------------------------------------ //
+    // The fix: "Open Clock" is an app launch, not a blind SHOW_ALARMS intent
+    // ------------------------------------------------------------------ //
 
     @Test
-    fun testOpenClockAndAlarmResolveDirectly() {
-        val clock = AniobIntentResolver.resolve("Open Clock")
+    fun testOpenClockNamesAPackageAndRequiresObservation() {
+        val clock: ResolvedIntentShortcut? = AniobIntentResolver.resolve("Open Clock")
         assertNotNull(clock)
-        assertEquals("android.intent.action.SHOW_ALARMS", clock?.action)
+        // No package was the bug: an intent with targetPackage = null cannot be installed-checked
+        // and cannot be observed afterwards.
+        assertNotNull("a launch must name the package it expects", clock?.targetPackage)
+        assertEquals(AniobIntentResolver.ACTION_MAIN, clock?.action)
+        assertEquals(AniobIntentResolver.CATEGORY_LAUNCHER, clock?.category)
+        assertTrue("the caller must observe the screen before finishing", clock?.requiresObservation == true)
+        assertFalse(
+            "clock must not be sent to SHOW_ALARMS: that intent has no observable post-condition",
+            clock?.action == "android.intent.action.SHOW_ALARMS"
+        )
+    }
 
+    @Test
+    fun testSetAlarmOpensTheClockAppWhenOneIsKnown() {
         val alarm = AniobIntentResolver.resolve("Set alarm")
         assertNotNull(alarm)
-        assertEquals("android.intent.action.SET_ALARM", alarm?.action)
-
-        val spotify = AniobIntentResolver.resolve("Open Spotify")
-        assertNotNull(spotify)
-        assertEquals("com.spotify.music", spotify?.targetPackage)
+        assertEquals("the clock app is opened so the step can be verified", AniobIntentResolver.ACTION_MAIN, alarm?.action)
+        assertNotNull(alarm?.targetPackage)
+        assertTrue(alarm?.requiresObservation == true)
     }
 
     @Test
-    fun testOpenWhatsAppAndYouTubeResolveDirectly() {
-        val wa1 = AniobIntentResolver.resolve("Open WhatsApp")
-        assertNotNull(wa1)
-        assertEquals("com.whatsapp", wa1?.targetPackage)
-        assertEquals(AniobIntentResolver.ACTION_MAIN, wa1?.action)
-
-        val wa2 = AniobIntentResolver.resolve("launch whatsapp")
-        assertNotNull(wa2)
-        assertEquals("com.whatsapp", wa2?.targetPackage)
-
-        val yt = AniobIntentResolver.resolve("Open YouTube")
-        assertNotNull(yt)
-        assertEquals("com.google.android.youtube", yt?.targetPackage)
-
-        val tg = AniobIntentResolver.resolve("launch telegram")
-        assertNotNull(tg)
-        assertEquals("org.telegram.messenger", tg?.targetPackage)
-    }
-
-    @Test
-    fun testDynamicAppCatalogResolution() {
-        val catalog = com.aniob.core.knowledge.AniobAppCatalog.getInstance()
+    fun testAppsResolveFromTheRegistryNotFromATable() {
+        val catalog = AniobAppCatalog.getInstance()
         catalog.registerApp(
             com.aniob.core.knowledge.AppCatalogEntry(
                 packageName = "com.sample.customapp",
@@ -125,11 +133,50 @@ class AniobIntentResolverTest {
                 aliases = listOf("sample app")
             )
         )
-
         val res = AniobIntentResolver.resolve("Open Custom App")
         assertNotNull(res)
         assertEquals("com.sample.customapp", res?.targetPackage)
         assertEquals(AniobIntentResolver.ACTION_MAIN, res?.action)
+
+        // An alias resolves too, and an app nobody installed is not invented.
+        assertEquals("com.sample.customapp", AniobIntentResolver.resolve("open sample app")?.targetPackage)
+        assertNull(AniobIntentResolver.resolve("Open Zephyr"))
+    }
+
+    @Test
+    fun testCommonAppsStillResolveOnAColdRegistry() {
+        // The seed is a last resort of stock package ids; it exists so a cold cache degrades to
+        // "ask the platform", never to "no idea what WhatsApp means".
+        assertEquals("com.whatsapp", AniobIntentResolver.resolve("Open WhatsApp")?.targetPackage)
+        assertEquals(AniobIntentResolver.ACTION_MAIN, AniobIntentResolver.resolve("launch whatsapp")?.action)
+        assertEquals("com.google.android.youtube", AniobIntentResolver.resolve("Open YouTube")?.targetPackage)
+        assertEquals("org.telegram.messenger", AniobIntentResolver.resolve("launch telegram")?.targetPackage)
+        assertEquals("com.spotify.music", AniobIntentResolver.resolve("Open Spotify")?.targetPackage)
+    }
+
+    @Test
+    fun testARegisteredLaunchComponentBeatsResolution() {
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(
+                com.aniob.core.knowledge.RegisteredApp(
+                    packageName = "com.google.android.deskclock",
+                    label = "Clock",
+                    launchActivity = "com.google.android.deskclock/com.android.deskclock.DeskClock"
+                )
+            ),
+            mapOf(AniobAppRegistry.ROLE_CLOCK to "com.google.android.deskclock")
+        )
+        val clock = AniobIntentResolver.resolve("open clock")
+        assertEquals("com.google.android.deskclock", clock?.targetPackage)
+        assertEquals("com.google.android.deskclock/com.android.deskclock.DeskClock", clock?.launchActivity)
+    }
+
+    @Test
+    fun testNavigatingToADestinationEscapesInsteadOfValidating() {
+        val nav = AniobIntentResolver.resolve("navigate to MG Road, Guntur")
+        assertEquals(AniobIntentResolver.ACTION_VIEW, nav?.action)
+        assertTrue(nav?.uriString?.startsWith("geo:0,0?q=") == true)
+        assertTrue(nav?.uriString?.contains("MG%20Road") == true)
     }
 
     // --- parameterised shortcuts -------------------------------------------------------------
@@ -142,7 +189,7 @@ class AniobIntentResolverTest {
         assertEquals("7", result?.extras?.get(AniobIntentResolver.EXTRA_ALARM_HOUR))
         assertEquals("30", result?.extras?.get(AniobIntentResolver.EXTRA_ALARM_MINUTES))
         assertEquals("true", result?.extras?.get(AniobIntentResolver.EXTRA_ALARM_SKIP_UI))
-        assertTrue("an alarm with its time is the finished task", result?.completesTask == true)
+        assertFalse("an alarm with its time needs no further observation", result?.requiresObservation == true)
     }
 
     @Test
@@ -153,11 +200,13 @@ class AniobIntentResolverTest {
     }
 
     @Test
-    fun alarmWithoutATimeOnlyOpensTheEditor() {
+    fun alarmWithoutATimeOpensTheClockAppToBeObserved() {
+        // No time means no SET_ALARM: the shortcut degrades to opening the clock app, which the
+        // caller must observe before it can call the step done.
         val result = AniobIntentResolver.resolve("set alarm")
         assertNotNull(result)
-        assertEquals(AniobIntentResolver.ACTION_SET_ALARM, result?.action)
-        assertFalse("an empty alarm editor is not a set alarm", result?.completesTask == true)
+        assertEquals(AniobIntentResolver.ACTION_MAIN, result?.action)
+        assertTrue(result?.requiresObservation == true)
     }
 
     @Test
@@ -172,7 +221,7 @@ class AniobIntentResolverTest {
         assertNotNull(result)
         assertEquals(AniobIntentResolver.ACTION_SET_TIMER, result?.action)
         assertEquals("600", result?.extras?.get(AniobIntentResolver.EXTRA_ALARM_LENGTH))
-        assertTrue(result?.completesTask == true)
+        assertFalse(result?.requiresObservation == true)
     }
 
     @Test
@@ -185,7 +234,7 @@ class AniobIntentResolverTest {
     fun settingsPanelsUseTheirOwnActions() {
         val wifi = AniobIntentResolver.resolve("open wifi settings")
         assertEquals(AniobIntentResolver.ACTION_WIFI_SETTINGS, wifi?.action)
-        assertTrue(wifi?.completesTask == true)
+        assertFalse("the panel intent is the dispatch", wifi?.requiresObservation == true)
 
         assertEquals(
             AniobIntentResolver.ACTION_BLUETOOTH_SETTINGS,
@@ -195,17 +244,17 @@ class AniobIntentResolverTest {
             AniobIntentResolver.ACTION_BATTERY_SAVER_SETTINGS,
             AniobIntentResolver.resolve("open battery saver")?.action
         )
-        assertEquals(
-            AniobIntentResolver.ACTION_SETTINGS,
-            AniobIntentResolver.resolve("open system settings")?.action
-        )
+        // A bare "open settings" stays an observable app launch (main's clock/settings fix).
+        val root = AniobIntentResolver.resolve("open settings")
+        assertEquals(AniobIntentResolver.ACTION_MAIN, root?.action)
+        assertEquals("com.android.settings", root?.targetPackage)
     }
 
     @Test
     fun togglingWifiOpensThePanelButDoesNotClaimTheToggle() {
         val result = AniobIntentResolver.resolve("turn on wifi")
         assertEquals(AniobIntentResolver.ACTION_WIFI_SETTINGS, result?.action)
-        assertFalse("opening the panel does not turn the radio on", result?.completesTask == true)
+        assertTrue("opening the panel does not turn the radio on", result?.requiresObservation == true)
     }
 
     @Test
@@ -225,19 +274,15 @@ class AniobIntentResolverTest {
         assertEquals(AniobIntentResolver.CONTACT_MIME_TYPE, result?.dataType)
         assertEquals("John", result?.extras?.get(AniobIntentResolver.EXTRA_CONTACT_NAME))
         assertEquals("5551234", result?.extras?.get(AniobIntentResolver.EXTRA_CONTACT_PHONE))
-        assertFalse("the editor still needs a save tap", result?.completesTask == true)
+        assertTrue("the editor still needs a save tap", result?.requiresObservation == true)
     }
 
     @Test
-    fun dialVsCallDecideCompletion() {
-        val dial = AniobIntentResolver.resolve("dial 5551234")
-        assertEquals(AniobIntentResolver.ACTION_DIAL, dial?.action)
-        assertEquals("tel:5551234", dial?.uriString)
-        assertTrue(dial?.completesTask == true)
-
+    fun callOpensTheDialerOnTheNumber() {
         val call = AniobIntentResolver.resolve("call 5551234")
+        assertNotNull(call)
         assertEquals(AniobIntentResolver.ACTION_DIAL, call?.action)
-        assertFalse("dialing the number is not placing the call", call?.completesTask == true)
+        assertEquals("tel:5551234", call?.uriString)
     }
 
     @Test
@@ -247,7 +292,7 @@ class AniobIntentResolverTest {
         assertEquals(AniobIntentResolver.ACTION_VIEW, result?.action)
         assertTrue(result?.uriString?.startsWith(AniobIntentResolver.GOOGLE_SEARCH_URL) == true)
         assertTrue(result?.uriString?.contains("pizza") == true)
-        assertTrue(result?.completesTask == true)
+        assertFalse(result?.requiresObservation == true)
     }
 
     @Test
@@ -257,17 +302,18 @@ class AniobIntentResolverTest {
     }
 
     @Test
-    fun calculatorResolvesToInstalledPackages() {
+    fun calculatorResolvesToAnObservableAppLaunch() {
         val result = AniobIntentResolver.resolve("open calculator")
         assertNotNull(result)
-        assertTrue("the launcher needs candidate packages", (result?.targetPackages?.size ?: 0) > 1)
-        assertTrue(result?.completesTask == true)
+        assertNotNull("a launch must name the package it expects", result?.targetPackage)
+        assertTrue("an app launch is never silently complete", result?.requiresObservation == true)
     }
 
     @Test
-    fun openingANamedAppCompletesTheTask() {
+    fun openingANamedAppIsObservableNotSilentlyComplete() {
         val result = AniobIntentResolver.resolve("open spotify")
-        assertTrue("opening the app is the whole task", result?.completesTask == true)
+        assertEquals("com.spotify.music", result?.targetPackage)
+        assertTrue("the caller must see the app it opened", result?.requiresObservation == true)
     }
 
     @Test

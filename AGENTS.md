@@ -29,6 +29,22 @@ gradle :app:assembleDebug --console=plain
 core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing changes; it must end with
 `ALL PREFLIGHT CI GUARDS PASSED SUCCESSFULLY`.
 
+## App discovery & launch
+
+- `AniobAppRegistry` (`core-agent/knowledge`) is the **only** source of truth for "which package does
+  the user mean": launchable-only (`MAIN`/`LAUNCHER`), role-aware, ambiguity is an explicit
+  `AppLookup.Ambiguous`. `AniobAppCatalog` is a facade over it — never add a second inventory.
+- `AniobAppBootstrap` (`app/knowledge`) is the only Android-aware piece: sync TSV load + role probe,
+  background launchable scan. `AniobApplication.onCreate` installs it; the accessibility service and
+  `AniobPackageReceiver` refresh it. Keeps `core-agent` free of `android.*`.
+- App opening is a **lookup**, never a model call: `AniobLaunchHub.plan` (step 0) and
+  `planMidTask` (a switch later in the task, remembers what this task already opened).
+- An app launch is **never** a `DirectIntent`. It is an `OpenApp` action verified against the real
+  foreground package (`DeterministicVerifier`), dispatched with the registry's explicit launcher
+  component when known. Only reflexes (torch, battery, dial, URL) may finish on dispatch alone.
+- Fuzzy matching is single-token only and typos are Levenshtein-based; see
+  `docs/APP_DISCOVERY_AND_LAUNCH.md` before "improving" the matcher.
+
 ## Architecture invariants
 
 - **Never fabricate an action.** A local SLM step must originate from real model output

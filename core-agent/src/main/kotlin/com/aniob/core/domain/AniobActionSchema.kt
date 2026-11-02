@@ -49,8 +49,8 @@ Set "submit": true when the text is a query or a phone number and the field must
     private val COORDINATE_FIELDS = listOf("x", "y", "startx", "starty", "endx", "endy", "bounds", "target_node_id", "targetnodeid", "node_id")
     private val COORDINATE_FIELD_REGEXES = COORDINATE_FIELDS.associateWith { Regex("\"$it\"\\s*:") }
 
-    private val TOOL_OBJECT = Regex("\\{(?:[^{}]|\\{[^{}]*\\})*\"tool\"\\s*:\\s*\"[^\"]+\"(?:[^{}]|\\{[^{}]*\\})*}", RegexOption.DOT_MATCHES_ALL)
-    private val TARGET_BLOCK_REGEX = Regex("\"target\"\\s*:\\s*\\{([^{}]*)}")
+    private val TOOL_OBJECT = Regex("\\{(?:[^{}]|\\{[^{}]*\\})*\"tool\"\\s*:\\s*\"[^\"]+\"(?:[^{}]|\\{[^{}]*\\})*\\}", RegexOption.DOT_MATCHES_ALL)
+    private val TARGET_BLOCK_REGEX = Regex("\"target\"\\s*:\\s*\\{([^{}]*)\\}")
     private val STRING_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
     private val INT_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
     private val BOOL_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()

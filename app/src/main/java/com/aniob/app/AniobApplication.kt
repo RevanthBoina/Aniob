@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ComponentCallbacks2
 import android.content.res.Configuration
 import com.aniob.app.db.AniobDatabase
+import com.aniob.app.knowledge.AniobAppBootstrap
 import com.aniob.app.metrics.EventLogger
 import com.aniob.app.memory.RememberCacheFile
 import com.aniob.app.metrics.MetricsCollector
@@ -94,6 +95,11 @@ class AniobApplication : Application(), ComponentCallbacks2 {
         eventLogger = EventLogger(database)
         metricsCollector = MetricsCollector(database)
         systemState = AniobSystemState(this).also { it.start() }
+
+        // Learn every launchable app + the platform's role answers (clock, calculator, browser…)
+        // once, at startup. The cache is read synchronously so the first task already resolves app
+        // names; the PackageManager probe and the rewrite happen on a background thread.
+        AniobAppBootstrap.install(this)
 
         eventLogger.info("AniobApplication", "Aniob Agent Engine initialized successfully.")
     }

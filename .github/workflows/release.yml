@@ -24,7 +24,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          # AGP 9.1.1 requires Gradle >= 9.3.1 (AGENTS.md documents 9.3.1 as the toolchain).
+          # A wrapper is intentionally not committed, so this pin IS the build toolchain.
+          gradle-version: '9.3.1'
 
       - name: Run CI Preflight Guards
         run: |
@@ -37,7 +39,32 @@ jobs:
 
       - name: Build Android Release APK
         run: |
-          gradle :app:assembleRelease --stacktrace
+          set -o pipefail
+          gradle :app:assembleRelease --stacktrace 2>&1 | tee build.log
+
+      # Failure diagnostics: the Actions log archive is not always reachable outside GitHub, so a
+      # failed build publishes the compiler/Gradle errors as a commit comment on the tagged commit.
+      - name: Publish build failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f build.log ]; then
+            echo "no build.log captured; nothing to publish"
+            exit 0
+          fi
+          {
+            printf 'Release build failed for %s at %s\n\n' "${{ github.ref_name }}" "${{ github.sha }}"
+            printf 'errors\n------\n'
+            grep -E '^(e: |FAILURE:|> Task .*FAILED|Caused by:|[[:space:]]*\* What went wrong:|[[:space:]]*\* Try:)' build.log | head -80
+            printf '\nlog tail\n--------\n'
+            tail -100 build.log
+          } > /tmp/build-report.md 2>&1
+          head -c 60000 /tmp/build-report.md > /tmp/build-report-clipped.md
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+            --input <(jq -Rs '{body: .}' /tmp/build-report-clipped.md) > /dev/null \
+            && echo "diagnostics published as a commit comment" \
+            || echo "could not publish diagnostics"
 
       - name: Generate Checksum (SHA-256)
         run: |

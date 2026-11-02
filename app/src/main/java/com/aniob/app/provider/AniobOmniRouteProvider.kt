@@ -478,11 +478,13 @@ class AniobOmniRouteProvider(
         targetModel: String,
         messages: JSONArray,
         maxTokens: Int,
-        enforceJsonObject: Boolean
+        enforceJsonObject: Boolean,
+        stream: Boolean = false
     ): JSONObject = JSONObject().apply {
         put("model", targetModel)
         put("messages", messages)
         put("max_tokens", maxTokens)
+        put("stream", stream)
         if (enforceJsonObject) {
             put("temperature", 0.1)
             put("response_format", JSONObject().apply { put("type", "json_object") })
@@ -617,6 +619,32 @@ class AniobOmniRouteProvider(
          * Supports string content, multimodal array content blocks, and reasoning_content fallback.
          */
         internal fun extractAssistantContent(body: String): String {
+            val trimmed = body.trim()
+            if (trimmed.startsWith("data:") || trimmed.contains("\ndata:")) {
+                val sb = StringBuilder()
+                trimmed.lineSequence()
+                    .map { it.trim() }
+                    .filter { it.startsWith("data:") }
+                    .map { it.removePrefix("data:").trim() }
+                    .filter { it.isNotBlank() && it != "[DONE]" }
+                    .forEach { line ->
+                        try {
+                            val chunk = JSONObject(line)
+                            val choices = chunk.optJSONArray("choices")
+                            if (choices != null && choices.length() > 0) {
+                                val choice = choices.getJSONObject(0)
+                                val delta = choice.optJSONObject("delta") ?: choice.optJSONObject("message")
+                                val text = delta?.optString("content", "")
+                                    ?: delta?.optString("text", "")
+                                    ?: ""
+                                if (text.isNotEmpty()) sb.append(text)
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.v("AniobOmniRouteProvider", "Skipping unparseable SSE line: ${e.message}")
+                        }
+                    }
+                if (sb.isNotEmpty()) return sb.toString()
+            }
             val rootJson = JSONObject(body)
             val choices = rootJson.optJSONArray("choices")
             if (choices != null && choices.length() > 0) {

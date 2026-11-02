@@ -1,36 +1,55 @@
 package com.aniob.core.ladder
 
 import com.aniob.core.intent.AniobTaskIntentClassifier
+import com.aniob.core.knowledge.AniobAppRegistry
+import com.aniob.core.knowledge.AppLookup
 
 /**
- * A resolved Android Intent the app layer can fire directly.
+ * A zero-token way to satisfy a goal.
  *
- * [completesTask] is the difference this layer exists for: when the intent already carries every
- * parameter the task needs (an alarm with a time and `SKIP_UI`, a Wi-Fi settings panel, a URL),
- * a successful `startActivity` *is* the task's completion and no screen work is needed. When it
- * only opens the right surface (an empty alarm editor, a prefilled contact card), the agent lands
- * there and continues from the next step instead of starting from the launcher.
+ * [requiresObservation] is the field that fixes the "Open Clock" bug: a shortcut that opens an app
+ * can only be called done by looking at the screen afterwards, so it must never be turned into a
+ * `DirectIntent` (which finishes without a post-condition and is therefore reported as FAILED).
+ * Reflex shortcuts — flashlight, battery, dial, open URL — are the opposite: their effect *is* the
+ * dispatch, and they may finish immediately.
  */
 data class ResolvedIntentShortcut(
     val action: String,
     val targetPackage: String? = null,
     val uriString: String? = null,
     val category: String? = null,
+    val extras: Map<String, String> = emptyMap(),
     /** `Intent.setType` — the contact insert intent is addressed by its MIME type. */
     val dataType: String? = null,
-    val extras: Map<String, String> = emptyMap(),
-    /** First installed package wins; lets one shortcut serve OEM variants of the same app. */
-    val targetPackages: List<String> = emptyList(),
-    val completesTask: Boolean = false,
-    val completionReason: String = ""
+    /** Fully-qualified `<pkg>/<pkg>.Activity` when the registry knew it; explicit beats implicit. */
+    val launchActivity: String? = null,
+    /** True when the only honest way to confirm this is to observe the screen after dispatch. */
+    val requiresObservation: Boolean = false,
+    /** App label for the transcript ("Opening Clock…"), when the target is an app. */
+    val label: String? = null
 )
 
 /**
  * System Intent Shortcut Resolver.
+ *
  * Resolves standard system commands directly to Android Intent targets in <15ms with 0 tokens.
  *
- * Pure JVM: the module deliberately cannot see `android.*`, so the platform constants that matter
- * are mirrored here by value and the app layer forwards them to a real `Intent`.
+ * **What changed and why.** This object used to own a hand-written table of app names
+ * (`"open clock" -> SHOW_ALARMS`, `"open instagram" -> com.instagram.android`, …) and that table was
+ * the root of the launch failures:
+ *
+ *  - `"open clock"` returned an action with `targetPackage = null`, so nothing could be
+ *    installed-checked and nothing could be observed afterwards; the step ended FAILED even when the
+ *    clock app was open;
+ *  - every app not in the table fell through to the model, i.e. the *default* way to open an app
+ *    cost tokens;
+ *  - a hardcoded package (`com.instagram.android`) fired an unobservable intent on a device where
+ *    that package does not exist, instead of escalating.
+ *
+ * App opening is now a **lookup**: [AniobLaunchHub] resolves the name against [AniobAppRegistry]
+ * (built at startup from the platform's own launcher inventory) and returns a package — plus the
+ * launcher component when known. Only genuine *system reflexes* (torch, battery, dial, URL, geo)
+ * remain literal here, because for those the dispatch really is the outcome.
  */
 object AniobIntentResolver {
 
@@ -38,22 +57,27 @@ object AniobIntentResolver {
     const val ACTION_VIEW = "android.intent.action.VIEW"
     const val ACTION_DIAL = "android.intent.action.DIAL"
     const val ACTION_SENDTO = "android.intent.action.SENDTO"
-    const val ACTION_INSERT = "android.intent.action.INSERT"
     const val CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER"
     const val ACTION_FLASHLIGHT = "android.intent.action.FLASHLIGHT"
 
-    // Clock (android.provider.AlarmClock)
     const val ACTION_SET_ALARM = "android.intent.action.SET_ALARM"
     const val ACTION_SET_TIMER = "android.intent.action.SET_TIMER"
     const val ACTION_SHOW_ALARMS = "android.intent.action.SHOW_ALARMS"
     const val ACTION_SHOW_TIMERS = "android.intent.action.SHOW_TIMERS"
+    const val ACTION_INSERT = "android.intent.action.INSERT"
+    const val ACTION_SETTINGS = "android.settings.SETTINGS"
+
+    // Clock extras (android.provider.AlarmClock) and contact extras (ContactsContract.Intents.Insert).
     const val EXTRA_ALARM_HOUR = "android.intent.extra.alarm.HOUR"
     const val EXTRA_ALARM_MINUTES = "android.intent.extra.alarm.MINUTES"
     const val EXTRA_ALARM_LENGTH = "android.intent.extra.alarm.LENGTH"
     const val EXTRA_ALARM_SKIP_UI = "android.intent.extra.alarm.SKIP_UI"
+    const val EXTRA_CONTACT_NAME = "name"
+    const val EXTRA_CONTACT_PHONE = "phone"
+    const val EXTRA_CONTACT_EMAIL = "email"
+    const val CONTACT_MIME_TYPE = "vnd.android.cursor.dir/contact"
 
-    // Settings panels (android.provider.Settings)
-    const val ACTION_SETTINGS = "android.settings.SETTINGS"
+    // Settings panels: stable, documented actions instead of a walk through the Settings tree.
     const val ACTION_WIFI_SETTINGS = "android.settings.WIFI_SETTINGS"
     const val ACTION_BLUETOOTH_SETTINGS = "android.settings.BLUETOOTH_SETTINGS"
     const val ACTION_BATTERY_SAVER_SETTINGS = "android.settings.BATTERY_SAVER_SETTINGS"
@@ -71,13 +95,12 @@ object AniobIntentResolver {
     const val ACTION_LOCALE_SETTINGS = "android.settings.LOCALE_SETTINGS"
     const val ACTION_DEVELOPMENT_SETTINGS = "android.settings.APPLICATION_DEVELOPMENT_SETTINGS"
 
-    // Contacts (android.provider.ContactsContract.Intents.Insert)
-    const val CONTACT_MIME_TYPE = "vnd.android.cursor.dir/contact"
-    const val EXTRA_CONTACT_NAME = "name"
-    const val EXTRA_CONTACT_PHONE = "phone"
-
-    /** Web search opened in whatever browser is installed. */
     const val GOOGLE_SEARCH_URL = "https://www.google.com/search?q="
+    const val CATEGORY_APP_CALCULATOR = "android.intent.category.APP_CALCULATOR"
+    const val CATEGORY_APP_CALENDAR = "android.intent.category.APP_CALENDAR"
+    const val CATEGORY_APP_BROWSER = "android.intent.category.APP_BROWSER"
+    const val CATEGORY_APP_FILES = "android.intent.category.APP_FILES"
+    const val ACTION_IMAGE_CAPTURE = "android.media.action.IMAGE_CAPTURE"
 
     // System actions surfaced through extras so the executor can dispatch
     // them without an explicit Android Intent (pure JVM core-agent).
@@ -85,23 +108,227 @@ object AniobIntentResolver {
     const val SYSTEM_ACTION_FLASHLIGHT = "turn_on_flashlight"
     const val SYSTEM_ACTION_GET_DEVICE_INFO = "get_device_info"
 
-    /** OEM and AOSP calculator packages, tried in order by the launcher. */
-    private val CALCULATOR_PACKAGES = listOf(
-        "com.google.android.calculator",
-        "com.android.calculator2",
-        "com.sec.android.app.popupcalculator",
-        "com.miui.calculator",
-        "com.oneplus.calculator",
-        "com.coloros.calculator",
-        "com.android.calculator"
-    )
-
-    private data class SettingsPanel(val action: String, val label: String, val keys: List<String>)
+    private const val ACTION_GEO = "geo:0,0?q="
 
     /**
-     * Long enough to cover what the panel screens are normally called, short enough that the same
-     * table does not swallow ordinary sentences. A key matches the *whole* prompt once the opening
-     * verb and a trailing "settings" are stripped, never a substring of a longer task.
+     * Resolves natural language commands to direct Android Intent actions if possible.
+     *
+     * Returns null when the command is not a shortcut at all — the ladder then treats it as a normal
+     * task. A **non-null result is never a promise that the goal is met**: check
+     * [ResolvedIntentShortcut.requiresObservation] before finishing on it.
+     */
+    fun resolve(command: String): ResolvedIntentShortcut? {
+        val raw = command.trim()
+        if (raw.isEmpty()) return null
+        val lower = raw.lowercase().trim().trimEnd('?', '.', '!', ' ', ',', ';')
+
+        // Parameterised shortcuts run first: "set an alarm for 7:30" must not fall into the bare
+        // "set alarm" branch that only opens the editor, and "open Wi-Fi settings" must not be
+        // answered by launching the Settings app.
+        return parameterised(raw, lower)
+            ?: systemReflex(lower)
+            ?: dial(lower)
+            ?: url(raw, lower)
+            ?: maps(raw, lower)
+            ?: appViaRegistry(raw)
+            ?: clockOrAlarm(lower)
+            ?: appCategory(lower)
+    }
+
+    // ------------------------------------------------------------------ #
+    // reflexes: dispatch IS the outcome, nothing to observe
+    // ------------------------------------------------------------------ #
+
+    private fun systemReflex(lower: String): ResolvedIntentShortcut? = when (lower) {
+        "turn on flashlight", "flashlight on", "open flashlight", "turn on the flashlight",
+        "open the flashlight", "flashlight" -> ResolvedIntentShortcut(
+            action = ACTION_FLASHLIGHT,
+            extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_FLASHLIGHT)
+        )
+        "check battery", "battery status", "what is my battery", "check battery level", "battery" ->
+            ResolvedIntentShortcut(
+                action = ACTION_MAIN,
+                extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_GET_DEVICE_INFO)
+            )
+        else -> null
+    }
+
+    private fun dial(lower: String): ResolvedIntentShortcut? {
+        if (!lower.startsWith("call ")) return null
+        val number = lower.removePrefix("call ").filter { it.isDigit() || it == '+' }
+        if (number.isBlank()) return null
+        return ResolvedIntentShortcut(action = ACTION_DIAL, uriString = "tel:$number")
+    }
+
+    private fun url(raw: String, lower: String): ResolvedIntentShortcut? {
+        // These prefixes are ASCII, so their length is identical in `raw` and in `lower`.
+        for (prefix in listOf("open website ", "open url ", "go to website ", "browse ")) {
+            if (!lower.startsWith(prefix)) continue
+            val validated = sanitizeAndValidateUrl(raw.substring(prefix.length).trim()) ?: return null
+            return ResolvedIntentShortcut(action = ACTION_VIEW, uriString = validated)
+        }
+        return null
+    }
+
+    private fun maps(raw: String, lower: String): ResolvedIntentShortcut? = when {
+        lower == "open maps" || lower == "maps" || lower == "launch maps" || lower == "open map" ->
+            ResolvedIntentShortcut(action = ACTION_VIEW, uriString = ACTION_GEO)
+        lower.startsWith("navigate to ") -> {
+            // Destination, not a URL: keep the user's capitalisation, escape what a URI cannot hold.
+            val destination = raw.trim().substring("navigate to ".length).trim()
+            if (destination.isBlank()) null
+            else ResolvedIntentShortcut(action = ACTION_VIEW, uriString = ACTION_GEO + escapeQuery(destination))
+        }
+        else -> null
+    }
+
+    /** `navigate to X` carries a destination, not a URL: escape it instead of validating it. */
+    private fun escapeQuery(text: String): String =
+        text.replace("%", "%25").replace(" ", "%20").replace("#", "%23").replace("&", "%26")
+
+    // ------------------------------------------------------------------ #
+    // apps: a lookup, never a table
+    // ------------------------------------------------------------------ #
+
+    /**
+     * The one path for "open <app>", at any point in a task.
+     *
+     * The registry is preferred; a seed of stock-Android package ids is the last resort so a cold
+     * cache degrades to "ask the platform", not to "no idea what Clock means". The caller still
+     * confirms the package is launchable, so a wrong seed can never dispatch.
+     */
+    private fun appViaRegistry(raw: String): ResolvedIntentShortcut? {
+        val plan = AniobLaunchHub.plan(raw, AniobAppRegistry.getInstance()) ?: return null
+        return appShortcut(plan)
+    }
+
+    private fun appShortcut(plan: LaunchPlan): ResolvedIntentShortcut = ResolvedIntentShortcut(
+        action = ACTION_MAIN,
+        targetPackage = plan.packageName,
+        category = CATEGORY_LAUNCHER,
+        launchActivity = plan.launchActivity,
+        requiresObservation = true,
+        label = plan.label
+    )
+
+    /**
+     * "set an alarm" / "show clock" / "clock".
+     *
+     * These used to be implicit intents (`SET_ALARM`, `SHOW_ALARMS`) with no package. They now open
+     * the *clock app* when one is known, because "the app is in the foreground" is verifiable and
+     * "some activity handled SET_ALARM" is not. When no clock package is known the implicit intent is
+     * still returned, marked unobservable, so the caller can decide to escalate instead of claiming
+     * success.
+     */
+    private fun clockOrAlarm(lower: String): ResolvedIntentShortcut? {
+        val alarmPhrases = listOf("set alarm", "set an alarm", "set the alarm", "add an alarm")
+        val clockPhrases = listOf("clock", "show clock", "open clock app")
+        val isAlarm = alarmPhrases.any { lower == it || lower.startsWith("$it ") }
+        val isClock = clockPhrases.any { lower == it }
+        if (!isAlarm && !isClock) return null
+
+        val registry = AniobAppRegistry.getInstance()
+        val clock = registry.appForRole(AniobAppRegistry.ROLE_CLOCK) ?: when (val found = registry.resolveWithSeed("clock")) {
+            is AppLookup.Match -> found.app
+            else -> null
+        }
+        if (clock != null) {
+            return ResolvedIntentShortcut(
+                action = ACTION_MAIN,
+                targetPackage = clock.packageName,
+                category = CATEGORY_LAUNCHER,
+                launchActivity = clock.launchActivity,
+                extras = if (isAlarm) mapOf("android.intent.extra.alarm_editor" to "true") else emptyMap(),
+                requiresObservation = true,
+                label = clock.label
+            )
+        }
+        return ResolvedIntentShortcut(
+            action = if (isAlarm) ACTION_SET_ALARM else "android.intent.action.SHOW_ALARMS",
+            requiresObservation = false,
+            label = "Clock"
+        )
+    }
+
+    /** Last resort for the platform's own app categories: name a package, never a bare category. */
+    private fun appCategory(lower: String): ResolvedIntentShortcut? {
+        val role = when {
+            lower == "open calculator" || lower == "calculator" || lower == "launch calculator" -> AniobAppRegistry.ROLE_CALCULATOR
+            lower == "open calendar" || lower == "calendar" || lower == "launch calendar" -> AniobAppRegistry.ROLE_CALENDAR
+            lower == "open browser" || lower == "browser" || lower == "launch browser" -> AniobAppRegistry.ROLE_BROWSER
+            lower == "open files" || lower == "files" || lower == "launch files" -> AniobAppRegistry.ROLE_FILES
+            lower == "open camera" || lower == "launch camera" || lower == "camera" -> AniobAppRegistry.ROLE_CAMERA
+            lower == "open settings" || lower == "settings" || lower == "launch settings" -> AniobAppRegistry.ROLE_SETTINGS
+            else -> null
+        } ?: return null
+
+        val registry = AniobAppRegistry.getInstance()
+        val app = registry.appForRole(role) ?: when (val found = registry.resolveWithSeed(role)) {
+            is AppLookup.Match -> found.app
+            else -> null
+        }
+        if (app != null) {
+            return ResolvedIntentShortcut(
+                action = ACTION_MAIN,
+                targetPackage = app.packageName,
+                category = CATEGORY_LAUNCHER,
+                launchActivity = app.launchActivity,
+                requiresObservation = true,
+                label = app.label
+            )
+        }
+        // No package known: hand back the category intent, unobservable, so the caller escalates
+        // rather than firing an intent whose effect it cannot check.
+        val categoryIntent = when (role) {
+            AniobAppRegistry.ROLE_CALCULATOR -> CATEGORY_APP_CALCULATOR
+            AniobAppRegistry.ROLE_CALENDAR -> CATEGORY_APP_CALENDAR
+            AniobAppRegistry.ROLE_BROWSER -> CATEGORY_APP_BROWSER
+            AniobAppRegistry.ROLE_FILES -> CATEGORY_APP_FILES
+            AniobAppRegistry.ROLE_CAMERA -> ACTION_IMAGE_CAPTURE
+            else -> null
+        }
+        if (categoryIntent == null) return null
+        return ResolvedIntentShortcut(action = ACTION_MAIN, category = categoryIntent, requiresObservation = true)
+    }
+
+
+    // ---------------------------------------------------------------------------------------------
+    // Parameterised shortcuts
+    //
+    // Each of these turns a sentence that names its own parameters into the one intent that
+    // carries them: a clock time into SET_ALARM, a duration into SET_TIMER, a panel name into its
+    // documented Settings action, a name+number into the prefilled contact editor. `requiresObservation`
+    // is set per case: a silent alarm is done when dispatched, an alarm the prompt wants to *see*
+    // is not, and the contact editor always needs its Save tap.
+    // ---------------------------------------------------------------------------------------------
+
+    /** `7:30`, `7.30`, `7:30pm` — a separator or a meridiem is required to be a clock time. */
+    private val TIME_WITH_MINUTES =
+        Regex("""\b(\d{1,2})[:.](\d{2})\s*(a\.?m\.?|p\.?m\.?)?\b""", RegexOption.IGNORE_CASE)
+    private val TIME_WITH_MERIDIEM =
+        Regex("""\b(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)\b""", RegexOption.IGNORE_CASE)
+    private val DURATION_PART =
+        Regex("""(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b""", RegexOption.IGNORE_CASE)
+    private val PHONE_NUMBER = Regex("""\+?\d[\d\s()\-]{4,}""")
+    private val BROWSER_CUES = listOf("google", "chrome", "browser", "the web", "web")
+
+    /** Prompts that demand something visible on screen cannot complete silently. */
+    private val WANTS_VISIBLE_RESULT = listOf("leaving", "showing", "on screen", "visible", "display")
+
+    /** A create verb close to the noun; "cancel my alarm" must never set one. */
+    private val ALARM_SET_VERB = Regex("""\b(set|create|add|put)\b[^.]{0,25}\balarm\b""")
+    private val TIMER_SET_VERB = Regex("""\b(start|set|create|add)\b[^.]{0,25}\btimer\b""")
+    private val CANCEL_PREFIXES = listOf("cancel ", "delete ", "remove ", "dismiss ", "stop ", "pause ")
+
+    private val OPEN_VERBS = listOf("open", "show", "launch", "start", "go to", "navigate to", "take me to", "view")
+    private val TOGGLE_VERBS = listOf("turn on", "turn off", "enable", "disable", "switch on", "switch off")
+
+    private class SettingsPanel(val action: String, val label: String, val keys: List<String>)
+
+    /**
+     * Long enough to cover what the panel screens are normally called, short enough that one key
+     * does not swallow ordinary sentences: a key matches the *whole* prompt once the opening verb
+     * and a trailing "settings" are stripped, never a substring of a longer task.
      */
     private val SETTINGS_PANELS = listOf(
         SettingsPanel(ACTION_WIFI_SETTINGS, "Wi-Fi settings", listOf("wifi", "wi-fi", "wireless", "wlan")),
@@ -109,7 +336,7 @@ object AniobIntentResolver {
         SettingsPanel(
             ACTION_BATTERY_SAVER_SETTINGS,
             "Battery saver settings",
-            listOf("battery saver", "battery saver settings", "power saving", "power saving mode", "battery")
+            listOf("battery saver", "power saving", "power saving mode", "battery")
         ),
         SettingsPanel(ACTION_DATA_USAGE_SETTINGS, "Data usage settings", listOf("data usage", "mobile data", "cellular data")),
         SettingsPanel(ACTION_DISPLAY_SETTINGS, "Display settings", listOf("display", "brightness", "screen timeout")),
@@ -126,277 +353,26 @@ object AniobIntentResolver {
         SettingsPanel(ACTION_DEVELOPMENT_SETTINGS, "Developer options", listOf("developer options", "developer settings"))
     )
 
-    private val OPEN_VERBS = listOf(
-        "open", "show", "launch", "start", "go to", "navigate to", "take me to", "view"
-    )
-    private val TOGGLE_VERBS = listOf("turn on", "turn off", "enable", "disable", "switch on", "switch off")
-
-    /** `7:30`, `7.30`, `7:30pm` — a separator or a meridiem is required to be a clock time. */
-    private val TIME_WITH_MINUTES = Regex("""\b(\d{1,2})[:.](\d{2})\s*(a\.?m\.?|p\.?m\.?)?\b""", RegexOption.IGNORE_CASE)
-    private val TIME_WITH_MERIDIEM = Regex("""\b(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)\b""", RegexOption.IGNORE_CASE)
-    private val DURATION_PART = Regex("""(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b""", RegexOption.IGNORE_CASE)
-    private val PHONE_NUMBER = Regex("""\+?\d[\d\s()\-]{4,}""")
-    private val BROWSER_CUES = listOf("google", "chrome", "browser", "the web", "web")
-
-    /** Prompts that demand something visible on screen cannot complete silently. */
-    private val WANTS_VISIBLE_RESULT = listOf("leaving", "showing", "on screen", "visible", "display")
-
-    /** A create verb close to the noun; "cancel my alarm" must never set one. */
-    private val ALARM_SET_VERB = Regex("""\b(set|create|add|put)\b[^.]{0,25}\balarm\b""")
-    private val TIMER_SET_VERB = Regex("""\b(start|set|create|add)\b[^.]{0,25}\btimer\b""")
-    private val CANCEL_PREFIXES = listOf("cancel ", "delete ", "remove ", "dismiss ", "stop ", "pause ")
-
-    /**
-     * Resolves natural language commands to direct Android Intent actions if possible.
-     */
-    fun resolve(command: String): ResolvedIntentShortcut? {
-        val lower = command.lowercase().trim().trimEnd('?', '.', '!', ' ', ',', ';')
-
-        // Parameterised shortcuts run first: "set an alarm for 7:30" must not fall into the bare
-        // "set alarm" branch that only opens the editor.
+    private fun parameterised(raw: String, lower: String): ResolvedIntentShortcut? {
         if (lower.contains("alarm")) parseAlarm(lower)?.let { return it }
         if (lower.contains("timer")) parseTimer(lower)?.let { return it }
         parseSettingsPanel(lower)?.let { return it }
-        parseContactInsert(command, lower)?.let { return it }
-        parseWebSearch(command, lower)?.let { return it }
-
-        return when {
-            lower == "turn on flashlight" || lower == "flashlight on" || lower == "open flashlight" || lower == "turn on the flashlight" || lower == "open the flashlight" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_FLASHLIGHT,
-                    extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_FLASHLIGHT),
-                    completesTask = true,
-                    completionReason = "Flashlight turned on"
-                )
-            }
-            lower == "check battery" || lower == "battery status" || lower == "what is my battery" || lower == "check battery level" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_GET_DEVICE_INFO),
-                    completesTask = true,
-                    completionReason = "Battery status read"
-                )
-            }
-            lower == "open settings" || lower == "settings" || lower == "launch settings" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    targetPackage = "com.android.settings",
-                    category = CATEGORY_LAUNCHER,
-                    completesTask = true,
-                    completionReason = "Settings opened"
-                )
-            }
-            lower == "open system settings" || lower == "system settings" || lower == "device settings" ->
-                ResolvedIntentShortcut(
-                    action = ACTION_SETTINGS,
-                    completesTask = true,
-                    completionReason = "Settings opened"
-                )
-            lower == "open calculator" || lower == "calculator" || lower == "launch calculator" || lower == "open the calculator" ->
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    category = CATEGORY_LAUNCHER,
-                    targetPackages = CALCULATOR_PACKAGES,
-                    completesTask = true,
-                    completionReason = "Calculator opened"
-                )
-            lower == "open clock" || lower == "clock" || lower == "launch clock" || lower == "show clock" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_SHOW_ALARMS,
-                    completesTask = true,
-                    completionReason = "Clock opened"
-                )
-            }
-            lower == "set alarm" || lower == "alarm" || lower == "set an alarm" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_SET_ALARM
-                )
-            }
-            lower == "open alarms" || lower == "show alarms" || lower == "show my alarms" || lower == "my alarms" ->
-                ResolvedIntentShortcut(
-                    action = ACTION_SHOW_ALARMS,
-                    completesTask = true,
-                    completionReason = "Alarms shown"
-                )
-            lower == "show timers" || lower == "open timers" || lower == "my timers" ->
-                ResolvedIntentShortcut(
-                    action = ACTION_SHOW_TIMERS,
-                    completesTask = true,
-                    completionReason = "Timers shown"
-                )
-            lower == "open spotify" || lower == "spotify" || lower == "launch spotify" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    targetPackage = "com.spotify.music",
-                    category = CATEGORY_LAUNCHER,
-                    completesTask = true,
-                    completionReason = "Spotify opened"
-                )
-            }
-            lower == "open maps" || lower == "maps" || lower == "launch maps" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_VIEW,
-                    uriString = "geo:0,0",
-                    completesTask = true,
-                    completionReason = "Maps opened"
-                )
-            }
-            lower == "open calendar" || lower == "calendar" || lower == "launch calendar" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    category = "android.intent.category.APP_CALENDAR",
-                    completesTask = true,
-                    completionReason = "Calendar opened"
-                )
-            }
-            lower == "open browser" || lower == "browser" || lower == "launch browser" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    category = "android.intent.category.APP_BROWSER",
-                    completesTask = true,
-                    completionReason = "Browser opened"
-                )
-            }
-            lower == "open files" || lower == "files" || lower == "launch files" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    category = "android.intent.category.APP_FILES",
-                    completesTask = true,
-                    completionReason = "Files opened"
-                )
-            }
-            lower == "open camera" || lower == "launch camera" -> {
-                ResolvedIntentShortcut(
-                    action = "android.media.action.IMAGE_CAPTURE",
-                    completesTask = true,
-                    completionReason = "Camera opened"
-                )
-            }
-            lower.startsWith("call ") -> {
-                val number = lower.removePrefix("call ").filter { it.isDigit() || it == '+' }
-                if (number.isNotBlank()) {
-                    // ACTION_DIAL only pre-fills the dialer; the call itself is still one tap away,
-                    // so the run continues on the dialer rather than claiming a placed call.
-                    ResolvedIntentShortcut(
-                        action = ACTION_DIAL,
-                        uriString = "tel:$number",
-                        completionReason = ""
-                    )
-                } else null
-            }
-            lower.startsWith("dial ") -> {
-                val number = lower.removePrefix("dial ").filter { it.isDigit() || it == '+' }
-                if (number.isNotBlank()) {
-                    ResolvedIntentShortcut(
-                        action = ACTION_DIAL,
-                        uriString = "tel:$number",
-                        completesTask = true,
-                        completionReason = "Number dialed: $number"
-                    )
-                } else null
-            }
-            lower.startsWith("open website ") -> {
-                val prefixLen = command.indexOf("open website ", ignoreCase = true) + "open website ".length
-                val raw = command.substring(prefixLen).trim()
-                val validated = sanitizeAndValidateUrl(raw)
-                if (validated != null) {
-                    ResolvedIntentShortcut(
-                        action = ACTION_VIEW,
-                        uriString = validated,
-                        completesTask = true,
-                        completionReason = "Opened $validated"
-                    )
-                } else null
-            }
-            lower.startsWith("browse ") -> {
-                val prefixLen = command.indexOf("browse ", ignoreCase = true) + "browse ".length
-                val raw = command.substring(prefixLen).trim()
-                val validated = sanitizeAndValidateUrl(raw)
-                if (validated != null) {
-                    ResolvedIntentShortcut(
-                        action = ACTION_VIEW,
-                        uriString = validated,
-                        completesTask = true,
-                        completionReason = "Opened $validated"
-                    )
-                } else null
-            }
-            lower == "open whatsapp" || lower == "whatsapp" || lower == "launch whatsapp" || lower == "whats app" || lower == "open whats app" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    targetPackage = "com.whatsapp",
-                    category = CATEGORY_LAUNCHER,
-                    completesTask = true,
-                    completionReason = "WhatsApp opened"
-                )
-            }
-            lower == "open youtube" || lower == "youtube" || lower == "launch youtube" -> {
-                ResolvedIntentShortcut(
-                    action = ACTION_MAIN,
-                    targetPackage = "com.google.android.youtube",
-                    category = CATEGORY_LAUNCHER,
-                    completesTask = true,
-                    completionReason = "YouTube opened"
-                )
-            }
-            else -> {
-                val appCandidate = when {
-                    lower.startsWith("open ") -> lower.removePrefix("open ").trim()
-                    lower.startsWith("launch ") -> lower.removePrefix("launch ").trim()
-                    lower.startsWith("start ") -> lower.removePrefix("start ").trim()
-                    lower.startsWith("go to ") -> lower.removePrefix("go to ").trim()
-                    else -> null
-                }?.removePrefix("the ")?.trim()
-
-                // "open calculator and compute 12 times 8" is not an app-open task, even though a
-                // fuzzy catalog lookup would happily match "calculator" inside it. Only a bare
-                // open command may end the run; anything with a clause falls through to the
-                // step-0 app launch, which opens the app and lets the rest be planned.
-                val bareOpen = appCandidate != null &&
-                    !appCandidate.contains(" and ") && !appCandidate.contains(',') &&
-                    appCandidate.split(' ').size <= 3
-                if (bareOpen && appCandidate != null && appCandidate.isNotBlank()) {
-                    val known = when (appCandidate) {
-                        "whatsapp", "whats app" -> "com.whatsapp"
-                        "youtube" -> "com.google.android.youtube"
-                        "telegram" -> "org.telegram.messenger"
-                        "chrome" -> "com.android.chrome"
-                        "gmail", "email", "mail" -> "com.google.android.gm"
-                        "instagram" -> "com.instagram.android"
-                        "play store", "google play" -> "com.android.vending"
-                        else -> null
-                    } ?: com.aniob.core.knowledge.AniobAppCatalog.getInstance().findPackageForName(appCandidate)
-                    if (known != null) {
-                        ResolvedIntentShortcut(
-                            action = ACTION_MAIN,
-                            targetPackage = known,
-                            category = CATEGORY_LAUNCHER,
-                            completesTask = true,
-                            completionReason = "$appCandidate opened"
-                        )
-                    } else null
-                } else null
-            }
-        }
+        parseContactInsert(raw, lower)?.let { return it }
+        parseWebSearch(lower)?.let { return it }
+        return null
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Parameterised shortcuts
-    // ---------------------------------------------------------------------------------------------
-
     /**
-     * `set an alarm for 7:30 am` → SET_ALARM with hour/minute and `SKIP_UI`.
-     *
-     * Without a recognisable time this returns null on purpose: opening an empty alarm editor is
-     * still the right first step, but it is not the finished task.
+     * `set an alarm for 7:30 am` -> SET_ALARM with hour/minute, plus `SKIP_UI` when the prompt does
+     * not ask to see the result. Without a recognisable time this returns null on purpose: opening
+     * an empty editor is still the right first step, but it is not the finished task.
      */
     private fun parseAlarm(text: String): ResolvedIntentShortcut? {
         if (CANCEL_PREFIXES.any { text.startsWith(it) }) return null
         if (!ALARM_SET_VERB.containsMatchIn(text)) return null
-        val time = parseClockTime(text) ?: return null
-        val (hour, minute) = time
+        val (hour, minute) = parseClockTime(text) ?: return null
         // "leaving the alarm list showing 7:30 AM" asks for a visible end state: the silent
-        // SKIP_UI path would set the alarm on a screen that cannot show it.
+        // SKIP_UI path would set an alarm that the requested screen cannot show.
         val wantsVisible = WANTS_VISIBLE_RESULT.any { text.contains(it) }
         return ResolvedIntentShortcut(
             action = ACTION_SET_ALARM,
@@ -405,12 +381,12 @@ object AniobIntentResolver {
                 put(EXTRA_ALARM_MINUTES, minute.toString())
                 if (!wantsVisible) put(EXTRA_ALARM_SKIP_UI, "true")
             },
-            completesTask = !wantsVisible,
-            completionReason = if (wantsVisible) "" else "Alarm set for ${"%02d:%02d".format(hour, minute)}"
+            requiresObservation = wantsVisible,
+            label = "Alarm ${"%02d:%02d".format(hour, minute)}"
         )
     }
 
-    /** `set a timer for 10 minutes` → SET_TIMER with the length in seconds and `SKIP_UI`. */
+    /** `set a timer for 10 minutes` -> SET_TIMER with the length in seconds. */
     private fun parseTimer(text: String): ResolvedIntentShortcut? {
         if (CANCEL_PREFIXES.any { text.startsWith(it) }) return null
         if (!TIMER_SET_VERB.containsMatchIn(text)) return null
@@ -422,8 +398,8 @@ object AniobIntentResolver {
                 put(EXTRA_ALARM_LENGTH, seconds.toString())
                 if (!wantsVisible) put(EXTRA_ALARM_SKIP_UI, "true")
             },
-            completesTask = !wantsVisible,
-            completionReason = if (wantsVisible) "" else "Timer started for ${seconds}s"
+            requiresObservation = wantsVisible,
+            label = "Timer ${seconds}s"
         )
     }
 
@@ -472,10 +448,8 @@ object AniobIntentResolver {
     }
 
     /**
-     * Settings panels have stable, documented actions (`Settings.ACTION_WIFI_SETTINGS` and
-     * friends), so the shortcut opens the exact screen instead of making the model find it.
-     * A toggle verb keeps the run alive: opening the Wi-Fi panel is not the same as turning Wi-Fi
-     * on, and the agent still has to press the switch.
+     * `open Wi-Fi settings` -> the documented panel action, so the agent does not walk the
+     * Settings tree. A toggle verb keeps the run alive: opening the panel is not turning Wi-Fi on.
      */
     private fun parseSettingsPanel(text: String): ResolvedIntentShortcut? {
         val stripped = AniobTaskIntentClassifier.stripPreamble(text)
@@ -493,35 +467,48 @@ object AniobIntentResolver {
                 val toggling = TOGGLE_VERBS.any { stripped.startsWith("$it ") }
                 return ResolvedIntentShortcut(
                     action = panel.action,
-                    completesTask = !toggling,
-                    completionReason = if (toggling) "" else "${panel.label} opened"
+                    requiresObservation = toggling,
+                    label = panel.label
                 )
             }
         }
 
-        // "…and open Wi-Fi settings, leaving the screen showing Wi-Fi" names the panel in the
-        // middle of a longer task. Opening it directly is still the right first move, but the run
-        // continues so the rest of the instruction is carried out.
-        val embedded = SETTINGS_PANELS.firstOrNull { panel ->
-            panel.keys.any { key ->
-                text.contains("$key settings") || text.contains("$key screen") || text.contains("$key panel")
-            }
+        // "open settings and open Wi-Fi settings, leaving the screen showing Wi-Fi" names the panel
+        // inside a longer sentence. Worth opening directly — but only a prompt whose remaining words
+        // just describe what to look at can end there; anything else keeps the run alive.
+        // Only a sentence that actually asks to open something may end at a panel: "check battery"
+        // is a status question, and answering it with a settings screen would be a wrong turn.
+        if (OPEN_VERBS.none { text.contains("$it ") }) return null
+        val (panel, end) = embeddedPanel(text) ?: return null
+        var tail = text.substring(end).trim()
+        for (suffix in listOf("settings", "screen", "panel")) {
+            if (tail.startsWith(suffix)) tail = tail.removePrefix(suffix).trim()
         }
-        if (embedded != null) {
-            return ResolvedIntentShortcut(
-                action = embedded.action,
-                completesTask = false,
-                completionReason = ""
-            )
+        tail = tail.trimStart(',', '.', ' ').trim()
+        val tailIsJustTheResult = tail.isEmpty() || WANTS_VISIBLE_RESULT.any { tail.startsWith(it) }
+        return ResolvedIntentShortcut(
+            action = panel.action,
+            requiresObservation = !tailIsJustTheResult,
+            label = panel.label
+        )
+    }
+
+    /** First settings-panel name in the sentence, with the index just past its name. */
+    private fun embeddedPanel(text: String): Pair<SettingsPanel, Int>? {
+        for (panel in SETTINGS_PANELS) {
+            for (key in panel.keys) {
+                val match = Regex("\\b" + Regex.escape(key) + "\\b").find(text) ?: continue
+                return panel to match.range.last + 1
+            }
         }
         return null
     }
 
     /**
-     * `add contact John with number 5551234` → INSERT with NAME/PHONE, on the contact editor.
+     * `add contact John with number 5551234` -> INSERT with NAME/PHONE on the contact editor.
      *
-     * The editor still needs a Save tap, so this is a partial shortcut: it removes the form filling
-     * (the part the model usually fumbles) and leaves one visible, verified step.
+     * The editor still needs its Save tap, so this is always a partial shortcut: it removes the
+     * form filling (the part the model usually fumbles) and leaves one visible, verified step.
      */
     private fun parseContactInsert(command: String, text: String): ResolvedIntentShortcut? {
         if (!text.contains("contact")) return null
@@ -539,11 +526,12 @@ object AniobIntentResolver {
             action = ACTION_INSERT,
             dataType = CONTACT_MIME_TYPE,
             extras = extras,
-            completionReason = ""
+            requiresObservation = true,
+            label = if (name.isBlank()) "New contact" else "New contact $name"
         )
     }
 
-    /** Best-effort display name from "add contact John …", title-cased; empty when unsure. */
+    /** Best-effort display name from "add contact John …", title-cased; null when unsure. */
     private fun contactNameFrom(command: String): String? {
         val afterContact = command.substringAfter("contact", "").trim()
         if (afterContact.isEmpty()) return null
@@ -569,11 +557,10 @@ object AniobIntentResolver {
     }
 
     /**
-     * `search for pizza on google` → ACTION_VIEW on a Google query URL, opened by the default
-     * browser. Deliberately does not touch web-research prompts ("search the web …"): those are
-     * answer-path tasks, and diverting them would change the research battery's routing.
+     * `search for pizza on google` -> ACTION_VIEW on a Google query URL. Deliberately does not
+     * touch web-research prompts ("search the web …"): those belong to the answer path.
      */
-    private fun parseWebSearch(command: String, text: String): ResolvedIntentShortcut? {
+    private fun parseWebSearch(text: String): ResolvedIntentShortcut? {
         if (AniobTaskIntentClassifier.isWebResearch(text)) return null
         val cue = BROWSER_CUES.firstOrNull { text.contains(it) } ?: return null
         val raw = when {
@@ -601,11 +588,11 @@ object AniobIntentResolver {
         return ResolvedIntentShortcut(
             action = ACTION_VIEW,
             uriString = GOOGLE_SEARCH_URL + encoded,
-            completesTask = true,
-            completionReason = "Search opened for \"$query\""
+            label = "Search \"$query\""
         )
     }
 
+    /** Kept public: URL validation is a security-relevant pure function, and it is unit-tested. */
     fun sanitizeAndValidateUrl(raw: String): String? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
@@ -615,7 +602,9 @@ object AniobIntentResolver {
         }
 
         val lower = trimmed.lowercase()
-        if (lower.startsWith("javascript:") || lower.startsWith("file:") || lower.startsWith("content:") || lower.startsWith("data:")) {
+        if (lower.startsWith("javascript:") || lower.startsWith("file:") ||
+            lower.startsWith("content:") || lower.startsWith("data:")
+        ) {
             return null
         }
 

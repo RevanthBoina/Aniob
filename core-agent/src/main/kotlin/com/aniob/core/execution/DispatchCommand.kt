@@ -50,11 +50,18 @@ sealed interface DispatchCommand {
         override val targetDescription: String
     ) : DispatchCommand
 
-    /** Non-gesture intents: open app, system keys, clipboard, screen reads, finish/fail. */
+    /**
+     * Non-gesture intents: open app, system keys, clipboard, screen reads, finish/fail.
+     *
+     * [component] is the launch activity's class name (no package prefix) for `OPEN_APP` when the
+     * registry knows it. The platform layer then dispatches an **explicit** intent, which cannot be
+     * answered by a chooser or shadowed by another app registering the same implicit action.
+     */
     data class SystemIntent(
         val name: String,
         val argument: String? = null,
-        override val targetDescription: String = name
+        override val targetDescription: String = name,
+        val component: String? = null
     ) : DispatchCommand
 
     /** Nothing to execute — e.g. a grounding miss. Never a guessed tap. */
