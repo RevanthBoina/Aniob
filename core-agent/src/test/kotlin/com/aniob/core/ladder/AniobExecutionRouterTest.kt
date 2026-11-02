@@ -314,7 +314,10 @@ class AniobExecutionRouterTest {
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
         val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
         assertEquals("android.intent.action.SET_ALARM", shortcut.action)
-        assertFalse("the silent alarm needs no further observation", shortcut.requiresObservation)
+        assertTrue(
+            "a two-goal prompt is not finished by the alarm half",
+            shortcut.requiresObservation
+        )
     }
 
     @Test
@@ -338,6 +341,26 @@ class AniobExecutionRouterTest {
         assertEquals("android.intent.action.SET_ALARM", shortcut.action)
         assertEquals("7", shortcut.extras[AniobIntentResolver.EXTRA_ALARM_HOUR])
         assertTrue(shortcut.requiresObservation)
+    }
+
+    @Test
+    fun `a single goal alarm still completes from the dispatch alone`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+
+        val result = router.planStep(
+            taskPrompt = "set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "set an alarm for 7:30 am",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals("android.intent.action.SET_ALARM", shortcut.action)
+        assertEquals("true", shortcut.extras[AniobIntentResolver.EXTRA_ALARM_SKIP_UI])
+        assertFalse("one goal, fully answered by the intent", shortcut.requiresObservation)
     }
 
     @Test

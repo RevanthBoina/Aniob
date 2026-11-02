@@ -81,6 +81,13 @@ object AniobIntentResolver {
     const val ACTION_WIFI_SETTINGS = "android.settings.WIFI_SETTINGS"
     const val ACTION_BLUETOOTH_SETTINGS = "android.settings.BLUETOOTH_SETTINGS"
     const val ACTION_BATTERY_SAVER_SETTINGS = "android.settings.BATTERY_SAVER_SETTINGS"
+
+    /**
+     * The battery *usage* screen (`Settings.ACTION_BATTERY_SAVER_SETTINGS`'s sibling). Opening the
+     * saver toggle when the prompt asked to see the battery level is a wrong turn, so the two
+     * screens are separate shortcuts.
+     */
+    const val ACTION_BATTERY_USAGE = "android.intent.action.POWER_USAGE_SUMMARY"
     const val ACTION_DATA_USAGE_SETTINGS = "android.settings.DATA_USAGE_SETTINGS"
     const val ACTION_DISPLAY_SETTINGS = "android.settings.DISPLAY_SETTINGS"
     const val ACTION_SOUND_SETTINGS = "android.settings.SOUND_SETTINGS"
@@ -144,6 +151,20 @@ object AniobIntentResolver {
         "open the flashlight", "flashlight" -> ResolvedIntentShortcut(
             action = ACTION_FLASHLIGHT,
             extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_FLASHLIGHT)
+        )
+        // "show alarms" / "open timers" used to fall through to a bare category intent
+        // (ACTION_SHOW_TIMERS was declared and never used). They are the two documented ways to
+        // land straight on the list, so they answer themselves — but the list a person asked to see
+        // is still observed before the run may close.
+        "show alarms", "open alarms", "show my alarms", "see my alarms" -> ResolvedIntentShortcut(
+            action = ACTION_SHOW_ALARMS,
+            requiresObservation = true,
+            label = "Alarms"
+        )
+        "show timers", "open timers", "show my timers", "see my timers" -> ResolvedIntentShortcut(
+            action = ACTION_SHOW_TIMERS,
+            requiresObservation = true,
+            label = "Timers"
         )
         "check battery", "battery status", "what is my battery", "check battery level", "battery" ->
             ResolvedIntentShortcut(
@@ -315,6 +336,17 @@ object AniobIntentResolver {
     /** Prompts that demand something visible on screen cannot complete silently. */
     private val WANTS_VISIBLE_RESULT = listOf("leaving", "showing", "on screen", "visible", "display")
 
+    /**
+     * A prompt that names a second clause is not finished by the first clause's dispatch:
+     * "set an alarm for 7:30 and open instagram" still owes the instagram half.
+     */
+    private val SECOND_GOAL = Regex(
+        """\b(then|and then|after that|also|and open|and set|and start|and turn|and enable|and disable|and add|and create|and search|and check)\b"""
+    )
+
+    /** A status request has to be read off the screen, not opened: "open settings and check battery". */
+    private val STATUS_QUESTION = Regex("""\b(check|how much|how many|what is|what's|tell me|read the)\b""")
+
     /** A create verb close to the noun; "cancel my alarm" must never set one. */
     private val ALARM_SET_VERB = Regex("""\b(set|create|add|put)\b[^.]{0,25}\balarm\b""")
     private val TIMER_SET_VERB = Regex("""\b(start|set|create|add)\b[^.]{0,25}\btimer\b""")
@@ -323,7 +355,10 @@ object AniobIntentResolver {
     private val OPEN_VERBS = listOf("open", "show", "launch", "start", "go to", "navigate to", "take me to", "view")
     private val TOGGLE_VERBS = listOf("turn on", "turn off", "enable", "disable", "switch on", "switch off")
 
-    private class SettingsPanel(val action: String, val label: String, val keys: List<String>)
+    private class SettingsPanel(val action: String, val label: String, val keys: List<String>) {
+        /** Compiled once: the embedded scan runs against every prompt that reaches this object. */
+        val patterns: List<Regex> = keys.map { Regex("\\b" + Regex.escape(it) + "\\b") }
+    }
 
     /**
      * Long enough to cover what the panel screens are normally called, short enough that one key
@@ -334,9 +369,14 @@ object AniobIntentResolver {
         SettingsPanel(ACTION_WIFI_SETTINGS, "Wi-Fi settings", listOf("wifi", "wi-fi", "wireless", "wlan")),
         SettingsPanel(ACTION_BLUETOOTH_SETTINGS, "Bluetooth settings", listOf("bluetooth")),
         SettingsPanel(
+            ACTION_BATTERY_USAGE,
+            "Battery usage",
+            listOf("battery usage", "battery screen", "battery level", "battery")
+        ),
+        SettingsPanel(
             ACTION_BATTERY_SAVER_SETTINGS,
             "Battery saver settings",
-            listOf("battery saver", "power saving", "power saving mode", "battery")
+            listOf("battery saver", "power saving", "power saving mode")
         ),
         SettingsPanel(ACTION_DATA_USAGE_SETTINGS, "Data usage settings", listOf("data usage", "mobile data", "cellular data")),
         SettingsPanel(ACTION_DISPLAY_SETTINGS, "Display settings", listOf("display", "brightness", "screen timeout")),
@@ -372,8 +412,11 @@ object AniobIntentResolver {
         if (!ALARM_SET_VERB.containsMatchIn(text)) return null
         val (hour, minute) = parseClockTime(text) ?: return null
         // "leaving the alarm list showing 7:30 AM" asks for a visible end state: the silent
-        // SKIP_UI path would set an alarm that the requested screen cannot show.
-        val wantsVisible = WANTS_VISIBLE_RESULT.any { text.contains(it) }
+        // SKIP_UI path would set an alarm that the requested screen cannot show. A second clause or
+        // a status question is the same situation for a different reason: the dispatch is only the
+        // first half of the prompt, so the run must continue from the editor.
+        val wantsVisible = WANTS_VISIBLE_RESULT.any { text.contains(it) } ||
+            SECOND_GOAL.containsMatchIn(text) || STATUS_QUESTION.containsMatchIn(text)
         return ResolvedIntentShortcut(
             action = ACTION_SET_ALARM,
             extras = buildMap {
@@ -391,7 +434,9 @@ object AniobIntentResolver {
         if (CANCEL_PREFIXES.any { text.startsWith(it) }) return null
         if (!TIMER_SET_VERB.containsMatchIn(text)) return null
         val seconds = parseDurationSeconds(text) ?: return null
-        val wantsVisible = WANTS_VISIBLE_RESULT.any { text.contains(it) }
+        // Same rule as the alarm: a second clause means the timer is not the whole prompt.
+        val wantsVisible = WANTS_VISIBLE_RESULT.any { text.contains(it) } ||
+            SECOND_GOAL.containsMatchIn(text) || STATUS_QUESTION.containsMatchIn(text)
         return ResolvedIntentShortcut(
             action = ACTION_SET_TIMER,
             extras = buildMap {
@@ -465,9 +510,11 @@ object AniobIntentResolver {
             val panel = SETTINGS_PANELS.firstOrNull { candidate -> candidate.keys.any { it == core } }
             if (panel != null) {
                 val toggling = TOGGLE_VERBS.any { stripped.startsWith("$it ") }
+                // A status question ("check battery") is not answered by opening the panel.
+                val status = STATUS_QUESTION.containsMatchIn(text)
                 return ResolvedIntentShortcut(
                     action = panel.action,
-                    requiresObservation = toggling,
+                    requiresObservation = toggling || status,
                     label = panel.label
                 )
             }
@@ -485,23 +532,47 @@ object AniobIntentResolver {
             if (tail.startsWith(suffix)) tail = tail.removePrefix(suffix).trim()
         }
         tail = tail.trimStart(',', '.', ' ').trim()
-        val tailIsJustTheResult = tail.isEmpty() || WANTS_VISIBLE_RESULT.any { tail.startsWith(it) }
+        // The tail may describe the result ("leaving the screen showing Wi-Fi") or name another
+        // goal ("and wifi settings", "and turn it off"); only the former ends the run here.
+        val secondGoal = SECOND_GOAL.containsMatchIn(tail)
+        val tailIsJustTheResult = tail.isEmpty() ||
+            (WANTS_VISIBLE_RESULT.any { tail.startsWith(it) } && !secondGoal)
+        val statusQuestion = STATUS_QUESTION.containsMatchIn(text)
         return ResolvedIntentShortcut(
             action = panel.action,
-            requiresObservation = !tailIsJustTheResult,
+            requiresObservation = !tailIsJustTheResult || statusQuestion,
             label = panel.label
         )
     }
 
     /** First settings-panel name in the sentence, with the index just past its name. */
+    /**
+     * The settings panel named **first** in the sentence, with the index just past its name.
+     *
+     * Table order is not sentence order: "open airplane mode and wifi settings" has to open
+     * Airplane mode, so the earliest match wins. When two keys start at the same offset ("battery"
+     * inside "battery saver") the longer key wins, because the longer name is the specific one.
+     */
     private fun embeddedPanel(text: String): Pair<SettingsPanel, Int>? {
+        var matchPanel: SettingsPanel? = null
+        var matchStart = Int.MAX_VALUE
+        var matchEnd = 0
+        var matchLength = 0
         for (panel in SETTINGS_PANELS) {
-            for (key in panel.keys) {
-                val match = Regex("\\b" + Regex.escape(key) + "\\b").find(text) ?: continue
-                return panel to match.range.last + 1
+            for (pattern in panel.patterns) {
+                val match = pattern.find(text) ?: continue
+                val length = match.range.last - match.range.first + 1
+                val earlier = match.range.first < matchStart
+                val longerAtSameOffset = match.range.first == matchStart && length > matchLength
+                if (earlier || longerAtSameOffset) {
+                    matchPanel = panel
+                    matchStart = match.range.first
+                    matchEnd = match.range.last + 1
+                    matchLength = length
+                }
             }
         }
-        return null
+        return matchPanel?.let { it to matchEnd }
     }
 
     /**

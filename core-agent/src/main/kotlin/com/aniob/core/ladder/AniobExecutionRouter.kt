@@ -140,16 +140,12 @@ class AniobExecutionRouter(
             AniobLaunchHub.reset(taskSignature)
             val firstStep = stepIndex == 0
             val intentShortcut = AniobIntentResolver.resolve(taskPrompt)
-            // A shortcut that already carries every parameter (an alarm with its time, a settings
-            // panel, a search URL, a prefilled contact) is cheaper than opening the app and
-            // planning there, so it outranks the app-launch hook. An app-opening shortcut names a
-            // package and nothing else; that is the only case the launch below owns.
+            // A shortcut that already answers part of the prompt (an alarm with its time, a
+            // settings panel, a search URL, the alarm list) is cheaper than opening the app and
+            // planning there, so it outranks the app-launch hook. A shortcut that merely names an
+            // app is an app launch and nothing else; that is the one case the branch below owns.
             val carriesParameters = intentShortcut != null && (
-                !intentShortcut.requiresObservation ||
-                    (intentShortcut.targetPackage == null &&
-                        (intentShortcut.uriString != null ||
-                            intentShortcut.extras.isNotEmpty() ||
-                            intentShortcut.dataType != null))
+                !intentShortcut.requiresObservation || intentShortcut.action != AniobIntentResolver.ACTION_MAIN
                 )
             val pending = runCatching {
                 if (firstStep) appLaunchResolver?.invoke(taskPrompt) else midTaskLaunchResolver?.invoke(taskPrompt)

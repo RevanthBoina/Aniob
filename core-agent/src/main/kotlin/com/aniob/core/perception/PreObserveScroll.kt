@@ -1,7 +1,9 @@
 package com.aniob.core.perception
 
+import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.verify.FastVerify
 
 /**
@@ -85,6 +87,38 @@ object PreObserveScroll {
             fusedIndex = AniobFusedIndex(nodes),
             treeHash = "${after.treeHash}+${before.treeHash.take(8)}"
         )
+    }
+
+    /**
+     * The same action expressed against a *re-read* screen, or null when it cannot be re-expressed.
+     *
+     * Element ids are reassigned on every capture, so an action planned from the first viewport
+     * points at nothing — or at the wrong widget — after the pre-observe scroll. The node the action
+     * meant is still known from the planning screen, so the retry keeps the widget and swaps the
+     * index for its stable identity: view id first, then exact text, then content description.
+     * Nothing stable means no retry: guessing by position is how a scroll turns into a wrong tap.
+     */
+    fun retargetForRetry(action: AniobAction, from: AniobScreenState): AniobAction? {
+        val target = action.semanticTarget() as? SemanticTarget.SomIndex ?: return null
+        val node = from.nodes.firstOrNull { it.id == target.index } ?: return null
+
+        val stable: SemanticTarget = when {
+            node.viewId.isNotBlank() -> SemanticTarget.ResourceId(node.viewId)
+            node.text.isNotBlank() && from.nodes.count {
+                it.text.equals(node.text, ignoreCase = true)
+            } == 1 -> SemanticTarget.Text(node.text, exact = true)
+            node.contentDescription.isNotBlank() && from.nodes.count {
+                it.contentDescription.equals(node.contentDescription, ignoreCase = true)
+            } == 1 -> SemanticTarget.ContentDesc(node.contentDescription, exact = true)
+            else -> return null
+        }
+
+        return when (action) {
+            is AniobAction.Tap -> action.copy(target = stable)
+            is AniobAction.LongPress -> action.copy(target = stable)
+            is AniobAction.InputText -> action.copy(target = stable)
+            else -> null
+        }
     }
 
     /** Identity that survives a scroll: resource id when there is one, otherwise the label. */

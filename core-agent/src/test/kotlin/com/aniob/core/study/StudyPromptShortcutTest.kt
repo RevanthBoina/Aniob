@@ -91,7 +91,7 @@ class StudyPromptShortcutTest {
             shortcutFor("study_07_settings_wifi")?.action
         )
         assertEquals(
-            AniobIntentResolver.ACTION_BATTERY_SAVER_SETTINGS,
+            AniobIntentResolver.ACTION_BATTERY_USAGE,
             shortcutFor("study_08_settings_battery")?.action
         )
         assertEquals(
