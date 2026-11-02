@@ -2993,22 +2993,20 @@ class AniobViewModel(
                                 if (accessibility.scrollForwardOnce()) {
                                     delay(com.aniob.core.perception.PreObserveScroll.SETTLE_MS)
                                     val revealed = accessibility.captureCurrentScreenState()
-                                    // The scroll re-indexed every element, so the planned index now
-                                    // points at whatever sits where the target used to be. Re-express
-                                    // the same action by the widget's stable identity and retry; if
-                                    // it has none there is no safe retry and the merged viewport goes
-                                    // to the next plan instead.
+                                    // Retry through a stable identity (view id -> text -> content
+                                    // description): replaying a SoM index against the tree the
+                                    // scroll just created can address a different element.
                                     val retry = com.aniob.core.perception.PreObserveScroll
                                         .retargetForRetry(act, dispatchOrigin)
-                                    if (retry != null) {
-                                        ok = executeActionSync(accessibility, retry)
-                                    } else {
+                                    if (retry == null) {
                                         app.eventLogger.info(
                                             "AniobViewModel",
-                                            "Pre-observe scroll: no stable identity for ${act.describeAction()}, not retried"
+                                            "Pre-observe scroll: target has no stable identity, re-planning"
                                         )
+                                    } else {
+                                        ok = executeActionSync(accessibility, retry)
+                                        screenAfter = awaitTransition(retry) ?: revealed
                                     }
-                                    screenAfter = awaitTransition(act) ?: revealed
                                     if (ok) {
                                         app.eventLogger.info(
                                             "AniobViewModel",
