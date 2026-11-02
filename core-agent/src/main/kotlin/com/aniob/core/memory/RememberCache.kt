@@ -26,14 +26,15 @@ class RememberCache(
 ) {
 
     data class Entry(
-        val goalKeywords: String,
+        /** Template key: a goal with its values cut out, or the keyword form when it has none. */
+        val goalKey: String,
         val packageName: String,
         val screenHash: String,
         val actions: List<RememberAction>,
         val updatedAtMs: Long,
         val hits: Int = 0
     ) {
-        val key: String get() = keyOf(goalKeywords, packageName, screenHash)
+        val key: String get() = keyOf(goalKey, packageName, screenHash)
     }
 
     private val entries = LinkedHashMap<String, Entry>()
@@ -56,7 +57,8 @@ class RememberCache(
         preActionScreenHash: String,
         actions: List<RememberAction>
     ): Boolean {
-        val normalized = normalizeGoal(goal)
+        val parsed = RememberTemplate.parse(goal)
+        val normalized = RememberTemplate.keyOf(goal)
         if (normalized.isBlank() || packageName.isBlank() || screenKey(preActionScreenHash).isBlank()) {
             return false
         }
@@ -66,10 +68,12 @@ class RememberCache(
         val key = keyOf(normalized, packageName, preActionScreenHash)
         val previous = entries[key]
         entries[key] = Entry(
-            goalKeywords = normalized,
+            goalKey = normalized,
             packageName = packageName,
             screenHash = screenKey(preActionScreenHash),
-            actions = usable,
+            // A value that came from the prompt is stored as a placeholder, so the same trace can
+            // be replayed for another time/number/name without re-learning the screens.
+            actions = usable.map { it.parameterised(parsed) },
             updatedAtMs = clock(),
             hits = previous?.hits ?: 0
         )
@@ -84,14 +88,18 @@ class RememberCache(
     @Synchronized
     fun lookup(goal: String, screen: AniobScreenState): List<AniobAction>? {
         if (entries.isEmpty()) return null
-        val normalized = normalizeGoal(goal)
+        val parsed = RememberTemplate.parse(goal)
+        val normalized = RememberTemplate.keyOf(goal)
         if (normalized.isBlank()) return null
         val hash = screenKey(screen.screenHash.ifBlank { screen.treeHash })
         if (hash.isBlank()) return null
         val entry = entries[keyOf(normalized, screen.packageName, hash)] ?: return null
         if (entry.actions.isEmpty()) return null
 
-        val resolved = entry.actions.map { replayOf(it, screen) ?: return null }
+        // The trace is stored with {PARAM_n} for the values that came from the prompt; a goal that
+        // cannot fill one of them is a different task and must miss rather than tap a stale value.
+        val actions = entry.actions.map { it.injected(parsed.params) ?: return null }
+        val resolved = actions.map { replayOf(it, screen) ?: return null }
         entries[entry.key] = entry.copy(hits = entry.hits + 1, updatedAtMs = clock())
         return resolved
     }
@@ -99,7 +107,7 @@ class RememberCache(
     /** True when an entry exists for the key regardless of whether its targets resolve. */
     @Synchronized
     fun contains(goal: String, packageName: String, screenHash: String): Boolean =
-        entries.containsKey(keyOf(normalizeGoal(goal), packageName, screenHash))
+        entries.containsKey(keyOf(RememberTemplate.keyOf(goal), packageName, screenHash))
 
     @Synchronized
     fun clear() = entries.clear()

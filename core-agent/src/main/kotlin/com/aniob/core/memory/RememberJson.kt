@@ -17,7 +17,7 @@ internal object RememberJson {
         cache.snapshot().forEachIndexed { index, entry ->
             if (index > 0) append(',')
             append('{')
-            append("\"goal\":").append(quote(entry.goalKeywords)).append(',')
+            append("\"goal\":").append(quote(entry.goalKey)).append(',')
             append("\"package\":").append(quote(entry.packageName)).append(',')
             append("\"hash\":").append(quote(entry.screenHash)).append(',')
             append("\"updated\":").append(entry.updatedAtMs).append(',')
@@ -68,7 +68,7 @@ internal object RememberJson {
             }
             if (actions.isEmpty()) return@mapNotNull null
             RememberCache.Entry(
-                goalKeywords = goal,
+                goalKey = goal,
                 packageName = packageName,
                 screenHash = hash,
                 actions = actions,

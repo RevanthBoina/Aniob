@@ -28,6 +28,30 @@ data class RememberAction(
         get() = kind.isNotBlank() && (viewId.isNotBlank() || text.isNotBlank() ||
             contentDescription.isNotBlank() || (normalizedX >= 0.0 && normalizedY >= 0.0))
 
+    /**
+     * This descriptor with the prompt's own values swapped for `{PARAM_n}`.
+     *
+     * Only an exact match counts: a value that merely *contains* the parameter (a keypad digit
+     * inside a time) is part of the app's layout, not of the prompt, and substituting it would
+     * replay the wrong tap.
+     */
+    fun parameterised(parsed: RememberTemplate.Parsed): RememberAction {
+        if (!parsed.hasParams) return this
+        val inputIndex = parsed.indexOfValue(inputText)
+        val textIndex = parsed.indexOfValue(text)
+        if (inputIndex == null && textIndex == null) return this
+        return copy(
+            inputText = inputIndex?.let { RememberTemplate.placeholder(it) } ?: inputText,
+            text = textIndex?.let { RememberTemplate.placeholder(it) } ?: text
+        )
+    }
+
+    /** This descriptor with `{PARAM_n}` filled from the new prompt; null when one is missing. */
+    fun injected(params: List<String>): RememberAction? = copy(
+        inputText = RememberTemplate.inject(inputText, params) ?: return null,
+        text = RememberTemplate.inject(text, params) ?: return null
+    )
+
     companion object {
         const val TAP = "tap"
         const val LONG_PRESS = "long_press"
