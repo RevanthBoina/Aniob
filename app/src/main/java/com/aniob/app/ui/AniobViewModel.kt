@@ -3573,9 +3573,12 @@ class AniobViewModel(
                         // A URI-addressed intent (dial, view, contact insert) must not be pinned to a
                         // package: the system picks the handler that can open it.
                         if (shortcut.uriString == null) {
-                            val activity = shortcut.launchActivity
-                            if (activity != null && shortcut.targetPackage != null) {
-                                setClassName(shortcut.targetPackage, activity)
+                            // launchActivity is stored flattened ("<pkg>/<activity>");
+                            // setClassName wants the class name only, and a flattened one builds a
+                            // component that cannot be resolved.
+                            val activityClass = AniobLaunchHub.activityClassName(shortcut.launchActivity)
+                            if (activityClass != null && shortcut.targetPackage != null) {
+                                setClassName(shortcut.targetPackage, activityClass)
                             } else {
                                 shortcut.targetPackage?.let { setPackage(it) }
                             }
