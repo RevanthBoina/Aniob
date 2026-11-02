@@ -49,6 +49,67 @@ class AniobExecutionRouterTest {
     }
 
     @Test
+    fun `a parameterised shortcut is dispatched once per task signature, mid-task included`() {
+        val router = AniobExecutionRouter()
+        // Carries parameters (7:30) and needs observation, so the caller continues afterwards.
+        val prompt = "open clock then set an alarm for 7:30"
+        val signature = prompt.lowercase()
+
+        // Step 1: the second hop of a multi-goal task, after the first hop already ran.
+        val first = router.planStep(
+            taskPrompt = prompt,
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = signature,
+            powerState = power
+        )
+        assertTrue("mid-task parameterised shortcut must dispatch", first is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (first as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals(AniobIntentResolver.ACTION_SET_ALARM, shortcut.action)
+        assertTrue(shortcut.requiresObservation)
+
+        // The next planning round of the same task must not re-fire it.
+        val second = router.planStep(
+            taskPrompt = prompt,
+            screenState = screen,
+            stepIndex = 2,
+            taskSignature = signature,
+            powerState = power
+        )
+        assertFalse(
+            "the same shortcut must not be dispatched twice in one task",
+            second is AniobExecutionRouter.ExecutionPlanResult.DirectIntent
+        )
+
+        // A new task starts with a clean slate.
+        val otherTask = router.planStep(
+            taskPrompt = prompt,
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "a different task",
+            powerState = power
+        )
+        assertTrue(
+            "dispatch memory is per task",
+            otherTask is AniobExecutionRouter.ExecutionPlanResult.DirectIntent
+        )
+    }
+
+    @Test
+    fun `a silent shortcut still fires only at step 0`() {
+        val router = AniobExecutionRouter()
+        // WIFI_SETTINGS is silent: it finishes a run, so it may not fire mid-trajectory.
+        val result = router.planStep(
+            taskPrompt = "open wifi settings",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+        assertFalse(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+    }
+
+    @Test
     fun `router works with nullable planning agent`() {
         val router = AniobExecutionRouter(planningAgent = null)
 
