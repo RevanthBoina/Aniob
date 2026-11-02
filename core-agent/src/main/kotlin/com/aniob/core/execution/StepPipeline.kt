@@ -225,6 +225,22 @@ class StepPipeline(
             }
         }
 
+        // Typing into a search field is only half an action: the box holds the query, but nothing
+        // is searched until the keyboard's own action key is pressed. Models rarely say so, and a
+        // separate "find the enter key" step is exactly what they fail at, so submit is derived
+        // when the goal is a search and the grounded field is a search box.
+        val typed = effectiveAction as? AniobAction.InputText
+        if (typed != null && !typed.submit && effectiveNode != null) {
+            val field = effectiveNode
+            val isSearchField = field.viewId.contains("search", ignoreCase = true) ||
+                field.contentDescription.contains("search", ignoreCase = true) ||
+                field.text.contains("search", ignoreCase = true) ||
+                field.className.contains("search", ignoreCase = true)
+            if (isSearchField && ctx.instruction.contains("search", ignoreCase = true)) {
+                effectiveAction = typed.copy(submit = true)
+            }
+        }
+
         if (intercept.requiresConfirmation) {
             currentCoroutineContext().ensureActive()
             val approved = confirm(effectiveAction.describeAction())

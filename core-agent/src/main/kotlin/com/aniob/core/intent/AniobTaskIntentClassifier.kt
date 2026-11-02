@@ -71,6 +71,16 @@ object AniobTaskIntentClassifier {
         "web search", "what's happening", "current events", "today's news"
     )
 
+    /**
+     * True when the prompt is a web-research question. The intent shortcut layer consults this so
+     * "search the web for X" keeps going to the answer path instead of being turned into a
+     * browser tab.
+     */
+    fun isWebResearch(prompt: String): Boolean {
+        val lower = prompt.lowercase()
+        return webKeywords.any { lower.contains(it) }
+    }
+
     fun classify(prompt: String): AniobIntent {
         val lower = stripPreamble(prompt.lowercase().trim())
         if (lower.isBlank()) return AniobIntent.EXTERNAL_AI_QUERY

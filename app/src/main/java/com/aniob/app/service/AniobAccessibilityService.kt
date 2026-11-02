@@ -55,6 +55,13 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         /** Hard cap on references retained from one compact pass (prompt nodes are <= 60). */
         private const val MAX_COMPACT_REFS = 400
 
+        /** Time between focusing a field and committing text into it (the IME re-layout). */
+        private const val FOCUS_SETTLE_MS = 100L
+
+        /** Bounds on the scrollable-container walk used by the pre-observe scroll. */
+        private const val SCROLL_SEARCH_DEPTH = 12
+        private const val SCROLL_SEARCH_NODES = 8
+
         /**
          * Research switch for the compact observe pipeline. Static so a task started before the
          * service connects still gets the right behaviour on the first capture.
@@ -101,6 +108,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         }
     }
 
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val spotlightOverlay by lazy { com.aniob.app.overlay.AniobSpotlightOverlay(this) }
     private var bridgeServer: com.aniob.app.bridge.AniobBridgeServer? = null
     private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
@@ -892,26 +900,138 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         }
     }
 
+    /**
+     * Commits [DispatchCommand.SetText] onto a field the way a person does it.
+     *
+     * Several apps ignore `ACTION_SET_TEXT` on a field that was never focused (the browser
+     * omnibox, the dialer's search box, contact form inputs), which is why "type the query" steps
+     * used to fail and then send the model hunting the field again. So: focus, click to raise the
+     * IME, give the field a moment, set the text, and — when the action says so — press the IME
+     * action so a search actually happens.
+     */
     private fun applySetText(
         node: AccessibilityNodeInfo,
         command: DispatchCommand.SetText,
         callback: (Boolean) -> Unit
     ) {
+        val work = Runnable {
+            try {
+                val arguments = Bundle()
+                arguments.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    command.text
+                )
+                val committed = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+                if (!committed) {
+                    Log.w(TAG, "ACTION_SET_TEXT rejected on '${command.targetDescription}'")
+                    callback(false)
+                    return@Runnable
+                }
+                val submitted = if (command.submit) pressImeAction(node) else true
+                if (command.submit && !submitted) {
+                    // The text is in; only the submit could not be delivered. Report success so the
+                    // verifier judges the screen instead of replaying the typing.
+                    Log.w(TAG, "IME submit unavailable on '${command.targetDescription}'")
+                }
+                callback(true)
+            } catch (e: Exception) {
+                Log.w(TAG, "ACTION_SET_TEXT failed: ${e.message}")
+                callback(false)
+            }
+        }
+
+        val alreadyFocused = try {
+            node.isFocused
+        } catch (_: Exception) {
+            false
+        }
         try {
             if (command.clearFirst) {
                 val clearArgs = Bundle()
                 clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
                 node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
             }
-            val arguments = Bundle()
-            arguments.putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                command.text
-            )
-            callback(node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
+            if (!alreadyFocused) {
+                node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
+            // A click that raises the keyboard re-measures the layout; typing into the same handle
+            // before that settles is the race that lost the first characters.
+            val settle = if (alreadyFocused) 0L else FOCUS_SETTLE_MS
+            if (settle == 0L) work.run() else mainHandler.postDelayed(work, settle)
         } catch (e: Exception) {
-            Log.w(TAG, "ACTION_SET_TEXT failed: ${e.message}")
-            callback(false)
+            Log.w(TAG, "focus/click on '${command.targetDescription}' failed: ${e.message}")
+            mainHandler.post(work)
+        }
+    }
+
+    /**
+     * Presses the field's own IME action (search / go / enter) on API 30+, where the platform
+     * exposes it as an accessibility action. Returns false when the node does not support it; the
+     * caller keeps the typed text either way.
+     */
+    private fun pressImeAction(node: AccessibilityNodeInfo): Boolean {
+        val imeEnter = AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+        return try {
+            val supported = try {
+                node.actionList.any { it.id == imeEnter }
+            } catch (_: Exception) {
+                true
+            }
+            if (!supported) return false
+            if (node.performAction(imeEnter)) return true
+            // Some builds only honour the action after the field reports itself as focused.
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            node.performAction(imeEnter)
+        } catch (e: Exception) {
+            Log.w(TAG, "ACTION_IME_ENTER failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * One `ACTION_SCROLL_FORWARD` on the largest scrollable container.
+     *
+     * Used by the pre-observe scroll: when a step's target could not be grounded, scrolling once
+     * and re-reading the hierarchy is cheaper than asking the model to decide to scroll. The walk
+     * is depth- and count-bounded, and only enabled, visible, scrollable nodes are performed on.
+     */
+    fun scrollForwardOnce(): Boolean {
+        val root = try {
+            rootInActiveWindow
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        return try {
+            val candidates = ArrayList<AccessibilityNodeInfo>(8)
+            collectScrollable(root, candidates, 0)
+            val target = candidates.maxByOrNull { node ->
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+                bounds.width() * bounds.height()
+            }
+            val scrolled = target?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) ?: false
+            if (scrolled) Log.i(TAG, "Pre-observe scroll: ACTION_SCROLL_FORWARD sent")
+            scrolled
+        } catch (e: Exception) {
+            Log.w(TAG, "scrollForwardOnce failed: ${e.message}")
+            false
+        } finally {
+            recycleQuietly(root)
+        }
+    }
+
+    private fun collectScrollable(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>, depth: Int) {
+        if (depth > SCROLL_SEARCH_DEPTH || out.size >= SCROLL_SEARCH_NODES) return
+        if (node.isScrollable && node.isEnabled && node.isVisibleToUser) out.add(node)
+        for (i in 0 until node.childCount) {
+            val child = try {
+                node.getChild(i)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            collectScrollable(child, out, depth + 1)
+            if (child !in out) recycleQuietly(child)
         }
     }
 

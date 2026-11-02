@@ -232,21 +232,21 @@ class AniobExecutionRouterTest {
         val router = AniobExecutionRouter(planningAgent = null)
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { goal ->
-            if (goal.startsWith("Open Clock")) AppLaunchTarget("com.google.android.deskclock", "Clock") else null
+            if (goal.startsWith("Open Contacts")) AppLaunchTarget("com.android.contacts", "Contacts") else null
         }
 
         val result = router.planStep(
-            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            taskPrompt = "Open Contacts and search for John",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open clock and set an alarm",
+            taskSignature = "open contacts and search for john",
             powerState = power
         )
 
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
         val launch = result as AniobExecutionRouter.ExecutionPlanResult.AppLaunch
-        assertEquals("com.google.android.deskclock", launch.packageName)
-        assertEquals("Clock", launch.appName)
+        assertEquals("com.android.contacts", launch.packageName)
+        assertEquals("Contacts", launch.appName)
     }
 
     @Test
@@ -288,15 +288,55 @@ class AniobExecutionRouterTest {
     }
 
     @Test
-    fun `an unresolved prompt falls through to the model`() {
+    fun `an alarm prompt becomes a complete direct intent, ahead of the app launch`() {
         val router = AniobExecutionRouter(planningAgent = null)
-        router.appLaunchResolver = { null }
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock and set an alarm",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        val shortcut = (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut
+        assertEquals("android.intent.action.SET_ALARM", shortcut.action)
+        assertTrue("the clock app sets it without UI", shortcut.completesTask)
+    }
+
+    @Test
+    fun `a settings panel prompt is resolved before any model call`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
 
         val result = router.planStep(
             taskPrompt = "Open Wi-Fi settings",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open wi-fi settings",
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        assertEquals(
+            "android.settings.WIFI_SETTINGS",
+            (result as AniobExecutionRouter.ExecutionPlanResult.DirectIntent).shortcut.action
+        )
+    }
+
+    @Test
+    fun `an unresolved prompt falls through to the model`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { null }
+
+        val result = router.planStep(
+            taskPrompt = "Open the camera and take a photo",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open the camera and take a photo",
             powerState = power
         )
 
@@ -309,10 +349,10 @@ class AniobExecutionRouterTest {
         router.appLaunchResolver = { error("catalog exploded") }
 
         val result = router.planStep(
-            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            taskPrompt = "Open Contacts and search for John",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open clock",
+            taskSignature = "open contacts",
             powerState = power
         )
 

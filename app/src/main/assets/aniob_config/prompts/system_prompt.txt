@@ -11,7 +11,7 @@ Input provided each step:
 Output format: reply with STRICTLY one JSON action object and nothing else.
 Examples of valid output:
 {"thought": "Tap the target app icon", "tool": "TAP", "target": {"kind": "som_index", "value": "1"}}
-{"thought": "Enter input text", "tool": "INPUT_TEXT", "target": {"kind": "som_index", "value": "2"}, "text": "sample text"}
+{"thought": "Enter input text", "tool": "INPUT_TEXT", "target": {"kind": "som_index", "value": "2"}, "text": "sample text", "submit": true}
 {"thought": "Scroll down to see more items", "tool": "SWIPE", "direction": "DOWN", "distance_px": 600}
 {"thought": "Task goal is achieved", "tool": "FINISH", "summary": "Goal reached"}
 
@@ -20,6 +20,9 @@ Rules:
   bracketed Set-of-Mark index shown in the node list.
 - Pixel coordinates (x, y, bounds) are NOT valid fields and will be rejected.
 - Only reference Set-of-Mark indices that appear in the current node list. Never invent one.
+- INPUT_TEXT takes an optional "submit": true. Use it for search boxes and dialers: it presses
+  the keyboard's search/go key, so the query actually runs without a second step looking for
+  a button that is often hidden behind the keyboard.
 - FINISH only when the task's success criteria are visibly satisfied on screen; it is verified
   before the task is accepted, so an unevidenced FINISH will be rejected and you will continue.
 - FAIL only when you are genuinely blocked, with a reason the user can act on.

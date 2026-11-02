@@ -430,4 +430,62 @@ class StepPipelineTest {
             lastTrajectory = trajectory
         }
     }
+
+    @Test
+    fun `typing into a search box submits without a second step`() = runBlocking {
+        val field = AniobNode(
+            id = 1,
+            className = "android.widget.EditText",
+            text = "Search",
+            viewId = "com.android.chrome:id/search_box",
+            bounds = AniobRect(0, 0, 400, 120),
+            isEditable = true
+        )
+        val chrome = AniobScreenState(packageName = "com.android.chrome", nodes = listOf(field), treeHash = "chrome-1")
+        var dispatched: AniobAction? = null
+        pipeline().executeStep(
+            ctx = TaskContext(instruction = "search for pizza in chrome"),
+            planningScreen = chrome,
+            proposal = StepPipeline.Proposal.Model(
+                AniobAction.InputText(SemanticTarget.SomIndex(1), "pizza"),
+                "MOCK"
+            ),
+            capture = { chrome },
+            dispatch = { action ->
+                dispatched = action
+                StepPipeline.DispatchOutcome(true, screenAfter = chrome)
+            }
+        )
+        val sent = dispatched as? AniobAction.InputText
+        assertNotNull(sent)
+        assertTrue("a search box must submit itself", sent!!.submit)
+    }
+
+    @Test
+    fun `a plain text field is not submitted`() = runBlocking {
+        val field = AniobNode(
+            id = 1,
+            className = "android.widget.EditText",
+            text = "Name",
+            viewId = "com.android.contacts:id/name",
+            bounds = AniobRect(0, 0, 400, 120),
+            isEditable = true
+        )
+        val contacts = AniobScreenState(packageName = "com.android.contacts", nodes = listOf(field), treeHash = "contacts-1")
+        var dispatched: AniobAction? = null
+        pipeline().executeStep(
+            ctx = TaskContext(instruction = "type John into the name field"),
+            planningScreen = contacts,
+            proposal = StepPipeline.Proposal.Model(
+                AniobAction.InputText(SemanticTarget.SomIndex(1), "John"),
+                "MOCK"
+            ),
+            capture = { contacts },
+            dispatch = { action ->
+                dispatched = action
+                StepPipeline.DispatchOutcome(true, screenAfter = contacts)
+            }
+        )
+        assertFalse((dispatched as AniobAction.InputText).submit)
+    }
 }

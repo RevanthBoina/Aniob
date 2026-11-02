@@ -2300,6 +2300,13 @@ class AniobViewModel(
         var finalOutcome: Outcome? = null
         var terminalReason: String = ""
         var stepResult: StepResult? = null
+        // An intent shortcut that carried the whole task is a finished run: the criteria re-check
+        // below must not turn "Wi-Fi settings opened" into an unverified or failed task.
+        var completedByIntent = false
+        // Screen identities that already spent their one pre-observe scroll in this run.
+        val preObservedScreens = HashSet<String>()
+        // Viewport merged after that scroll, handed to the next planning pass.
+        var preObservedScreen: AniobScreenState? = null
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
@@ -2319,10 +2326,18 @@ class AniobViewModel(
                 // Step 0 already has a capture from the moment the task started; re-reading the
                 // same window only costs latency. Applies only while it is still fresh and the
                 // pause/takeover path is not involved.
+                // A pre-observe scroll already captured the viewport it revealed. Re-reading the
+                // window here would pay for the same hierarchy twice and lose the merged view.
+                val mergedObservation = preObservedScreen?.takeIf {
+                    !wasPaused && System.currentTimeMillis() - it.timestamp < PRE_OBSERVE_FRESH_MS
+                }
+                preObservedScreen = null
                 val reuseStartCapture = currentStep == 0 && !wasPaused && screenBefore != null &&
                     System.currentTimeMillis() - screenBefore.timestamp < START_CAPTURE_FRESH_MS
                 // Check Observation Policy: burst if predictable, else full capture
-                val captured = if (reuseStartCapture) {
+                val captured = if (mergedObservation != null) {
+                    mergedObservation
+                } else if (reuseStartCapture) {
                     // Step 0 already holds a capture from just before the prompt was typed.
                     screenBefore!!
                 } else if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
@@ -2434,9 +2449,30 @@ class AniobViewModel(
                         primaryProvider = "INTENT"
                         decisionReason = ladderResult.reason
                         app.researchTelemetry.markIntentShortcutUsed()
-                        _uiState.update { it.copy(statusMessage = "Executing direct system intent...") }
+                        val shortcut = ladderResult.shortcut
+                        _uiState.update { it.copy(statusMessage = "Opening with a system intent...") }
+                        // The intent is fired before any model work. When it already carries every
+                        // parameter the task needs (an alarm with its time, a settings panel, a URL)
+                        // the launch *is* the task: the run closes here, with zero LLM calls. A
+                        // partial shortcut (an empty alarm editor, a prefilled contact) leaves the
+                        // agent on the screen it opened, so the next step plans from there instead
+                        // of from the launcher.
+                        if (currentStep == 0 && dispatchSystemIntent(shortcut)) {
+                            actionsDispatched++
+                            app.researchTelemetry.recordStep()
+                            if (shortcut.completesTask) {
+                                completedByIntent = true
+                                finalOutcome = Outcome.SUCCESS
+                                terminalReason = shortcut.completionReason.ifBlank { "System intent completed" }
+                                break
+                            }
+                            delay(INTENT_SETTLE_MS)
+                            screenBefore = accessibility?.captureCurrentScreenState() ?: screenBefore
+                            currentStep++
+                            continue
+                        }
                         proposal = StepPipeline.Proposal.DirectIntent(
-                            action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
+                            action = AniobAction.Finish(summary = "Intent dispatched: ${shortcut.targetPackage}"),
                             label = "INTENT"
                         )
                     }
@@ -2831,9 +2867,45 @@ class AniobViewModel(
                             StepPipeline.DispatchOutcome(dispatched = false, reason = act.reason)
                         }
                         else -> {
-                            val ok = if (accessibility != null) executeActionSync(accessibility, act) else true
+                            // A target that is not on the current screen is not a failure yet: if
+                            // the screen scrolls, one forward scroll usually reveals it. Doing that
+                            // here, before the model is asked again, is the difference between one
+                            // round trip and three.
+                            val plannedMiss = act.semanticTarget() != null &&
+                                com.aniob.core.execution.AniobActionExecutor
+                                    .planDispatch(act, dispatchOrigin) is DispatchCommand.NoOp
+                            var ok = if (accessibility != null) executeActionSync(accessibility, act) else true
                             actionsDispatched++
-                            val screenAfter = awaitTransition(act)
+                            var screenAfter = awaitTransition(act)
+                            if (!ok && plannedMiss && accessibility != null &&
+                                com.aniob.core.perception.PreObserveScroll
+                                    .shouldScroll(dispatchOrigin, preObservedScreens)
+                            ) {
+                                preObservedScreens += FastVerify.screenIdentity(dispatchOrigin)
+                                if (accessibility.scrollForwardOnce()) {
+                                    delay(com.aniob.core.perception.PreObserveScroll.SETTLE_MS)
+                                    val revealed = accessibility.captureCurrentScreenState()
+                                    // Retry the same action live: if it was only below the fold,
+                                    // this ends the step without another model call.
+                                    ok = executeActionSync(accessibility, act)
+                                    screenAfter = awaitTransition(act) ?: revealed
+                                    if (ok) {
+                                        app.eventLogger.info(
+                                            "AniobViewModel",
+                                            "Pre-observe scroll revealed the target of ${act.describeAction()}"
+                                        )
+                                    } else {
+                                        // Still missing: give the next planning pass both viewports
+                                        // so it does not spend a call rediscovering the first one.
+                                        preObservedScreen = com.aniob.core.perception.PreObserveScroll
+                                            .merge(dispatchOrigin, revealed)
+                                        app.eventLogger.info(
+                                            "AniobViewModel",
+                                            "Pre-observe scroll: merged ${revealed.nodes.size} new nodes for the next plan"
+                                        )
+                                    }
+                                }
+                            }
                             StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
                         }
                     }
@@ -3019,7 +3091,12 @@ class AniobViewModel(
         } else {
             accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
         }
-        val criteriaEvaluations = resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
+        // A completed shortcut has nothing left to re-check: the intent carried the evidence.
+        val criteriaEvaluations = if (completedByIntent) {
+            emptyList()
+        } else {
+            resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
+        }
         val evidenceItems = criteriaEvaluations.map { ev ->
             EvidenceItem(
                 label = ev.description,
@@ -3041,7 +3118,9 @@ class AniobViewModel(
                 stepResult?.terminalState == StepResult.TerminalState.FAIL -> Outcome.FAILED
                 else -> Outcome.FAILED
             }
-        } else if (finalOutcome == Outcome.SUCCESS && resolvedCriteria?.hasObservableCheck != true) {
+        } else if (!completedByIntent && finalOutcome == Outcome.SUCCESS &&
+            resolvedCriteria?.hasObservableCheck != true
+        ) {
             // Confirmed with no machine-checkable criterion: honest "unverified", never a failure.
             finalOutcome = Outcome.UNVERIFIED
         }
@@ -3164,7 +3243,9 @@ class AniobViewModel(
             id = "msg_asst_${System.currentTimeMillis()}",
             role = "assistant",
             content = when (finalOutcome) {
-                Outcome.SUCCESS -> "Completed '${task.rawPrompt}' via $primaryProvider. Verified: ${evidenceItems.filter { it.met }.joinToString { it.label }.ifBlank { "All criteria" }}. $resultSummary"
+                Outcome.SUCCESS -> "Completed '${task.rawPrompt}' via $primaryProvider. " +
+                    (evidenceItems.filter { it.met }.joinToString { it.label }
+                        .ifBlank { terminalReason.ifBlank { "All criteria" } }) + ". $resultSummary"
                 Outcome.UNVERIFIED -> "Finished '${task.rawPrompt}' via $primaryProvider. I could not verify the result automatically (${terminalReason.ifBlank { "no machine-checkable criteria" }}), so give the screen a quick look."
                 Outcome.STOPPED -> "Stopped '${task.rawPrompt}'. Earlier changes were not undone."
                 Outcome.INTERRUPTED -> "Interrupted '${task.rawPrompt}'."
@@ -3185,7 +3266,9 @@ class AniobViewModel(
                 providerUsed = primaryProvider,
                 decisionReason = decisionReason
             )
-            if (isSuccess && stepResult?.terminalState != StepResult.TerminalState.SUCCESS) {
+            // A shortcut completion has no step trajectory to learn from; recording an empty one
+            // would teach the pipeline nothing and pollute the store.
+            if (isSuccess && !completedByIntent && stepResult?.terminalState != StepResult.TerminalState.SUCCESS) {
                 val trajectory = verifiedActions.toList()
                 learningPipeline.onTaskSuccess(
                     TaskContext(
@@ -3408,24 +3491,27 @@ class AniobViewModel(
                 }
                 else -> {
                     val launchCtx = AniobAccessibilityService.instance ?: AniobBackgroundController.currentActivity ?: app
-                    val targetPkg = shortcut.targetPackage
-                    if (targetPkg != null) {
-                        val launchIntent = app.packageManager.getLaunchIntentForPackage(targetPkg)
-                        if (launchIntent != null) {
+                    // App-style shortcuts (calculator, browser, any catalog app) are package
+                    // launches; a package list covers OEM variants of the same app.
+                    val candidates = (listOfNotNull(shortcut.targetPackage) + shortcut.targetPackages).distinct()
+                    if (shortcut.uriString == null) {
+                        for (pkg in candidates) {
+                            val launchIntent = app.packageManager.getLaunchIntentForPackage(pkg)
+                            if (launchIntent == null) continue
                             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            try {
-                                launchCtx.startActivity(launchIntent)
-                                return true
-                            } catch (e: Exception) {
-                                app.eventLogger.warn("AniobViewModel", "getLaunchIntentForPackage failed (${e.message}), trying raw intent")
-                            }
+                            if (startActivitySafely(launchCtx, launchIntent)) return true
+                            app.eventLogger.warn("AniobViewModel", "Launch of $pkg failed, trying the next candidate")
                         }
                     }
                     val intent = Intent(shortcut.action).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                        shortcut.targetPackage?.let { setPackage(it) }
+                        // A URI-addressed intent (dial, view, contact insert) must not be pinned to
+                        // a package: the system picks the handler that can open it.
+                        if (shortcut.uriString == null) shortcut.targetPackage?.let { setPackage(it) }
                         shortcut.uriString?.let { data = Uri.parse(it) }
                         shortcut.category?.let { addCategory(it) }
+                        shortcut.dataType?.let { type = it }
+                        shortcut.extras.forEach { (key, value) -> putShortcutExtra(this, key, value) }
                     }
                     try {
                         launchCtx.startActivity(intent)
@@ -3433,7 +3519,9 @@ class AniobViewModel(
                     } catch (e: Exception) {
                         app.eventLogger.warn("AniobViewModel", "Direct intent launch failed (${e.message}); attempting fallback package launch")
                         val fallbackPkg = shortcut.targetPackage ?: when (shortcut.action) {
-                            "android.intent.action.SHOW_ALARMS", "android.intent.action.SET_ALARM" -> {
+                            AniobIntentResolver.ACTION_SHOW_ALARMS,
+                            AniobIntentResolver.ACTION_SET_ALARM,
+                            AniobIntentResolver.ACTION_SET_TIMER -> {
                                 listOf("com.sec.android.app.clockpackage", "com.google.android.deskclock", "com.android.deskclock")
                                     .firstOrNull { pkg ->
                                         runCatching { app.packageManager.getPackageInfo(pkg, 0) }.isSuccess
@@ -3459,6 +3547,29 @@ class AniobViewModel(
         } catch (e: Exception) {
             app.eventLogger.error("AniobViewModel", "Failed to launch system intent: ${e.message}")
             false
+        }
+    }
+
+    private fun startActivitySafely(context: android.content.Context, intent: Intent): Boolean =
+        try {
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            app.eventLogger.warn("AniobViewModel", "startActivity failed (${e.message})")
+            false
+        }
+
+    /**
+     * Extra values arrive as strings from the pure-JVM resolver; the clock and contact intents are
+     * typed, and passing "7" where an Int is expected makes the target app ignore the extra.
+     */
+    private fun putShortcutExtra(intent: Intent, key: String, value: String) {
+        when (key) {
+            AniobIntentResolver.EXTRA_ALARM_HOUR,
+            AniobIntentResolver.EXTRA_ALARM_MINUTES,
+            AniobIntentResolver.EXTRA_ALARM_LENGTH -> value.toIntOrNull()?.let { intent.putExtra(key, it) }
+            AniobIntentResolver.EXTRA_ALARM_SKIP_UI -> intent.putExtra(key, value.toBoolean())
+            else -> intent.putExtra(key, value)
         }
     }
 
@@ -3536,6 +3647,12 @@ class AniobViewModel(
 
         /** A cold app launch is allowed longer than a tap: the wait ends on the package change. */
         const val APP_LAUNCH_VERIFY_MS = 4_000L
+
+        /** Time for a fired system intent to bring its window forward before the next capture. */
+        const val INTENT_SETTLE_MS = 300L
+
+        /** How long a merged pre-observe viewport stays worth planning on. */
+        const val PRE_OBSERVE_FRESH_MS = 2_000L
 
         /** Observe-burst ceiling for burst modes (the shipping value). */
         const val OBSERVATION_BURST_LIMIT = 3
