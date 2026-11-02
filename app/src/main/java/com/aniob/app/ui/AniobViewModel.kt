@@ -2361,8 +2361,14 @@ class AniobViewModel(
         var terminalReason: String = ""
         var stepResult: StepResult? = null
         // An intent shortcut that carried the whole task is a finished run: the criteria re-check
-        // below must not turn "Wi-Fi settings opened" into an unverified or failed task.
+        // below must not turn "Wi-Fi settings opened" into an unverified or failed run.
         var completedByIntent = false
+        // The verdict the shortcut was judged by, so a success carries the evidence it was
+        // actually checked against instead of being re-evaluated on a later screen.
+        var intentVerdict: List<com.aniob.core.domain.CriterionEvaluation>? = null
+        // A shortcut this run switched off (an action the device does not have) is restored when
+        // the run ends, so one failed dispatch cannot degrade every later task in the batch.
+        val shortcutsWereEnabled = executionRouter.intentShortcutsEnabled
         // Screen identities that already spent their one pre-observe scroll in this run.
         val preObservedScreens = HashSet<String>()
         // Viewport merged after that scroll, handed to the next planning pass.
@@ -2511,24 +2517,63 @@ class AniobViewModel(
                         app.researchTelemetry.markIntentShortcutUsed()
                         val shortcut = ladderResult.shortcut
                         _uiState.update { it.copy(statusMessage = "Opening with a system intent...") }
-                        // The intent is fired before any model work. When it already carries every
-                        // parameter the task needs (an alarm with its time, a settings panel, a URL)
-                        // the launch *is* the task: the run closes here, with zero LLM calls. A
-                        // partial shortcut (an empty alarm editor, a prefilled contact) leaves the
-                        // agent on the screen it opened, so the next step plans from there instead
-                        // of from the launcher.
-                        if (currentStep == 0 && dispatchSystemIntent(shortcut)) {
-                            actionsDispatched++
-                            app.researchTelemetry.recordStep()
-                            if (!shortcut.requiresObservation) {
-                                completedByIntent = true
-                                finalOutcome = Outcome.SUCCESS
-                                terminalReason = shortcut.label?.let { "Opened $it" } ?: "System intent dispatched"
-                                break
+                        // The intent is fired before any model work. A partial shortcut (an alarm
+                        // editor, a prefilled contact, a settings panel) leaves the agent on the
+                        // screen it opened, so the next step plans from there instead of from the
+                        // launcher. A shortcut that claims the whole task still has to be seen on
+                        // the screen before it may close the run.
+                        if (currentStep == 0) {
+                            val beforePackage = accessibility?.currentForegroundPackage() ?: screenBefore?.packageName
+                            if (dispatchSystemIntent(shortcut)) {
+                                actionsDispatched++
+                                app.researchTelemetry.recordStep()
+                                val landed = awaitIntentScreen(beforePackage, INTENT_SETTLE_MS)
+                                screenBefore = landed ?: screenBefore
+                                if (shortcut.requiresObservation) {
+                                    currentStep++
+                                    continue
+                                }
+                                // The intent claims to be the whole task. Prove it on the screen: a
+                                // success nobody looked at is not a success this app reports.
+                                // `currentStep + 1` because this dispatch already happened; the
+                                // criterion set includes a min-steps check that would fail otherwise.
+                                val verdict = landed
+                                    ?.let { resolvedCriteria?.evaluateCriteria(it, currentStep + 1) }
+                                    .orEmpty()
+                                when {
+                                    verdict.isNotEmpty() && verdict.all {
+                                        it.state == com.aniob.core.domain.CriterionState.PASSED
+                                    } -> {
+                                        completedByIntent = true
+                                        intentVerdict = verdict
+                                        finalOutcome = Outcome.SUCCESS
+                                        terminalReason = shortcut.label?.let { "Opened $it" }
+                                            ?: "System intent dispatched"
+                                        break
+                                    }
+                                    verdict.isNotEmpty() -> {
+                                        app.eventLogger.warn(
+                                            "AniobViewModel",
+                                            "Intent ${shortcut.action} landed but the criteria are not met; continuing"
+                                        )
+                                        currentStep++
+                                        continue
+                                    }
+                                    else -> {
+                                        // Nothing machine-checkable: honest, and never a claimed success.
+                                        completedByIntent = true
+                                        finalOutcome = Outcome.UNVERIFIED
+                                        terminalReason = shortcut.label?.let { "Dispatched $it" }
+                                            ?: "System intent dispatched without a checkable criterion"
+                                        break
+                                    }
+                                }
                             }
-                            delay(INTENT_SETTLE_MS)
-                            screenBefore = accessibility?.captureCurrentScreenState() ?: screenBefore
-                            currentStep++
+                            app.eventLogger.warn(
+                                "AniobViewModel",
+                                "System intent ${shortcut.action} could not be dispatched; planning without shortcuts"
+                            )
+                            executionRouter.intentShortcutsEnabled = false
                             continue
                         }
                         proposal = StepPipeline.Proposal.DirectIntent(
@@ -3150,6 +3195,9 @@ class AniobViewModel(
                 currentStep++
             }
         } finally {
+            // A shortcut disabled mid-run because this device could not dispatch it is a property
+            // of the run, not of the session.
+            executionRouter.intentShortcutsEnabled = shortcutsWereEnabled
             AniobAccessibilityService.isTaskActive = false
             learningPipeline.onTaskEnd(task.id)
         }
@@ -3168,11 +3216,13 @@ class AniobViewModel(
         } else {
             accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
         }
-        // A completed shortcut has nothing left to re-check: the intent carried the evidence.
-        val criteriaEvaluations = if (completedByIntent) {
-            emptyList()
-        } else {
-            resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
+        // A run closed by a shortcut keeps the verdict it was actually judged by. Otherwise the
+        // common path re-checks the final screen; a completion with nothing checkable has nothing
+        // to re-check at all.
+        val criteriaEvaluations = when {
+            intentVerdict != null -> intentVerdict!!
+            completedByIntent -> emptyList()
+            else -> resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
         }
         val evidenceItems = criteriaEvaluations.map { ev ->
             EvidenceItem(
@@ -3527,6 +3577,24 @@ class AniobViewModel(
             .filter { it.length >= 3 && it !in SCROLL_STOPWORDS }
             .distinct()
 
+    /**
+     * Waits for the window an intent opens, up to [timeoutMs], instead of a fixed delay: a cold
+     * app start easily outlives 300 ms, and planning on the launcher costs a whole round trip.
+     */
+    private suspend fun awaitIntentScreen(beforePackage: String?, timeoutMs: Long): AniobScreenState? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val screen = accessibility?.captureCurrentScreenState()
+            if (screen != null && (beforePackage == null ||
+                    !screen.packageName.equals(beforePackage, ignoreCase = true))
+            ) {
+                return screen
+            }
+            delay(120)
+        }
+        return accessibility?.captureCurrentScreenState()
+    }
+
     private fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut): Boolean {
         val systemAction = shortcut.extras[AniobIntentResolver.EXTRA_SYSTEM_ACTION]
         return try {
@@ -3700,8 +3768,11 @@ class AniobViewModel(
         /** A cold app launch is allowed longer than a tap: the wait ends on the package change. */
         const val APP_LAUNCH_VERIFY_MS = 4_000L
 
-        /** Time for a fired system intent to bring its window forward before the next capture. */
-        const val INTENT_SETTLE_MS = 300L
+        /**
+         * Budget for the window an intent opens. A cold Clock/Settings start outlives 300 ms, and
+         * planning on the launcher costs a whole round trip plus a wrong-screen step.
+         */
+        const val INTENT_SETTLE_MS = 2_500L
 
         /** How long a merged pre-observe viewport stays worth planning on. */
         const val PRE_OBSERVE_FRESH_MS = 2_000L
