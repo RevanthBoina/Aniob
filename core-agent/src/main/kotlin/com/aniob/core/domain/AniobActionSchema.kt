@@ -258,7 +258,7 @@ Set "submit": true when the text is a query or a phone number and the field must
                     if (depth == 0 && start >= 0) {
                         objects.add(array.substring(start, i + 1))
                         start = -1
-                        if (objects.size >= ActionBurst.MAX_ACTIONS) return objects
+
                     }
                 }
             }

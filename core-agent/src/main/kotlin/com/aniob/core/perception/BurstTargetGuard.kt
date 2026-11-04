@@ -50,7 +50,7 @@ object BurstTargetGuard {
     fun match(nodes: List<AniobNode>, planned: AniobNode): AniobNode? {
         // Do not fall back to a recycled SoM index or to the first ambiguous match.
         val candidates = nodes.filter { node ->
-            node.isVisibleToUser && node.isEnabled && node.className == planned.className && when {
+            node.isVisibleToUser && node.className == planned.className && when {
                 planned.viewId.isNotBlank() -> node.viewId == planned.viewId
                 planned.text.isNotBlank() -> node.text == planned.text
                 planned.contentDescription.isNotBlank() -> node.contentDescription == planned.contentDescription
