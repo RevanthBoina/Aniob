@@ -2,6 +2,9 @@ package com.aniob.core.providers
 
 import com.aniob.core.config.AniobDecodeConfig
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.ActionBurst
+import com.aniob.core.domain.SemanticTarget
+import com.squareup.moshi.Moshi
 import com.aniob.core.domain.AniobActionSchema
 import com.aniob.core.domain.AniobScreenState
 
@@ -21,6 +24,26 @@ import com.aniob.core.domain.AniobScreenState
  * a fallback via [StructuredParse.usedFallback].
  */
 object AniobStructuredOutput {
+
+    /** Returns null for a non-burst response; malformed bursts fail closed as one Wait. */
+    fun parseBurstOrRepair(raw: String, screenState: AniobScreenState): ActionBurst? {
+        val obj = runCatching { Moshi.Builder().build().adapter(Any::class.java).fromJson(raw) as? Map<*, *> }.getOrNull()
+        if (obj == null) {
+            return if (Regex("\"actions\"\\s*:").containsMatchIn(raw))
+                ActionBurst("Invalid burst", false, listOf(AniobAction.Wait(durationMs = 1000))) else null
+        }
+        if (!obj.containsKey("actions")) return null
+        val entries = obj["actions"] as? List<*>
+        val parsed = AniobActionSchema.parseActionBurstOrNull(raw)
+        val valid = entries != null && entries.size <= ActionBurst.MAX_ACTIONS &&
+            entries.all { it is Map<*, *> } && parsed != null && parsed.actions.size == entries.size &&
+            parsed.actions.all { action ->
+                val target = action.semanticTarget()
+                target == null || (target is SemanticTarget.SomIndex &&
+                    screenState.findNodeById(target.index)?.let { it.isVisibleToUser && it.isEnabled } == true)
+            }
+        return if (valid) parsed else ActionBurst("Invalid burst", false, listOf(AniobAction.Wait(durationMs = 1000)))
+    }
 
     /** Outcome of the parse-or-repair boundary. */
     data class StructuredParse(

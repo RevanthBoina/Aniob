@@ -102,7 +102,7 @@ class RememberCacheTest {
         assertNotNull(replay)
         assertEquals(1, replay!!.size)
         val tap = replay.single() as AniobAction.Tap
-        assertEquals(SemanticTarget.SomIndex(22), tap.target)
+        assertEquals(SemanticTarget.ResourceId("com.example.app:id/go"), tap.target)
     }
 
     @Test
@@ -148,7 +148,7 @@ class RememberCacheTest {
         val input = replay.single() as AniobAction.InputText
         assertEquals("pizza", input.text)
         assertTrue(input.clearFirst)
-        assertEquals(SemanticTarget.SomIndex(6), input.target)
+        assertEquals(SemanticTarget.ResourceId("com.example.app:id/search"), input.target)
     }
 
     @Test
@@ -174,7 +174,7 @@ class RememberCacheTest {
     }
 
     @Test
-    fun coordinateFallbackFindsTheSameWidgetWithoutIdsOrText() {
+    fun coordinateOnlyTargetDoesNotReplayAcrossCaptures() {
         val bare = screen(
             listOf(
                 AniobNode(id = 1, className = "android.view.View", bounds = AniobRect(900, 1900, 1000, 2000)),
@@ -189,8 +189,7 @@ class RememberCacheTest {
         val cache = RememberCache()
         cache.record("tap corner", bare.packageName, bare.screenHash, listOf(descriptor))
         val replay = cache.lookup("tap corner", bare)
-        assertNotNull(replay)
-        assertEquals(SemanticTarget.SomIndex(1), (replay!!.single() as AniobAction.Tap).target)
+        assertNull(replay)
     }
 
     @Test

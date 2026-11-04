@@ -621,7 +621,19 @@ class AniobViewModel(
     }
 
     fun clearChat() {
-        _uiState.update { it.copy(chatMessages = emptyList()) }
+        _uiState.update {
+            it.copy(
+                chatMessages = emptyList(),
+                steps = emptyList(),
+                stepEvents = emptyList(),
+                lastNarration = "",
+                lastSummary = null,
+                momentChips = emptyList(),
+                streamingBubbleText = "",
+                isStreaming = false,
+                queuedPrompt = null
+            )
+        }
     }
 
     fun dismissInterruptedSummary() {
@@ -1844,7 +1856,7 @@ class AniobViewModel(
         verifiedActions.clear()
 
         val userMessage = ChatMessage(
-            id = "msg_user_${System.currentTimeMillis()}",
+            id = "msg_user_${java.util.UUID.randomUUID()}",
             role = "user",
             content = trimmed
         )
@@ -1922,6 +1934,8 @@ class AniobViewModel(
                 _uiState.update {
                     it.copy(
                         statusMessage = "Answering query...",
+                        isStreaming = true,
+                        streamingBubbleText = "",
                         lastProviderUsed = "EXTERNAL_AI"
                     )
                 }
@@ -1942,22 +1956,29 @@ class AniobViewModel(
                     powerState = powerState,
                     autoMode = autoMode,
                     onDelta = { delta ->
-                        _uiState.update { it.copy(streamingBubbleText = it.streamingBubbleText + delta, isStreaming = true) }
+                        if (generation == activeGeneration) {
+                            _uiState.update { it.copy(streamingBubbleText = it.streamingBubbleText + delta, isStreaming = true) }
+                        }
                     }
                 )
+                if (generation != activeGeneration || !currentCoroutineContext().isActive) return@launch
+                val answered = result is com.aniob.core.external.ExternalAiResult.Success
                 val assistantMessage = ChatMessage(
-                    id = "msg_asst_${System.currentTimeMillis()}",
+                    id = "msg_asst_${java.util.UUID.randomUUID()}",
                     role = "assistant",
-                    content = result.answer,
-                    badge = "💬 AI Answer",
-                    provider = result.provider
+                    content = if (result is com.aniob.core.external.ExternalAiResult.Error && result.provider != "LOCAL_SLM")
+                        "I couldn't get an answer. Check your connection or cloud settings, then try again."
+                    else result.answer,
+                    badge = if (answered) "💬 AI Answer" else "Answer unavailable",
+                    provider = result.provider,
+                    retryPrompt = if (answered) null else trimmed
                 )
                 updateToIdle {
                     it.copy(
                         isStreaming = false,
                         streamingBubbleText = "",
-                        statusMessage = "Ready",
-                        lastRoutingReason = "Answered via ${result.provider}",
+                        statusMessage = if (answered) "Ready" else "Could not answer — try again",
+                        lastRoutingReason = if (answered) "Answered via ${result.provider}" else "Answer unavailable",
                         chatMessages = it.chatMessages + assistantMessage,
                         lastProviderUsed = result.provider
                     )
@@ -1969,7 +1990,7 @@ class AniobViewModel(
                 app.metricsCollector.recordSession(
                     taskId = taskId,
                     prompt = trimmed,
-                    isSuccess = result.provider != "NO_PROVIDER",
+                    isSuccess = result is com.aniob.core.external.ExternalAiResult.Success,
                     steps = 0,
                     durationMs = result.latencyMs,
                     tokensUsed = tokenEstimate,
@@ -2781,7 +2802,7 @@ class AniobViewModel(
                                     totalTokens += (text.length / 4).coerceAtLeast(1)
                                     // Burst reply: several actions for the screen we just observed.
                                     val burst = if (burstEnabled) {
-                                        com.aniob.core.domain.AniobActionSchema.parseActionBurstOrNull(text)
+                                        AniobStructuredOutput.parseBurstOrRepair(text, currentScreen)
                                     } else {
                                         null
                                     }
@@ -2921,6 +2942,7 @@ class AniobViewModel(
 
                 // The screen the action was planned on: the two-tier verifier compares against it.
                 var dispatchOrigin: AniobScreenState = currentScreen
+                var burstDispatchTreeHash: String? = null
 
                 /**
                  * Waits for the dispatched action to show up, then returns the screen to verify
@@ -2984,10 +3006,10 @@ class AniobViewModel(
                             val plannedMiss = act.semanticTarget() != null &&
                                 com.aniob.core.execution.AniobActionExecutor
                                     .planDispatch(act, dispatchOrigin) is DispatchCommand.NoOp
-                            var ok = if (accessibility != null) executeActionSync(accessibility, act) else true
+                            var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash) else true
                             actionsDispatched++
                             var screenAfter = awaitTransition(act)
-                            if (!ok && plannedMiss && accessibility != null &&
+                            if (!ok && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
                                 com.aniob.core.perception.PreObserveScroll
                                     .shouldScroll(dispatchOrigin, preObservedScreens)
                             ) {
@@ -3061,26 +3083,22 @@ class AniobViewModel(
                 var burstAbort: String? = null
                 if (plannedBurst != null && plannedBurst!!.head.isNotEmpty()) {
                     val burst = plannedBurst!!
-                    var burstScreen = currentScreen
                     for ((offset, burstAction) in burst.head.withIndex()) {
                         if (taskGeneration != activeGeneration || !_uiState.value.isRunning) {
                             burstAbort = "run ended"
                             break
                         }
-                        // The first action uses the observation the plan was built on. Later
-                        // actions re-read the window: ids are re-assigned on every capture.
-                        val liveScreen = if (offset == 0) {
-                            burstScreen
-                        } else {
-                            accessibility?.captureCurrentScreenState() ?: burstScreen
+                        // Capture for every action: ids are re-assigned on every observation.
+                        val liveScreen = accessibility?.captureCurrentScreenState()
+                        if (liveScreen == null) {
+                            burstAbort = "fresh screen capture unavailable"
+                            break
                         }
-                        if (offset > 0) {
-                            val verdict = com.aniob.core.perception.BurstTargetGuard
-                                .check(burstAction, currentScreen, liveScreen)
-                            if (!verdict.allowed) {
-                                burstAbort = verdict.reason
-                                break
-                            }
+                        val verdict = com.aniob.core.perception.BurstTargetGuard
+                            .check(burstAction, currentScreen, liveScreen)
+                        if (!verdict.allowed) {
+                            burstAbort = verdict.reason
+                            break
                         }
                         val target = com.aniob.core.perception.BurstTargetGuard
                             .findTarget(burstAction, currentScreen, liveScreen)
@@ -3090,17 +3108,27 @@ class AniobViewModel(
                             burstAction
                         }
                         dispatchOrigin = liveScreen
-                        val outcome = dispatchLambda(dispatchable)
-                        // One counted step per dispatched action, including the burst.
+                        // Every head action must pass the same safety, physical and verification
+                        // pipeline as the tail. A burst never prompts mid-flight: stop and replan.
+                        burstDispatchTreeHash = com.aniob.core.diff.AniobScreenDiff.computeTreeHash(liveScreen.nodes)
+                        val headResult = stepPipe.executeStep(
+                            ctx = taskContext,
+                            planningScreen = liveScreen,
+                            proposal = StepPipeline.Proposal.Model(dispatchable, primaryProvider),
+                            capture = { liveScreen },
+                            dispatch = dispatchLambda,
+                            confirm = { false },
+                            targetNode = target
+                        )
+                        burstDispatchTreeHash = null
                         app.researchTelemetry.recordStep()
-                        burstScreen = outcome.screenAfter ?: liveScreen
-                        if (!outcome.dispatched) {
-                            burstAbort = "action ${offset + 1} did not dispatch"
+                        if (headResult.terminalState != StepResult.TerminalState.CONTINUE ||
+                            headResult.verification?.isSuccessful != true) {
+                            burstAbort = "action ${offset + 1} was blocked or not verified"
                             break
                         }
-                        // Only a dispatched action becomes a replayable transition.
                         rememberTransitions.add(
-                            RememberTransition(screen = liveScreen, action = dispatchable, node = target)
+                            RememberTransition(screen = liveScreen, action = headResult.action, node = headResult.resolvedNode)
                         )
                     }
                 }
@@ -3133,9 +3161,10 @@ class AniobViewModel(
                 }
                 if (plannedBurst != null && burstAbort != null) {
                     app.eventLogger.warn("AniobViewModel", "Burst stopped: $burstAbort")
-                    _uiState.update { it.copy(statusMessage = "Burst stopped: $burstAbort") }
+                    val userReason = "I stopped before finishing because an action could not be safely completed or verified. Check the screen before trying again; earlier changes were not undone."
+                    _uiState.update { it.copy(statusMessage = userReason) }
                     proposal = StepPipeline.Proposal.Model(
-                        AniobAction.Finish("Burst stopped: $burstAbort"),
+                        AniobAction.Fail(userReason),
                         primaryProvider
                     )
                     targetNode = null
@@ -3367,7 +3396,7 @@ class AniobViewModel(
             Outcome.FAILED -> "Failed"
         }
         val assistantMessage = ChatMessage(
-            id = "msg_asst_${System.currentTimeMillis()}",
+            id = "msg_asst_${java.util.UUID.randomUUID()}",
             role = "assistant",
             content = when (finalOutcome) {
                 Outcome.SUCCESS -> "Completed '${task.rawPrompt}' via $primaryProvider. " +
@@ -3450,12 +3479,12 @@ class AniobViewModel(
     ): DeterministicVerifier.VerificationResult =
         DeterministicVerifier.verifyFinish(criteria, finalScreen, steps)
 
-    private suspend fun executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction): Boolean {
+    private suspend fun executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction, expectedTreeHash: String? = null): Boolean {
         // Block until the UI is quiescent so we never dispatch into a running animation.
         AniobWaitForIdle.waitForIdle(1000)
         if (accessibility == null) return false
         val deferred = CompletableDeferred<Boolean>()
-        accessibility.executeAction(action) { success ->
+        accessibility.executeAction(action, expectedTreeHash) { success ->
             deferred.complete(success)
         }
         return withTimeoutOrNull(SWIPE_CALLBACK_TIMEOUT_SECONDS * 1000L) { deferred.await() } ?: false
@@ -3724,7 +3753,7 @@ class AniobViewModel(
         )
         postSummaryCard(stoppedSummary)
         AniobBackgroundController.onTaskFinished(app, "Stopped by user", isSuccess = false)
-        updateToIdle { it.copy(statusMessage = "Stopped. Earlier changes were not undone.") }
+        updateToIdle { it.copy(statusMessage = "Stopped. Earlier changes were not undone.", isStreaming = false, streamingBubbleText = "") }
     }
 
     override fun onCleared() {

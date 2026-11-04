@@ -32,6 +32,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -118,10 +121,9 @@ fun AniobChatScreen(
     val listState = rememberLazyListState()
 
     // Auto-scroll to latest message
-    LaunchedEffect(displayMessages.size, uiState.streamingBubbleText) {
-        if (displayMessages.isNotEmpty()) {
-            listState.animateScrollToItem(displayMessages.lastIndex)
-        }
+    LaunchedEffect(displayMessages.size, uiState.isStreaming, uiState.streamingBubbleText, uiState.lastSummary) {
+        val lastItem = listState.layoutInfo.totalItemsCount - 1
+        if (lastItem >= 0) listState.animateScrollToItem(lastItem)
     }
 
     // Tracker Bottom Sheet (0 model calls, 0 captures)
@@ -318,7 +320,7 @@ fun AniobChatScreen(
         }
 
         // 5. Conversation History or Empty State
-        if (displayMessages.isEmpty() && uiState.lastSummary == null) {
+        if (displayMessages.isEmpty() && uiState.lastSummary == null && !uiState.isStreaming) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -384,7 +386,7 @@ fun AniobChatScreen(
                     )
                 }
 
-                if (uiState.isStreaming && uiState.streamingBubbleText.isNotBlank()) {
+                if (uiState.isStreaming) {
                     item(key = "streaming_bubble") {
                         StreamingChatBubble(uiState.streamingBubbleText)
                     }
@@ -660,7 +662,7 @@ fun WhatsAppChatBubble(
     val isPreflightFailure = message.badge?.let {
         it.contains("Pre-flight") || it.contains("Check Failed")
     } == true
-    val needsProviderAction = isPreflightFailure ||
+    val needsProviderAction = isPreflightFailure || message.retryPrompt != null ||
         message.content.contains("configure an API key in Settings", ignoreCase = true) ||
         message.content.contains("API key is not configured", ignoreCase = true) ||
         message.content.contains("cloud API key is missing", ignoreCase = true)
@@ -693,7 +695,9 @@ fun WhatsAppChatBubble(
                 if (needsProviderAction) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (message.content.contains("install an on-device model", ignoreCase = true) ||
+                        if (message.provider == "LOCAL_SLM" && message.retryPrompt != null ||
+                            message.content.contains("local model is missing", ignoreCase = true) ||
+                            message.content.contains("install an on-device model", ignoreCase = true) ||
                             message.content.contains("Local model file missing", ignoreCase = true) ||
                             message.content.contains("Download an on-device model", ignoreCase = true)
                         ) {
@@ -705,7 +709,7 @@ fun WhatsAppChatBubble(
                                 Text("Manage Models", style = MaterialTheme.typography.labelSmall)
                             }
                         }
-                        if (message.content.contains("Settings", ignoreCase = true) ||
+                        if (message.content.contains("settings", ignoreCase = true) ||
                             message.content.contains("API key", ignoreCase = true) ||
                             message.content.contains("Local model file missing", ignoreCase = true)
                         ) {
@@ -795,17 +799,20 @@ fun StreamingChatBubble(text: String) {
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp),
-            modifier = Modifier.widthIn(max = 320.dp)
+            modifier = Modifier.widthIn(max = 320.dp).testTag("chat_generating_bubble")
+                .semantics { liveRegion = LiveRegionMode.Polite }
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                FormattedMessageView(
-                    content = text,
-                    textColor = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(4.dp))
+                if (text.isNotBlank()) {
+                    FormattedMessageView(
+                        content = text,
+                        textColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     PulsingDot()
-                    Text("Generating...", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(if (text.isBlank()) "Waiting for an answer..." else "Generating...", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }

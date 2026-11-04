@@ -119,6 +119,9 @@ object AniobScreenDiff {
             h = fnvMixInt(h, node.bounds.bottom)
             h = fnvMixBoolean(h, node.isEnabled)
             h = fnvMixBoolean(h, node.isClickable)
+            h = fnvMixBoolean(h, node.isEditable)
+            h = fnvMixBoolean(h, node.isScrollable)
+            h = fnvMixBoolean(h, node.isVisibleToUser)
             h = fnvMixBoolean(h, node.isSelected)
             h = fnvMixBoolean(h, node.isChecked)
         }

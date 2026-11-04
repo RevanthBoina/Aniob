@@ -807,14 +807,24 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      *    planning screen. A miss calls back `false` and logs `grounding_miss`; we never fall back
      *    to a guessed coordinate.
      */
-    fun executeAction(action: AniobAction, callback: (Boolean) -> Unit) {
+    fun executeAction(action: AniobAction, expectedTreeHash: String? = null, callback: (Boolean) -> Unit) {
         gateOnUiQuiescence(action)
 
         val liveScreen = try {
             captureCurrentScreenState()
         } catch (_: Exception) {
+            if (expectedTreeHash != null) {
+                callback(false)
+                return
+            }
             lastScreenState
         } ?: AniobScreenState(packageName = currentForegroundPackage().orEmpty())
+
+        if (expectedTreeHash != null &&
+            com.aniob.core.diff.AniobScreenDiff.computeTreeHash(liveScreen.nodes) != expectedTreeHash) {
+            callback(false)
+            return
+        }
 
         val displayMetrics = resources.displayMetrics
         val width = displayMetrics.widthPixels

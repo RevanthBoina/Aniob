@@ -67,7 +67,10 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests { isIncludeAndroidResources = true }
+    animationsDisabled = true
+  }
   packaging {
     resources.excludes += listOf(
       "META-INF/INDEX.LIST",

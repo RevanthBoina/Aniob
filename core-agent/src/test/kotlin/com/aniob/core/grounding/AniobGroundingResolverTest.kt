@@ -96,4 +96,20 @@ class AniobGroundingResolverTest {
         assertNotNull(resolved)
         assertEquals(2, resolved?.node?.id)
     }
+    @Test
+    fun `coordinates without an observed node fail closed`() {
+        val empty = AniobScreenState(packageName = "com.test", nodes = emptyList())
+        assertNull(AniobGroundingResolver.resolve(SemanticTarget.NormalizedCoordinate(50, 50), empty))
+        assertNull(AniobGroundingResolver.resolve(SemanticTarget.BoundingBox(10, 10, 20, 20), empty))
+    }
+
+    @Test
+    fun `tied fuzzy labels are not guessed`() {
+        val screen = AniobScreenState(packageName = "com.test", nodes = listOf(
+            makeNode(1, text = "Settings", clickable = false),
+            makeNode(2, text = "Settings", clickable = false)
+        ))
+        assertNull(AniobGroundingResolver.resolve(SemanticTarget.Text("Setting"), screen))
+    }
+
 }

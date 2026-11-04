@@ -158,8 +158,8 @@ Set "submit": true when the text is a query or a phone number and the field must
 
         val actions = ArrayList<AniobAction>(ActionBurst.MAX_ACTIONS)
         for (element in splitObjects(array)) {
-            if (actions.size >= ActionBurst.MAX_ACTIONS) break
-            val action = burstAction(element, thought) ?: continue
+            if (actions.size >= ActionBurst.MAX_ACTIONS) return null
+            val action = burstAction(element, thought) ?: return null
             actions.add(action)
         }
         if (actions.isEmpty()) {
