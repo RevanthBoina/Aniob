@@ -34,6 +34,10 @@ object AniobReflexResolver {
     /** Pseudo-action for shortcuts that are executed by the device-control layer, never by startActivity. */
     const val ACTION_DEVICE_CONTROL = "com.aniob.action.DEVICE_CONTROL"
 
+    /** Upper bound for "off after N seconds" follow-ups, so a typo can't hold the torch for hours. */
+    private const val MAX_TORCH_DELAY_MS = 3_600_000L
+    private const val DEFAULT_TORCH_SEQUENCE_DELAY_MS = 500L
+
     /** Prefix that keeps command arguments apart from the intent extras already in the map. */
     const val ARG_PREFIX = "aniob_arg_"
 
@@ -44,6 +48,13 @@ object AniobReflexResolver {
 
     fun argsOf(shortcut: ResolvedIntentShortcut): Map<String, String> =
         shortcut.extras.filterKeys { it.startsWith(ARG_PREFIX) }.mapKeys { it.key.removePrefix(ARG_PREFIX) }
+
+    /**
+     * Public factory for capability planners: the same contract the reflex table emits, so a
+     * pattern-derived command is dispatched through the exact verified device path.
+     */
+    fun deviceShortcut(command: DeviceCommand, args: Map<String, String> = emptyMap()): ResolvedIntentShortcut =
+        shortcut(command, args)
 
     private fun shortcut(command: DeviceCommand, args: Map<String, String> = emptyMap()): ResolvedIntentShortcut =
         ResolvedIntentShortcut(
@@ -144,11 +155,19 @@ object AniobReflexResolver {
         reminder(rawText, clock)?.let { return it }
         calendar(rawText, clock)?.let { return it }
         messaging(rawText)?.let { return it }
+
+        // Compound torch goals ("turn on flashlight and turn it off after 5 seconds") contain
+        // "and turn", which the multi-goal guard below would bounce to the model BY DESIGN —
+        // where it became a chat answer recorded as success. A torch sequence never needs the
+        // model: it decomposes here into atomic, individually verified dispatches.
+        val normalText = AniobTaskIntentClassifier.normalizeLexical(text)
+        torchSequence(normalText)?.let { return it }
+
         if (MULTI_GOAL.containsMatchIn(text)) return null
 
         return media(text)
             ?: volume(text)
-            ?: hardware(text)
+            ?: hardware(normalText)
             ?: notifications(text)
             ?: files(text)
             ?: navigation(rawText)
@@ -233,14 +252,52 @@ object AniobReflexResolver {
         else -> "music"
     }
 
+    // ------------------------------------------------------------------ torch sequences ----
+
+    private val TORCH_NOUN = Regex("""\b(?:flashlight|torch)\b""")
+    private val TORCH_SEQ_ON_OFF = Regex(
+        """\bon\s+and\s+(?:turn\s+|switch\s+)?off\b|\b(?:turn|switch)\s+on\b.*\b(?:turn|switch)\s+off\b|^(?:turn\s+|switch\s+)?on\b.*\boff\b"""
+    )
+    private val TORCH_SEQ_DELAY = Regex("""\b(?:after|in)\s+(\d{1,4})\s*(?:seconds?|secs?|s)\b""")
+
+    /**
+     * "on and off flash light" / "turn on flashlight and turn it off after 5 seconds": a *sequence*
+     * of two atomic reflexes with an optional delay — decomposed here so the model (which cannot
+     * schedule hardware) is never asked to narrate it. The follow-up rides in the shortcut args
+     * (`then_command`, `then_delay_ms`); the device layer dispatches and verifies both transitions.
+     */
+    private fun torchSequence(text: String): ResolvedIntentShortcut? {
+        if (!TORCH_NOUN.containsMatchIn(text)) return null
+        if (!TORCH_SEQ_ON_OFF.containsMatchIn(text)) return null
+        // The regex captures SECONDS; convert before clamping. (The first draft passed the raw
+        // digit count through as milliseconds, so "after 5 seconds" off'd the torch after 5 ms.)
+        val delayMs = TORCH_SEQ_DELAY.find(text)?.groupValues?.get(1)?.toLongOrNull()
+            ?.let { (it * 1000L).coerceIn(0L, MAX_TORCH_DELAY_MS) }
+            ?: DEFAULT_TORCH_SEQUENCE_DELAY_MS
+        return shortcut(
+            DeviceCommand.TORCH_ON,
+            mapOf(
+                "then_command" to DeviceCommand.TORCH_OFF.wire,
+                "then_delay_ms" to delayMs.toString()
+            )
+        )
+    }
+
     // ------------------------------------------------------------------ hardware ---------------
 
     private fun hardware(text: String): ResolvedIntentShortcut? = when (text) {
         "turn off flashlight", "turn off the flashlight", "flashlight off", "switch off flashlight",
-        "switch off the flashlight", "turn off torch", "turn off the torch", "torch off", "disable flashlight" ->
+        "switch off the flashlight", "turn off torch", "turn off the torch", "torch off", "disable flashlight",
+        // Telegraphic OFF forms: "off flashlight" / "off torch" (BUG-03 — word order must not matter).
+        "off flashlight", "off torch" ->
             shortcut(DeviceCommand.TORCH_OFF)
+        // BUG-03: "turn on flashlight" was MISSING from this branch while "turn off flashlight"
+        // existed in the OFF branch — the report's own recommendation referenced a pattern the
+        // lexicon never contained. Telegraphic forms ("on flash light", normalized above) included.
         "turn on torch", "turn on the torch", "torch on", "torch", "switch on flashlight",
-        "switch on the flashlight", "enable flashlight" -> shortcut(DeviceCommand.TORCH_ON)
+        "switch on the flashlight", "enable flashlight",
+        "turn on flashlight", "turn on the flashlight", "flashlight on", "on flashlight",
+        "on torch", "flashlight" -> shortcut(DeviceCommand.TORCH_ON)
         "take a screenshot", "take screenshot", "screenshot", "capture screen", "capture the screen",
         "take a screen shot", "screenshot this", "screenshot the screen" -> shortcut(DeviceCommand.SCREENSHOT)
         // "open notifications" / "show notifications" are deliberately absent: the older settings-panel

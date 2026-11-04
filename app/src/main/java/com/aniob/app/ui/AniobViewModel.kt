@@ -1931,12 +1931,53 @@ class AniobViewModel(
                 }
             }
 
+            // Bare toggles ("on and off after 5 seconds") carry no device noun; inherit the noun
+            // of the last USER message (assistant prose must never define device intent).
+            val effectivePrompt = resolveContextualGoal(trimmed)
+
             // Step 0: Pre-route supported shortcuts before general Q&A classification
-            val resolvedShortcut = AniobIntentResolver.resolve(trimmed)
-            val intent = if (resolvedShortcut != null) {
+            val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt)
+            var intent = if (resolvedShortcut != null) {
                 AniobIntent.DEVICE_AUTOMATION
             } else {
-                AniobTaskIntentClassifier.classify(trimmed)
+                AniobTaskIntentClassifier.classify(effectivePrompt)
+            }
+
+            // BUG-02 last line of defence: a hardware toggle that dodged both rungs must NEVER be
+            // routed to the answer path — that path records generated text as an executed command.
+            if (intent != AniobIntent.DEVICE_AUTOMATION &&
+                AniobTaskIntentClassifier.looksLikeDeviceToggle(effectivePrompt)
+            ) {
+                app.eventLogger.warn(
+                    "AniobViewModel",
+                    "Hardware toggle escaped classification; re-routing to device automation: $trimmed"
+                )
+                intent = AniobIntent.DEVICE_AUTOMATION
+            }
+
+            // Fail CLOSED: a toggle with no device noun and no device in recent user context is
+            // ambiguous. Answering it with prose would recreate exactly the report's false success,
+            // so ask one question instead. Clarification is cheaper than confident fiction.
+            if (intent != AniobIntent.DEVICE_AUTOMATION &&
+                AniobTaskIntentClassifier.looksLikeBareToggle(trimmed) &&
+                effectivePrompt == trimmed
+            ) {
+                val clarify = ChatMessage(
+                    id = "msg_clarify_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = "Which device should I switch? I heard an on/off command but no device " +
+                        "(flashlight, Wi-Fi, Bluetooth…).",
+                    provider = "CLARIFY",
+                    badge = "❓ Clarification"
+                )
+                updateToIdle {
+                    it.copy(
+                        chatMessages = it.chatMessages + clarify,
+                        statusMessage = "Clarification needed",
+                        lastRoutingReason = "Ambiguous device toggle — asked instead of guessing"
+                    )
+                }
+                return@launch
             }
 
             if (intent != AniobIntent.DEVICE_AUTOMATION) {
@@ -2004,7 +2045,8 @@ class AniobViewModel(
                     durationMs = result.latencyMs,
                     tokensUsed = tokenEstimate,
                     providerUsed = result.provider,
-                    decisionReason = "Direct intent answer for ${intent.name}"
+                    // BUG-01: this metric records ANSWER DELIVERY, never a device change — say so.
+                    decisionReason = "Conversational answer (asserts no device change) for ${intent.name}"
                 )
                 return@launch
             }
@@ -2207,13 +2249,18 @@ class AniobViewModel(
         } catch (_: Exception) {
             emptyMap()
         }
+        // The goal the runner acts on MUST carry the resolved device noun; otherwise the criteria
+        // extractor cannot see a torch/install assertion for a context-resolved bare toggle.
+        val resolvedGoalPrompt = resolveContextualGoal(
+            task.clarifiedGoal.ifBlank { task.rawPrompt }
+        )
         val resolvedCriteria = task.successCriteria ?: AniobTaskIntentClassifier.extractCriteria(
-            prompt = task.clarifiedGoal,
+            prompt = resolvedGoalPrompt,
             grillAnswers = task.grillAnswers,
             appCatalog = appCatalog
         )
         var taskContext = com.aniob.core.domain.TaskContext(
-            instruction = task.clarifiedGoal,
+            instruction = resolvedGoalPrompt,
             successCriteria = resolvedCriteria,
             grillAnswers = task.grillAnswers,
             taskId = task.id
@@ -2375,7 +2422,9 @@ class AniobViewModel(
             },
             // Dispatch already polled for the transition (FastVerify); a second fixed wait here
             // would only re-add the latency this change removes.
-            settle = { _, capture -> capture() }
+            settle = { _, capture -> capture() },
+            // Hardware/package evidence for Finish verification. Unknown probes stay inconclusive.
+            deviceState = { criteria -> probeDeviceState(criteria) }
         )
 
         val maxSteps = agentLimits.maxStepsPerTask
@@ -2559,8 +2608,9 @@ class AniobViewModel(
                         if (currentStep == 0) {
                             val beforePackage = accessibility?.currentForegroundPackage() ?: screenBefore?.packageName
                             val deviceCommand = AniobReflexResolver.commandOf(shortcut)
+                            val deviceArgs = AniobReflexResolver.argsOf(shortcut)
                             val dispatched = if (deviceCommand != null) {
-                                runDeviceShortcut(deviceCommand, AniobReflexResolver.argsOf(shortcut))
+                                runDeviceShortcut(deviceCommand, deviceArgs)
                             } else {
                                 dispatchSystemIntent(shortcut)
                             }
@@ -2569,7 +2619,12 @@ class AniobViewModel(
                                 app.researchTelemetry.recordStep()
                                 // A silent device command (volume, torch, pause...) changes nothing on
                                 // screen: waiting for a window change would burn the whole settle budget.
+                                val sequenceWaitMs = deviceArgs["then_delay_ms"]?.toLongOrNull() ?: 0L
                                 val landed = if (deviceCommand != null && deviceCommand.completesOnDispatch) {
+                                    // A decomposed sequence ("on … off after 5s") finishes AFTER the
+                                    // dispatch. Judging it immediately would read the wrong state
+                                    // and mislabel a correct run, so wait out the scheduled leg.
+                                    if (sequenceWaitMs > 0L) delay(sequenceWaitMs + 400L)
                                     null
                                 } else {
                                     awaitIntentScreen(beforePackage, INTENT_SETTLE_MS)
@@ -2583,11 +2638,14 @@ class AniobViewModel(
                                 // success nobody looked at is not a success this app reports.
                                 // `currentStep + 1` because this dispatch already happened; the
                                 // criterion set includes a min-steps check that would fail otherwise.
-                                val verdict = if (resolvedCriteria?.hasObservableCheck == true) {
+                                val screenVerdict = if (resolvedCriteria?.hasObservableCheck == true) {
                                     landed?.let { resolvedCriteria.evaluateCriteria(it, currentStep + 1) }.orEmpty()
                                 } else {
                                     emptyList()
                                 }
+                                // World-state assertions (torch) are probed against the hardware —
+                                // no screen could ever prove them (BUG-06).
+                                val verdict = screenVerdict + evalDeviceAssertions(resolvedCriteria)
                                 when {
                                     verdict.isNotEmpty() && verdict.all {
                                         it.state == com.aniob.core.domain.CriterionState.PASSED
@@ -3410,11 +3468,17 @@ class AniobViewModel(
         // A run closed by a shortcut keeps the verdict it was actually judged by. Otherwise the
         // common path re-checks the final screen; a completion with nothing checkable has nothing
         // to re-check at all.
-        val criteriaEvaluations = when {
-            intentVerdict != null -> intentVerdict!!
-            completedByIntent -> emptyList()
-            else -> resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
-        }
+        // Device evidence is merged into EVERY closing path (intent, pipeline, model Finish).
+        // v1 only wired it into the intent branch, leaving the common ladder path unguarded.
+        val finalDeviceState = probeDeviceState(resolvedCriteria)
+        val deviceEvaluations = evalDeviceAssertions(resolvedCriteria, finalDeviceState)
+        val criteriaEvaluations = (
+            when {
+                intentVerdict != null -> intentVerdict!!
+                completedByIntent -> emptyList()
+                else -> resolvedCriteria?.evaluateCriteria(finalScreen, currentStep, finalDeviceState) ?: emptyList()
+            } + deviceEvaluations
+        ).distinctBy { it.description }
         val evidenceItems = criteriaEvaluations.map { ev ->
             EvidenceItem(
                 label = ev.description,
@@ -3441,6 +3505,30 @@ class AniobViewModel(
         ) {
             // Confirmed with no machine-checkable criterion: honest "unverified", never a failure.
             finalOutcome = Outcome.UNVERIFIED
+        }
+
+        // FINAL GATE (BUG-01/06): SUCCESS may not survive an unmet or unprobed criterion — even
+        // when a pipeline step or a model Finish claimed it. This is the single place every run
+        // passes through, so no future code path can quietly opt out of device evidence.
+        if (finalOutcome == Outcome.SUCCESS) {
+            val unsupported = criteriaEvaluations.filter {
+                it.state != com.aniob.core.domain.CriterionState.PASSED && it.description.startsWith("Device state:")
+            }
+            if (unsupported.isNotEmpty()) {
+                finalOutcome = Outcome.UNVERIFIED
+                terminalReason = "Completion not supported by device evidence: " +
+                    unsupported.joinToString("; ") { "${it.description} — ${it.detail}" }
+            }
+        }
+        if (finalOutcome == Outcome.SUCCESS &&
+            resolvedCriteria?.requireInstallConfirmation == true &&
+            resolvedCriteria.mustBeInstalled.isEmpty()
+        ) {
+            // "install <unknown app>" only reached a store SEARCH. There is no package id to query,
+            // so the run cannot prove an install happened — honest UNVERIFIED, never SUCCESS.
+            finalOutcome = Outcome.UNVERIFIED
+            terminalReason = "Store search opened, but the install target is unresolved; " +
+                "PackageManager cannot confirm completion."
         }
 
         val totalDuration = System.currentTimeMillis() - startTime
@@ -3793,6 +3881,41 @@ class AniobViewModel(
             AniobDeviceControl.execute(app, command, args, AniobAccessibilityService.instance)
         }
 
+    /**
+     * Resolves a bare toggle's device noun from the last USER messages only. Assistant prose often
+     * mentions hardware ("the flashlight is off") and must never be treated as user intent.
+     */
+    private fun resolveContextualGoal(prompt: String): String {
+        if (!AniobTaskIntentClassifier.looksLikeBareToggle(prompt)) return prompt
+        val implied = _uiState.value.chatMessages.asReversed()
+            .filter { it.role == "user" }
+            .take(6)
+            .firstNotNullOfOrNull { AniobTaskIntentClassifier.impliedDeviceNoun(it.content) }
+            ?: return prompt
+        return "$prompt $implied"
+    }
+
+    /**
+     * Live device snapshot for success criteria: torch mode from CameraManager's callback mirror,
+     * installed state from PackageManager for exactly the packages the criteria mention.
+     */
+    @Suppress("DEPRECATION")
+    private fun probeDeviceState(criteria: SuccessCriteria?): DeviceStateSnapshot {
+        val installed = criteria?.mustBeInstalled.orEmpty().associateWith { pkg ->
+            runCatching { app.packageManager.getPackageInfo(pkg, 0) }.isSuccess
+        }
+        return DeviceStateSnapshot(
+            torchOn = AniobDeviceControl.currentTorchState(app),
+            installedPackages = installed
+        )
+    }
+
+    /** Device-side criteria evaluated against hardware/package state. Unknown is never success. */
+    private fun evalDeviceAssertions(
+        criteria: SuccessCriteria?,
+        device: DeviceStateSnapshot = probeDeviceState(criteria)
+    ): List<CriterionEvaluation> = criteria?.evaluateDeviceCriteria(device).orEmpty()
+
     /** Reflex path: 0 tokens. A command that cannot run says which setting to enable, then planning continues. */
     private suspend fun runDeviceShortcut(command: DeviceCommand, args: Map<String, String>): Boolean {
         val result = runDeviceCommand(command, args)
@@ -3816,24 +3939,14 @@ class AniobViewModel(
         _uiState.update { it.copy(chatMessages = it.chatMessages + message) }
     }
 
-    private fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut): Boolean {
+    private suspend fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut): Boolean {
         val systemAction = shortcut.extras[AniobIntentResolver.EXTRA_SYSTEM_ACTION]
         return try {
             when (systemAction) {
                 AniobIntentResolver.SYSTEM_ACTION_FLASHLIGHT -> {
-                    // Reflex: toggling the camera flash needs no LLM ladder.
-                    val cam = app.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
-                    val flashIds = cam?.cameraIdList?.filter { id ->
-                        cam.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-                    }.orEmpty()
-                    if (cam != null && flashIds.isNotEmpty()) {
-                        cam.setTorchMode(flashIds.first(), true)
-                        app.eventLogger.info("AniobViewModel", "Flashlight toggled on (reflex, no LLM)")
-                        true
-                    } else {
-                        app.eventLogger.error("AniobViewModel", "Flashlight unavailable on this device")
-                        false
-                    }
+                    // Route through the VERIFIED device-control path: the torch state is read back
+                    // after dispatch, so an unconfirmed toggle can no longer masquerade as success.
+                    runDeviceCommand(DeviceCommand.TORCH_ON, emptyMap()).ok
                 }
                 AniobIntentResolver.SYSTEM_ACTION_GET_DEVICE_INFO -> {
                     val state = AniobDeviceTelemetry.getRealState(app)
@@ -3889,6 +4002,15 @@ class AniobViewModel(
                         )
                     }
                     if (startActivitySafely(launchCtx, intent)) return true
+                    // Play Store missing/disabled: open the web storefront so the install task
+                    // still lands on a terminal page instead of failing silently (BUG-05).
+                    shortcut.extras[AniobIntentResolver.EXTRA_INSTALL_PACKAGE]?.let { installPkg ->
+                        val web = Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("https://play.google.com/store/apps/details?id=$installPkg")
+                        ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                        if (startActivitySafely(launchCtx, web)) return true
+                    }
                     // Some launchers only resolve with the package's own launch intent.
                     val pkg = shortcut.targetPackage ?: return false
                     val relaunch = app.packageManager.getLaunchIntentForPackage(pkg) ?: return false

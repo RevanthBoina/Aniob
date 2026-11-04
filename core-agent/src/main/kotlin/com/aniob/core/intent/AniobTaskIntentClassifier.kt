@@ -1,6 +1,10 @@
 package com.aniob.core.intent
 
+import com.aniob.core.domain.DeviceAssertion
 import com.aniob.core.domain.SuccessCriteria
+import com.aniob.core.capability.pattern.PatternCriteriaBridge
+import com.aniob.core.capability.pattern.UniversalPlanner
+import com.aniob.core.knowledge.AniobStoreCatalog
 
 /**
  * Pure JVM Intent Gate Classifier.
@@ -16,6 +20,70 @@ enum class AniobIntent {
 }
 
 object AniobTaskIntentClassifier {
+
+    /** Common phonetic spellings collapsed so every downstream matcher sees canonical words. */
+    private val lexicalFixes: List<Pair<Regex, String>> = listOf(
+        Regex("""\bflash\s*light\b""") to "flashlight",
+        Regex("""\b(?:flaslight|flashligh|flashlite)\b""") to "flashlight",
+        Regex("""\b(?:tourch|troch)\b""") to "torch",
+        Regex("""\bwifi\b""") to "wi-fi"
+    )
+
+    /** Lexical repair pass: "flash light" -> "flashlight", "tourch" -> "torch", ... */
+    fun normalizeLexical(text: String): String {
+        var out = text
+        for ((rx, replacement) in lexicalFixes) out = rx.replace(out, replacement)
+        return out.trim()
+    }
+
+    /** Hardware nouns that unambiguously belong to the device domain, regardless of verb position. */
+    private val deviceNouns = Regex(
+        """\b(?:flashlight|torch|torchlight|wi-fi|bluetooth|hotspot|dnd|do\s+not\s+disturb|""" +
+            """volume|brightness|airplane|nfc|screenshot|screen\s+recording|battery\s+saver|dark\s+mode|location|gps|mobile\s+data)\b"""
+    )
+
+    /**
+     * Toggle cues in ANY position: "on flash light", "flashlight on", "turn on the torch" are the
+     * same command. Together with [deviceNouns] this keeps telegraphic speech from falling into
+     * the conversational default — the first link of the false-success cascade.
+     */
+    private val toggleCues = Regex(
+        """\b(?:on|off)\b|\b(?:turn|switch|enable|disable|toggle|activate|deactivate)\b"""
+    )
+
+    private val torchNounRx = Regex("""\b(?:flashlight|torch|torchlight)\b""")
+    private val installRx = Regex("""^(?:install|download)\s+""")
+
+    /**
+     * True when the prompt is a hardware toggle in any word order ("on flash light", "torch on").
+     * Public: the app layer uses it as the last line of defence keeping device commands off the
+     * "answer text and claim success" path.
+     */
+    fun looksLikeDeviceToggle(prompt: String): Boolean {
+        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim()))
+        return deviceNouns.containsMatchIn(lower) && toggleCues.containsMatchIn(lower)
+    }
+
+    /**
+     * A toggle cue with NO device noun ("on and off after 5 seconds"): ambiguous alone, but the
+     * noun is usually the one the conversation was just about — see [impliedDeviceNoun].
+     */
+    fun looksLikeBareToggle(prompt: String): Boolean {
+        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim()))
+        return !deviceNouns.containsMatchIn(lower) && toggleCues.containsMatchIn(lower)
+    }
+
+    /** The device noun a sentence refers to, if any — used to resolve bare toggles from context. */
+    fun impliedDeviceNoun(sentence: String): String? {
+        val lower = normalizeLexical(sentence.lowercase())
+        return when {
+            torchNounRx.containsMatchIn(lower) -> "flashlight"
+            Regex("""\bwi-fi\b""").containsMatchIn(lower) -> "wi-fi"
+            Regex("""\bbluetooth\b""").containsMatchIn(lower) -> "bluetooth"
+            Regex("""\bhotspot\b""").containsMatchIn(lower) -> "hotspot"
+            else -> null
+        }
+    }
 
     private val deviceVerbs = listOf(
         "open", "launch", "start", "run", "go to", "navigate", "tap", "click", "press", "swipe",
@@ -82,7 +150,7 @@ object AniobTaskIntentClassifier {
     }
 
     fun classify(prompt: String): AniobIntent {
-        val lower = stripPreamble(prompt.lowercase().trim())
+        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim()))
         if (lower.isBlank()) return AniobIntent.EXTERNAL_AI_QUERY
 
         val hasQuestionWord = lower.startsWith("what") || lower.startsWith("who") ||
@@ -106,6 +174,21 @@ object AniobTaskIntentClassifier {
             (hasQuestionWord && !deviceVerbs.any { lower.startsWith(it) || lower.startsWith("please $it") })
         ) {
             return AniobIntent.KNOWLEDGE_QA
+        }
+
+        // 3.5 Hardware toggles are device intent in ANY word order ("on flash light", "torch on").
+        // Telegraphic forms used to fall into the EXTERNAL_AI_QUERY default, where a chat answer
+        // was recorded as an executed command — the false-success cascade of the 2026-11-04 report.
+        if (looksLikeDeviceToggle(prompt)) {
+            return AniobIntent.DEVICE_AUTOMATION
+        }
+
+        // Pattern gate: if the capability planner produced a device-domain plan for ANY slot value,
+        // it is automation. This generalises beyond the verb whitelist: "install <any app>" and
+        // every future registry capability route correctly without touching this classifier.
+        val patternPlan = UniversalPlanner.plan(prompt)
+        if (patternPlan.isExecutable && patternPlan.atoms.any { it.capability.deviceDomain }) {
+            return AniobIntent.DEVICE_AUTOMATION
         }
 
         // 4. Device automation requires imperative command at start, not inside question
@@ -160,10 +243,45 @@ object AniobTaskIntentClassifier {
             .filter { it.length in 2..40 }
             .forEach { if (it !in mustContain) mustContain += it }
 
+        // Hardware toggles assert a WORLD state the screen cannot show (BUG-06): probe the
+        // device, never the pixels. The LAST toggle cue wins, so "on and off flash light" ends OFF.
+        val deviceAsserts = mutableListOf<DeviceAssertion>()
+        val mustBeInstalled = mutableListOf<String>()
+        val normalized = normalizeLexical(lower)
+        if (looksLikeDeviceToggle(prompt) && torchNounRx.containsMatchIn(normalized)) {
+            val lastOn = normalized.lastIndexOf(" on")
+            val lastOff = normalized.lastIndexOf("off")
+            val finalOff = lastOff > lastOn
+            deviceAsserts += if (finalOff) DeviceAssertion.TORCH_OFF else DeviceAssertion.TORCH_ON
+        }
+
+        // "install X" is honestly claimed only when Play Store is foreground AND PackageManager
+        // actually reports the package installed. Opening the listing is not installing it.
+        if (installRx.containsMatchIn(normalized) && "com.android.vending" !in mustShowPackage) {
+            mustShowPackage += "com.android.vending"
+        }
+        val isInstall = AniobStoreCatalog.isInstallPrompt(prompt) || installRx.containsMatchIn(normalized)
+        val installPkg = AniobStoreCatalog.packageForPrompt(prompt)
+        if (installPkg != null) {
+            mustBeInstalled += installPkg
+        }
+
+        // Pattern-derived criteria: any registry capability contributes its OWN postconditions.
+        // No new capability needs an edit here for its evidence to be enforced.
+        val pattern = PatternCriteriaBridge.derive(prompt)
+        if (!pattern.isEmpty) {
+            pattern.mustShowPackage.forEach { if (it !in mustShowPackage) mustShowPackage += it }
+            pattern.mustBeInstalled.forEach { if (it !in mustBeInstalled) mustBeInstalled += it }
+            pattern.deviceAsserts.forEach { if (it !in deviceAsserts) deviceAsserts += it }
+        }
+
         return SuccessCriteria(
             mustContainText = mustContain,
             mustShowPackage = mustShowPackage,
-            minSteps = minSteps
+            minSteps = minSteps,
+            deviceAsserts = deviceAsserts,
+            mustBeInstalled = mustBeInstalled,
+            requireInstallConfirmation = isInstall || pattern.requireInstall
         )
     }
 }

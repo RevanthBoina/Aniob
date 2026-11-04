@@ -72,8 +72,14 @@ enum class DeviceCommand(
     VOLUME_GET("volume_get", DeviceCommandGroup.VOLUME, "read current volumes", optional = listOf("stream")),
 
     // ---- Hardware & system -------------------------------------------------------------------
-    TORCH_ON("torch_on", DeviceCommandGroup.HARDWARE, "flashlight on"),
-    TORCH_OFF("torch_off", DeviceCommandGroup.HARDWARE, "flashlight off"),
+    TORCH_ON(
+        "torch_on", DeviceCommandGroup.HARDWARE, "flashlight on",
+        optional = listOf("then_command", "then_delay_ms")
+    ),
+    TORCH_OFF(
+        "torch_off", DeviceCommandGroup.HARDWARE, "flashlight off",
+        optional = listOf("then_command", "then_delay_ms")
+    ),
     SCREENSHOT("screenshot", DeviceCommandGroup.HARDWARE, "take a screenshot", needsAccessibility = true),
     OPEN_NOTIFICATIONS(
         "open_notifications", DeviceCommandGroup.HARDWARE, "pull down the notification shade",

@@ -157,7 +157,8 @@ object DeterministicVerifier {
     fun verifyFinish(
         criteria: SuccessCriteria?,
         finalScreen: AniobScreenState,
-        steps: Int
+        steps: Int,
+        device: DeviceStateSnapshot = DeviceStateSnapshot.UNKNOWN
     ): VerificationResult {
         val start = System.currentTimeMillis()
         if (criteria == null || criteria.isEmpty || !criteria.hasObservableCheck) {
@@ -167,7 +168,7 @@ object DeterministicVerifier {
                 "No observable success criteria to verify against (minSteps alone is not evidence)"
             )
         }
-        val evaluations = criteria.evaluateCriteria(finalScreen, steps)
+        val evaluations = criteria.evaluateCriteria(finalScreen, steps, device)
         val nonPassed = evaluations.filter { it.state != com.aniob.core.domain.CriterionState.PASSED }
         val duration = System.currentTimeMillis() - start
         val passedEvidence = evaluations.filter { it.state == com.aniob.core.domain.CriterionState.PASSED && it.textEvidence != null }

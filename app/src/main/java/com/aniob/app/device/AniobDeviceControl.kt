@@ -123,8 +123,8 @@ object AniobDeviceControl {
         DeviceCommand.VOLUME_UNMUTE -> volumeMute(context, args, mute = false)
         DeviceCommand.VOLUME_GET -> volumeGet(context, args)
 
-        DeviceCommand.TORCH_ON -> torch(context, true)
-        DeviceCommand.TORCH_OFF -> torch(context, false)
+        DeviceCommand.TORCH_ON -> torch(context, true, args)
+        DeviceCommand.TORCH_OFF -> torch(context, false, args)
         DeviceCommand.SCREENSHOT -> global(service, AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT, "Screenshot taken")
         DeviceCommand.OPEN_NOTIFICATIONS -> global(service, AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, "Notification shade opened")
         DeviceCommand.OPEN_QUICK_SETTINGS -> global(service, AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS, "Quick settings opened")
@@ -330,13 +330,109 @@ object AniobDeviceControl {
     // hardware & system
     // ============================================================================================
 
-    private fun torch(context: Context, on: Boolean): DeviceControlResult {
+    private const val TORCH_VERIFY_TIMEOUT_MS = 2_000L
+    private const val MAX_TORCH_FOLLOW_UP_MS = 3_600_000L
+    private const val DEFAULT_TORCH_FOLLOW_UP_MS = 500L
+
+    /** Hardware-reported torch state, mirrored by [CameraManager.TorchCallback]; null = unknown. */
+    @Volatile private var torchMirror: Boolean? = null
+    @Volatile private var torchTrackedId: String? = null
+    @Volatile private var pendingTorchFollowUp: Runnable? = null
+
+    /**
+     * Turns the torch on/off and then PROVES it. `CameraManager` exposes no synchronous getter, so
+     * a process-wide torch-callback mirror is registered and polled after the dispatch. A dispatch
+     * the hardware never confirmed returns [fail] — no layer above can report SUCCESS from an
+     * unverified dispatch again (the 2026-11-04 false-success class, BUG-01).
+     *
+     * Compound goals arrive as args from the reflex decomposer (`then_command`, `then_delay_ms`):
+     * "on and off after 5 seconds" schedules the reverse transition on the main handler — atomic,
+     * screen-state agnostic, and itself verified when it fires. (Handler, not AlarmManager: the
+     * follow-up belongs to this live session; use AlarmManager when out-of-process durability is
+     * required.)
+     */
+    private fun torch(context: Context, on: Boolean, args: Map<String, String> = emptyMap()): DeviceControlResult {
         val cam = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val id = cam.cameraIdList.firstOrNull {
             cam.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
         } ?: return fail("This phone has no flashlight.")
+        ensureTorchTracker(cam, id)
         cam.setTorchMode(id, on)
-        return ok(if (on) "Flashlight on." else "Flashlight off.")
+        if (!awaitTorchState(on, TORCH_VERIFY_TIMEOUT_MS)) {
+            return fail(
+                if (on) "The flashlight command was dispatched but the torch never reported ON."
+                else "The flashlight command was dispatched but the torch never reported OFF."
+            )
+        }
+        val followUp = args["then_command"]?.let { DeviceCommand.fromWire(it) }
+        if (followUp == DeviceCommand.TORCH_ON || followUp == DeviceCommand.TORCH_OFF) {
+            val followUpOn = followUp == DeviceCommand.TORCH_ON
+            val delayMs = (args["then_delay_ms"]?.toLongOrNull() ?: DEFAULT_TORCH_FOLLOW_UP_MS)
+                .coerceIn(0L, MAX_TORCH_FOLLOW_UP_MS)
+            // Cancel any earlier sequence so two prompts cannot fight over the torch.
+            pendingTorchFollowUp?.let(mainHandler::removeCallbacks)
+            val followUpRunnable = Runnable {
+                // NEVER poll from the main thread here: the TorchCallback is delivered on the same
+                // looper, so blocking it would guarantee a timeout. The task-level success criteria
+                // probe the final state after then_delay_ms instead.
+                runCatching { cam.setTorchMode(id, followUpOn) }
+            }
+            pendingTorchFollowUp = followUpRunnable
+            mainHandler.postDelayed(followUpRunnable, delayMs)
+            val secs = delayMs / 1000L
+            return ok(
+                (if (on) "Flashlight on" else "Flashlight off") + " (verified); " +
+                    (if (followUpOn) "back on" else "back off") + " after " + secs + "s."
+            )
+        }
+        return ok(if (on) "Flashlight on (verified)." else "Flashlight off (verified).")
+    }
+
+    private fun torchCameraId(context: Context): Pair<CameraManager, String>? {
+        val cam = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager ?: return null
+        val ids = runCatching { cam.cameraIdList }.getOrNull() ?: return null
+        val id = ids.firstOrNull {
+            runCatching {
+                cam.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }.getOrDefault(false)
+        } ?: return null
+        return cam to id
+    }
+
+    private fun ensureTorchTracker(cam: CameraManager, id: String) {
+        // Registration fires an immediate callback with the CURRENT mode, seeding the mirror.
+        if (torchTrackedId == id) return
+        synchronized(this) {
+            if (torchTrackedId == id) return
+            torchMirror = null
+            runCatching {
+                cam.registerTorchCallback(object : CameraManager.TorchCallback() {
+                    override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
+                        if (cameraId == id) torchMirror = enabled
+                    }
+                }, mainHandler)
+            }
+            torchTrackedId = id
+        }
+    }
+
+    private fun awaitTorchState(expected: Boolean, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (torchMirror == expected) return true
+            try { Thread.sleep(50) } catch (_: InterruptedException) { break }
+        }
+        return torchMirror == expected
+    }
+
+    /**
+     * The last torch state the HARDWARE reported, or null when unknown/observable. Success-criteria
+     * probes ([com.aniob.core.domain.DeviceAssertion]) read this instead of assuming dispatch=done.
+     */
+    fun currentTorchState(context: Context): Boolean? {
+        val (cam, id) = torchCameraId(context) ?: return null
+        ensureTorchTracker(cam, id)
+        return torchMirror
     }
 
     private fun global(service: AniobAccessibilityService?, action: Int, done: String): DeviceControlResult {

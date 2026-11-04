@@ -5,6 +5,8 @@ import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.DeviceStateSnapshot
+import com.aniob.core.domain.SuccessCriteria
 import com.aniob.core.domain.TaskContext
 import com.aniob.core.learning.LearningPipeline
 import com.aniob.core.memory.history.NeutralWordingContract
@@ -38,7 +40,13 @@ class StepPipeline(
     /** Fan-out for the unified recording contract (execution tracker + hippocampus + event log). */
     private val recordStep: (StepRecord) -> Unit = {},
     /** Settle seam: pause for quiescence after the action and return a fresh screen. */
-    private val settle: suspend (AniobAction, suspend () -> AniobScreenState) -> AniobScreenState = { _, capture -> capture() }
+    private val settle: suspend (AniobAction, suspend () -> AniobScreenState) -> AniobScreenState = { _, capture -> capture() },
+    /**
+     * Device-probe seam: hardware/package state can never be read from a screen. The app layer
+     * supplies a live snapshot so [DeterministicVerifier.verifyFinish] can judge device assertions;
+     * pure-JVM callers and tests default to UNKNOWN (which makes such criteria inconclusive).
+     */
+    private val deviceState: (SuccessCriteria?) -> DeviceStateSnapshot = { DeviceStateSnapshot.UNKNOWN }
 ) {
 
     /** A proposed next action plus the rung that produced it. Rungs differ only here. */
@@ -304,7 +312,7 @@ class StepPipeline(
         val verification = if (proposal is Proposal.DirectIntent) {
             val summary = (effectiveAction as? AniobAction.Finish)?.summary ?: effectiveAction.describeAction()
             if (ctx.successCriteria != null && ctx.successCriteria.hasObservableCheck) {
-                DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
+                DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
             } else {
                 DeterministicVerifier.VerificationResult(
                     isExpected = false,
@@ -322,7 +330,7 @@ class StepPipeline(
                     textEvidence = deviceEvidence.command.wire
                 )
             } else {
-                DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
+                DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
             }
         } else {
             DeterministicVerifier.verify(effectiveAction, observed, screenAfter)

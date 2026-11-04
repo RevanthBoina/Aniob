@@ -2,6 +2,10 @@ package com.aniob.core.ladder
 
 import com.aniob.core.intent.AniobTaskIntentClassifier
 import com.aniob.core.knowledge.AniobAppRegistry
+import com.aniob.core.capability.pattern.CapabilityId
+import com.aniob.core.capability.pattern.GenericDeepLinks
+import com.aniob.core.capability.pattern.UniversalPlanner
+import com.aniob.core.knowledge.AniobStoreCatalog
 import com.aniob.core.knowledge.AppLookup
 
 /**
@@ -136,6 +140,9 @@ object AniobIntentResolver {
     const val SYSTEM_ACTION_FLASHLIGHT = "turn_on_flashlight"
     const val SYSTEM_ACTION_GET_DEVICE_INFO = "get_device_info"
 
+    /** Set on store shortcuts so the dispatcher can fall back to the web storefront (no Play Store). */
+    const val EXTRA_INSTALL_PACKAGE = "aniob_install_package"
+
     private const val ACTION_GEO = "geo:0,0?q="
 
     /**
@@ -148,7 +155,11 @@ object AniobIntentResolver {
     fun resolve(command: String): ResolvedIntentShortcut? {
         val raw = command.trim()
         if (raw.isEmpty()) return null
-        val lower = raw.lowercase().trim().trimEnd('?', '.', '!', ' ', ',', ';')
+        // Lexical repair first ("flash light" -> "flashlight"), so every rung below — the legacy
+        // systemReflex table, the ReflexResolver, the app registry — sees what the user meant.
+        val lower = AniobTaskIntentClassifier.normalizeLexical(
+            raw.lowercase().trim().trimEnd('?', '.', '!', ' ', ',', ';')
+        )
 
         // Parameterised shortcuts run first: "set an alarm for 7:30" must not fall into the bare
         // "set alarm" branch that only opens the editor, and "open Wi-Fi settings" must not be
@@ -159,6 +170,8 @@ object AniobIntentResolver {
             ?: url(raw, lower)
             ?: maps(raw, lower)
             ?: AniobReflexResolver.resolve(raw, lower)
+            ?: capabilityPlan(lower)
+            ?: installViaStore(lower)
             ?: appViaRegistry(raw)
             ?: webFallback(raw)
             ?: clockOrAlarm(lower)
@@ -229,6 +242,94 @@ object AniobIntentResolver {
     /** `navigate to X` carries a destination, not a URL: escape it instead of validating it. */
     private fun escapeQuery(text: String): String =
         text.replace("%", "%25").replace(" ", "%20").replace("#", "%23").replace("&", "%26")
+
+    // ------------------------------------------------------------------ #
+    // capability planner: grammar + generic entity resolution, no app tables
+    // ------------------------------------------------------------------ #
+
+    /**
+     * Emits a shortcut from the capability registry instead of a phrase/app-specific branch.
+     * The planner may understand MORE than this dispatcher can execute; we only surface plans the
+     * device layer can honestly complete, and let everything else fall through to existing rungs.
+     */
+    private fun capabilityPlan(lower: String): ResolvedIntentShortcut? {
+        val plan = UniversalPlanner.plan(lower)
+        if (!plan.isExecutable) return null
+        val atoms = plan.atoms
+
+        // Install anything: the store listing for a named package, or a generic store search.
+        atoms.singleOrNull()?.takeIf { it.capability == CapabilityId.INSTALL_APP }?.let { atom ->
+            val pkg = atom.args["install_package"]
+            return ResolvedIntentShortcut(
+                action = ACTION_VIEW,
+                uriString = atom.intentUri,
+                preferredPackage = GenericDeepLinks.PLAY_STORE,
+                requiresObservation = true,
+                label = atom.summary,
+                extras = pkg?.let { mapOf(EXTRA_INSTALL_PACKAGE to it) }.orEmpty()
+            )
+        }
+
+        // Torch sequences, generic: ON followed by OFF after a delay.
+        if (atoms.size == 2 && atoms.all { it.capability == CapabilityId.TORCH }) {
+            val first = atoms.first()
+            val second = atoms.last()
+            val firstCmd = first.deviceCommand ?: return null
+            val secondCmd = second.deviceCommand ?: return null
+            return AniobReflexResolver.deviceShortcut(
+                firstCmd,
+                mapOf(
+                    "then_command" to secondCmd.wire,
+                    "then_delay_ms" to second.delayAfterMs.toString()
+                )
+            )
+        }
+
+        atoms.singleOrNull()?.let { atom ->
+            atom.deviceCommand?.let { command ->
+                return AniobReflexResolver.deviceShortcut(command, atom.args)
+            }
+            // OPEN stays on the legacy registry rung: it already resolves installed apps and
+            // carries the launch activity. The planner still supplies its postcondition to the
+            // criteria bridge, so verification is not lost by delegating dispatch.
+            atom.intentUri?.let { uri ->
+                return ResolvedIntentShortcut(
+                    action = ACTION_VIEW,
+                    uriString = uri,
+                    requiresObservation = atom.requiresObservation,
+                    label = atom.summary
+                )
+            }
+        }
+        return null
+    }
+
+    // ------------------------------------------------------------------ #
+    // installs: one market:// intent, never a UI crawl
+    // ------------------------------------------------------------------ #
+
+    /**
+     * "install linkedin" -> a single ACTION_VIEW on market:// pinned to the Play Store.
+     *
+     * Before this rung the task fell into a UI crawl (5 screen reads, goal drift into unrelated
+     * apps) and died whenever the cloud rate-limited: 82 s and 11k tokens for a one-intent job.
+     * `requiresObservation` keeps the claim honest (the details surface must be foreground before
+     * any completion claim), and [EXTRA_INSTALL_PACKAGE] carries the package id to the app layer,
+     * which must ALSO see it installed before reporting success.
+     */
+    private fun installViaStore(lower: String): ResolvedIntentShortcut? {
+        val name = AniobStoreCatalog.installTarget(lower) ?: return null
+        if (name.length < 2) return null
+        val pkg = AniobStoreCatalog.packageFor(name)
+        return ResolvedIntentShortcut(
+            action = ACTION_VIEW,
+            uriString = AniobStoreCatalog.deepLinkFor(name),
+            preferredPackage = AniobStoreCatalog.PLAY_STORE_PACKAGE,
+            requiresObservation = true,
+            label = if (pkg != null) "Play Store listing ($pkg)" else "Play Store search ($name)",
+            extras = pkg?.let { mapOf(EXTRA_INSTALL_PACKAGE to it) }.orEmpty()
+        )
+    }
 
     // ------------------------------------------------------------------ #
     // apps: a lookup, never a table
