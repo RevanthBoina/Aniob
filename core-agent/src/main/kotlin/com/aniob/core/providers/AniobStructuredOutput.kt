@@ -98,6 +98,10 @@ object AniobStructuredOutput {
     private fun describeError(raw: String): String {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return "empty response"
+        // A refusal ("I can't operate your phone") gets a correction, not a schema lecture.
+        if (com.aniob.core.capability.AniobRefusalGuard.isRefusal(trimmed)) {
+            return "refused the task. " + com.aniob.core.capability.AniobCapabilityManifest.REFUSAL_CORRECTION
+        }
         val coordField = COORDINATE_HINTS.firstOrNull { Regex("\"$it\"\\s*:").containsMatchIn(trimmed) }
         if (coordField != null) return "coordinate field '$coordField' is not part of the vocabulary"
         return "no valid tool object found"

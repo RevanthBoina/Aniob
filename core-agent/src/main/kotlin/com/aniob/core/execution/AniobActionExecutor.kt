@@ -44,6 +44,11 @@ object AniobActionExecutor {
         is AniobAction.GetDeviceInfo -> DispatchCommand.SystemIntent("GET_DEVICE_INFO")
         is AniobAction.GetNotifications -> DispatchCommand.SystemIntent("GET_NOTIFICATIONS", action.filterPackage)
         is AniobAction.GetInstalledApps -> DispatchCommand.SystemIntent("GET_INSTALLED_APPS")
+        is AniobAction.DeviceControl -> DispatchCommand.SystemIntent(
+            name = "DEVICE_CONTROL",
+            argument = action.command.wire,
+            targetDescription = "device:${action.command.wire}"
+        )
         is AniobAction.Wait -> DispatchCommand.SystemIntent("WAIT", action.clamped().durationMs.toString())
         is AniobAction.ConfirmWithUser -> DispatchCommand.SystemIntent("CONFIRM_WITH_USER", action.message)
         is AniobAction.Finish -> DispatchCommand.SystemIntent("FINISH", action.summary)

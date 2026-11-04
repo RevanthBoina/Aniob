@@ -163,6 +163,20 @@ sealed class AniobAction {
         override val toolName: String = "finish"
     }
 
+    // 16. device_control — direct, UI-free device commands (media, volume, torch, calls, OTP, files...).
+    /**
+     * A command from the closed [DeviceCommand] catalogue plus its string arguments. Like every other
+     * action it can express no coordinate; unlike a tap it needs no screen, so it executes in tens of
+     * milliseconds and its result text is fed back to the model on the next step.
+     */
+    data class DeviceControl(
+        val command: DeviceCommand,
+        val args: Map<String, String> = emptyMap(),
+        override val thought: String = "Running device command ${command.wire}"
+    ) : AniobAction() {
+        override val toolName: String = "device_control"
+    }
+
     // Execution failure state
     data class Fail(
         val reason: String,
@@ -184,6 +198,7 @@ sealed class AniobAction {
         is Finish -> "FINISH"
         is Fail -> "FAIL"
         is ConfirmWithUser -> "CONFIRM"
+        is DeviceControl -> "DEVICE_${command.wire}"
         else -> toolName
     }
 

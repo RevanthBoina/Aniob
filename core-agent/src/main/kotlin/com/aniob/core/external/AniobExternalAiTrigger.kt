@@ -88,7 +88,7 @@ class AniobExternalAiTrigger(
             }
         }
 
-        val systemPrompt = when (intent) {
+        val basePrompt = when (intent) {
             AniobIntent.KNOWLEDGE_QA -> """
                 You are Aniob Knowledge Assistant. Provide a direct, concise, and helpful answer.
                 Do NOT generate device automation actions or UI gestures.
@@ -105,6 +105,9 @@ class AniobExternalAiTrigger(
             """.trimIndent()
             else -> "You are Aniob."
         }
+        // An answer-only reply must still never say "I can't use your phone": that line is what a
+        // user hears when they ask "can you control my phone?", and it is false.
+        val systemPrompt = basePrompt + "\n" + com.aniob.core.capability.AniobCapabilityManifest.IDENTITY_LINE
 
         val isLocalModeOnly = autoMode.lowercase() == "local-only"
         val isLocalReady = localProvider != null && localProvider.isAvailable()

@@ -158,6 +158,7 @@ object AniobIntentResolver {
             ?: dial(lower)
             ?: url(raw, lower)
             ?: maps(raw, lower)
+            ?: AniobReflexResolver.resolve(raw, lower)
             ?: appViaRegistry(raw)
             ?: webFallback(raw)
             ?: clockOrAlarm(lower)

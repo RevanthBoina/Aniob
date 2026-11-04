@@ -25,6 +25,8 @@ object AniobSafetyInterceptor {
     private val OTP_PATTERN = Regex("\\b\\d{4,6}\\b")
     private val FINANCIAL_KEYWORDS = Regex("(?i)(?:\\b(?:pay|purchase|checkout|payment|transaction|credit\\s*card|debit\\s*card|cvv|wallet|bank\\s*transfer|billing|password|otp)\\b|upi://)")
     private val DESTRUCTIVE_KEYWORDS = Regex("(?i)(?:delete\\s*account|erase\\s*all|factory\\s*reset|format\\s*storage|wipe\\s*data)")
+    /** Payment schemes inside a device command's arguments (a deep link must never smuggle a payment). */
+    private val FINANCIAL_PAYLOAD = Regex("(?i)(?:upi://|\\bupi:|paypal\\.me|\\bcheckout\\b|\\bcvv\\b)")
     private val MESSAGE_SEND_KEYWORDS = Regex("(?i)(?:send\\s*sms|send\\s*message|delete\\s*file|transfer\\s*funds)")
 
     // Dynamic pattern for billing permission prevention without tripping static string scanners
@@ -70,6 +72,14 @@ object AniobSafetyInterceptor {
             blockedFingerprints.add(screenFingerprint)
             blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
             return InterceptResult(isAllowed = false, reason = "Billing permission blocked", riskTier = "HIGH")
+        }
+
+        // Direct device commands carry no node and no screen text, so keyword scans over the model's
+        // narration would misfire (an `otp_copy` step that says "copy the OTP" is not a payment).
+        // They are judged by what the command DOES instead: calls, replies and shares are confirmed,
+        // everything else is allowed, and a UPI/billing payload was already refused above.
+        if (action is AniobAction.DeviceControl) {
+            return evaluateDeviceControl(action)
         }
 
         // Destructive wipe actions blocked
@@ -153,6 +163,25 @@ object AniobSafetyInterceptor {
         val baseResult = InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
         val consequenceAssessment = AniobConsequenceClassifier.classify(action, targetNode)
         return AniobConsequenceClassifier.mergeWithInterceptor(baseResult, consequenceAssessment)
+    }
+
+    private fun evaluateDeviceControl(action: AniobAction.DeviceControl): InterceptResult {
+        val payload = action.args.values.joinToString(" ").lowercase()
+        if (FINANCIAL_PAYLOAD.containsMatchIn(payload)) {
+            return InterceptResult(isAllowed = false, reason = "Payment operation blocked", riskTier = "HIGH")
+        }
+        if (DESTRUCTIVE_KEYWORDS.containsMatchIn(payload)) {
+            return InterceptResult(isAllowed = false, reason = "Destructive operation blocked", riskTier = "HIGH")
+        }
+        if (action.command.risk == com.aniob.core.domain.DeviceRisk.CONFIRM) {
+            return InterceptResult(
+                isAllowed = true,
+                reason = "Confirm before ${action.command.summary}",
+                riskTier = "MEDIUM",
+                requiresConfirmation = true
+            )
+        }
+        return InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
     }
 
     @Synchronized

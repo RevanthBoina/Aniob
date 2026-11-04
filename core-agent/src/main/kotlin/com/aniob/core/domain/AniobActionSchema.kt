@@ -12,7 +12,8 @@ package com.aniob.core.domain
  * {
  *   "thought": "...",
  *   "tool": "TAP" | "LONG_PRESS" | "INPUT_TEXT" | "SWIPE" | "OPEN_APP" | "SYSTEM_KEY"
- *          | "WAIT" | "FINISH" | "FAIL",
+ *          | "DEVICE_CONTROL" | "WAIT" | "FINISH" | "FAIL",
+ *   "command": "volume_set", "args": { "percent": "70" },   // DEVICE_CONTROL only
  *   "target": { "kind": "som_index"|"resource_id"|"text"|"content_desc", "value": "..." },
  *   "text": "...", "distance_px": 600, "direction": "DOWN",
  *   "package_name": "...", "key": "BACK", "duration_ms": 1000,
@@ -28,7 +29,7 @@ object AniobActionSchema {
     const val ACTION_JSON_SCHEMA: String = """
 {
   "thought": "why this step",
-  "tool": "TAP|LONG_PRESS|INPUT_TEXT|SWIPE|OPEN_APP|SYSTEM_KEY|WAIT|FINISH|FAIL",
+  "tool": "TAP|LONG_PRESS|INPUT_TEXT|SWIPE|OPEN_APP|SYSTEM_KEY|DEVICE_CONTROL|WAIT|FINISH|FAIL",
   "target": {"kind": "som_index|resource_id|text|content_desc", "value": "..."},
   "text": "for INPUT_TEXT",
   "submit": true,
@@ -36,11 +37,14 @@ object AniobActionSchema {
   "distance_px": 600,
   "package_name": "for OPEN_APP",
   "key": "BACK|HOME|ENTER|RECENTS for SYSTEM_KEY",
+  "command": "for DEVICE_CONTROL, e.g. volume_set, torch_on, media_next, call, otp_copy, file_find",
+  "args": {"name": "value for DEVICE_CONTROL"},
   "duration_ms": 1000,
   "summary": "for FINISH",
   "reason": "for FAIL"
 }
 Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT.
+DEVICE_CONTROL runs a direct phone command with no screen needed (see DEVICE CAPABILITIES); prefer it over tapping through apps.
 Set "submit": true when the text is a query or a phone number and the field must be confirmed
 (press the keyboard's search/go key) for the action to have any effect.
 """
@@ -50,6 +54,10 @@ Set "submit": true when the text is a query or a phone number and the field must
     private val COORDINATE_FIELD_REGEXES = COORDINATE_FIELDS.associateWith { Regex("\"$it\"\\s*:") }
 
     private val TOOL_OBJECT = Regex("\\{(?:[^{}]|\\{[^{}]*\\})*\"tool\"\\s*:\\s*\"[^\"]+\"(?:[^{}]|\\{[^{}]*\\})*\\}", RegexOption.DOT_MATCHES_ALL)
+    private val ARGS_BLOCK_REGEX = Regex("\"args\"\\s*:\\s*\\{([^{}]*)\\}")
+    private val ARG_PAIR_REGEX = Regex(
+        "\"([A-Za-z_]+)\"\\s*:\\s*(?:\"((?:[^\"\\\\]|\\\\.)*)\"|(-?\\d+(?:\\.\\d+)?)|(true|false))"
+    )
     private val TARGET_BLOCK_REGEX = Regex("\"target\"\\s*:\\s*\\{([^{}]*)\\}")
     private val STRING_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
     private val INT_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
@@ -124,6 +132,8 @@ Set "submit": true when the text is a query or a phone number and the field must
                 key = str(candidate, "key")?.let(::keyType) ?: keyFromTool(tool),
                 thought = thought
             )
+            "DEVICE_CONTROL", "DEVICE", "DEVICE_COMMAND", "SYSTEM_ACTION", "REFLEX" ->
+                deviceControl(candidate, str(candidate, "command") ?: str(candidate, "name"), thought)
             "WAIT" -> AniobAction.Wait(
                 durationMs = int(candidate, "duration_ms")?.toLong() ?: AniobAction.Wait.DEFAULT_WAIT_MS,
                 thought = thought
@@ -136,8 +146,40 @@ Set "submit": true when the text is a query or a phone number and the field must
                 reason = str(candidate, "reason") ?: "Model reported failure",
                 thought = thought
             )
-            else -> throw ActionSchemaException("unknown tool '$toolRaw'")
+            // A model that names the command directly ({"tool":"TORCH_ON"}, {"tool":"media_next"})
+            // still reaches the device instead of failing a parse it was 95% right about.
+            else -> {
+                DeviceCommand.fromWire(tool)?.let { return deviceControl(candidate, tool, thought) }
+                throw ActionSchemaException("unknown tool '$toolRaw'")
+            }
         }
+    }
+
+    /**
+     * Builds a [AniobAction.DeviceControl]. Arguments come from the nested `"args":{...}` object and,
+     * for models that flatten it, from top-level fields carrying the command's own argument names.
+     */
+    private fun deviceControl(json: String, commandName: String?, thought: String): AniobAction {
+        val command = DeviceCommand.fromWire(commandName) ?: throw ActionSchemaException(
+            "unknown device command '${commandName.orEmpty()}'; valid: ${DeviceCommand.wireNames().joinToString(", ")}"
+        )
+        val args = LinkedHashMap<String, String>()
+        ARGS_BLOCK_REGEX.find(json)?.groupValues?.get(1)?.let { block ->
+            ARG_PAIR_REGEX.findAll(block).forEach { m ->
+                val value = m.groups[2]?.value?.let(::unescapeJsonString)
+                    ?: m.groups[3]?.value ?: m.groups[4]?.value ?: return@forEach
+                args[m.groupValues[1].lowercase()] = value
+            }
+        }
+        for (name in command.argNames) {
+            if (args.containsKey(name)) continue
+            (str(json, name) ?: int(json, name)?.toString() ?: bool(json, name)?.toString())
+                ?.let { args[name] = it }
+        }
+        command.missingRequired(args)?.let { missing ->
+            throw ActionSchemaException("${command.wire} requires '$missing' in args")
+        }
+        return AniobAction.DeviceControl(command, args, thought)
     }
 
     /**
@@ -286,6 +328,9 @@ Set "submit": true when the text is a query or a phone number and the field must
         is AniobAction.Wait -> """{"thought":"${esc(action.thought)}","tool":"WAIT","duration_ms":${action.durationMs}}"""
         is AniobAction.Finish -> """{"thought":"${esc(action.thought)}","tool":"FINISH","summary":"${esc(action.summary)}"}"""
         is AniobAction.Fail -> """{"thought":"${esc(action.thought)}","tool":"FAIL","reason":"${esc(action.reason)}"}"""
+        is AniobAction.DeviceControl -> """{"thought":"${esc(action.thought)}","tool":"DEVICE_CONTROL","command":"${action.command.wire}","args":{${
+            action.args.entries.joinToString(",") { "\"${esc(it.key)}\":\"${esc(it.value)}\"" }
+        }}}"""
         else -> throw ActionSchemaException("tool '${action.toolName}' is not part of the closed action vocabulary")
     }
 

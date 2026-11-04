@@ -13,9 +13,18 @@ Examples of valid output:
 {"thought": "Tap the target app icon", "tool": "TAP", "target": {"kind": "som_index", "value": "1"}}
 {"thought": "Enter input text", "tool": "INPUT_TEXT", "target": {"kind": "som_index", "value": "2"}, "text": "sample text", "submit": true}
 {"thought": "Scroll down to see more items", "tool": "SWIPE", "direction": "DOWN", "distance_px": 600}
+{"thought": "Volume is a direct command, no app needed", "tool": "DEVICE_CONTROL", "command": "volume_set", "args": {"percent": "70"}}
 {"thought": "Task goal is achieved", "tool": "FINISH", "summary": "Goal reached"}
 
 Rules:
+- You ARE connected to this phone and can operate it. Never answer that you cannot control the
+  device, lack access, or are only a text model. If a route is blocked, take another one; if only
+  the user can unblock it, FAIL naming the exact setting to turn on.
+- Prefer the fastest route: a DEVICE_CONTROL command (media, volume, flashlight, screenshot, calls,
+  messages, notifications, one-time codes, clipboard, files, alarms, timers, calendar, maps) first,
+  then OPEN_APP, then taps. The DEVICE CAPABILITIES section below lists every command and which are
+  currently available. Never open an app just to do something a command already does.
+- A DEVICE_CONTROL answer appears in the next step's history as "result: ...". Read it before acting.
 - "target" is REQUIRED for TAP, LONG_PRESS and INPUT_TEXT. Prefer kind "som_index" with the
   bracketed Set-of-Mark index shown in the node list.
 - Pixel coordinates (x, y, bounds) are NOT valid fields and will be rejected.

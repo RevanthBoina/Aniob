@@ -137,13 +137,22 @@ class StepPipeline(
 
         // Plan-7.5: Prompt Injection Canary check on state-mutating actions
         val isMutating = action is AniobAction.Tap || action is AniobAction.LongPress ||
-            action is AniobAction.InputText || action is AniobAction.OpenApp || action is AniobAction.Swipe
+            action is AniobAction.InputText || action is AniobAction.OpenApp || action is AniobAction.Swipe ||
+            (action is AniobAction.DeviceControl && action.command.reachesOutside)
         val canaryParams = buildMap {
             if (action is AniobAction.InputText && !ctx.instruction.contains(action.text, ignoreCase = true)) {
                 put("text", action.text)
             }
             if (action is AniobAction.OpenApp && !ctx.instruction.contains(action.packageName, ignoreCase = true)) {
                 put("package_name", action.packageName)
+            }
+            if (action is AniobAction.DeviceControl && action.command.reachesOutside) {
+                // A recipient, number or URL that appears nowhere in the user's request and is quoted
+                // from the screen is how an injected page would steer a call or a message.
+                val suspicious = action.args.values.firstOrNull {
+                    com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(it)
+                } ?: action.args.values.firstOrNull { it.isNotBlank() && !ctx.instruction.contains(it, ignoreCase = true) }
+                suspicious?.let { put("text", it) }
             }
             if (com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(action.thought)) {
                 put("thought", action.thought)
@@ -304,13 +313,32 @@ class StepPipeline(
                 )
             }
         } else if (effectiveAction is AniobAction.Finish) {
-            DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
+            val deviceEvidence = completedDeviceCommand(ctx)
+            if (deviceEvidence != null && ctx.successCriteria?.hasObservableCheck != true) {
+                DeterministicVerifier.VerificationResult(
+                    isExpected = true,
+                    durationMs = 0L,
+                    reason = "Device command ${deviceEvidence.command.wire} completed on dispatch",
+                    textEvidence = deviceEvidence.command.wire
+                )
+            } else {
+                DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
+            }
         } else {
             DeterministicVerifier.verify(effectiveAction, observed, screenAfter)
         }
 
         // REFLECT
-        var nextCtx = ctx.withStep(ctx.stepIndex + 1, screenAfter, historyEntry(effectiveAction, verification, proposal))
+        var nextCtx = ctx.withStep(
+            ctx.stepIndex + 1,
+            screenAfter,
+            historyEntry(
+                effectiveAction, verification, proposal,
+                // A device command's answer ("volume is 40%", "3 PDFs: ...") is the only place the
+                // model can read it; every other action is judged from the next observation.
+                dispatchNote = outcome.reason.takeIf { effectiveAction is AniobAction.DeviceControl }
+            )
+        )
             .withAction(effectiveAction)
         var reflection: ReflectionOutcome? = null
         var terminal = StepResult.TerminalState.CONTINUE
@@ -374,6 +402,16 @@ class StepPipeline(
         )
     }
 
+    /**
+     * The device command the previous step ran and the system accepted, when it was a command whose
+     * dispatch *is* the outcome (volume, torch, pause...). A `Finish` straight after it has real
+     * evidence; without this a UI-less task could never be confirmed because no screen changes.
+     */
+    private fun completedDeviceCommand(ctx: TaskContext): AniobAction.DeviceControl? {
+        val last = ctx.trajectory.lastOrNull() as? AniobAction.DeviceControl ?: return null
+        return last.takeIf { it.command.completesOnDispatch && ctx.consecutiveFailures == 0 }
+    }
+
     private fun finish(
         action: AniobAction,
         proposal: Proposal,
@@ -432,14 +470,19 @@ class StepPipeline(
     private fun historyEntry(
         action: AniobAction,
         verification: DeterministicVerifier.VerificationResult,
-        proposal: Proposal
+        proposal: Proposal,
+        dispatchNote: String? = null
     ): String = "${proposal.providerLabel}: ${action.describeAction()} -> " +
-        if (verification.isExpected) "the expected change was observed"
+        (if (verification.isExpected) "the expected change was observed"
         else "the expected change was not observed (" +
-            NeutralWordingContract.neutralize(verification.reason) + ")"
+            NeutralWordingContract.neutralize(verification.reason) + ")") +
+        (dispatchNote?.takeIf { it.isNotBlank() }?.let { " | result: ${it.take(DEVICE_NOTE_MAX_CHARS)}" } ?: "")
 
     companion object {
         /** A Finish rejected this many times becomes a hard failure (no infinite retry, no fake SUCCESS). */
         const val MAX_REJECTED_FINISHES = 3
+
+        /** A device result is fed back verbatim, but never more than this many characters. */
+        const val DEVICE_NOTE_MAX_CHARS = 400
     }
 }

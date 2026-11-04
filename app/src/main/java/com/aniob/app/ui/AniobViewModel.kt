@@ -24,6 +24,9 @@ import com.aniob.app.research.ResearchSummaryRow
 import com.aniob.app.research.StudyPass
 import com.aniob.app.provider.OmniRouteConnectionStatus
 import com.aniob.app.provider.testOmniRouteConnection
+import com.aniob.app.device.AniobCapabilityProbe
+import com.aniob.app.device.AniobDeviceControl
+import com.aniob.app.device.DeviceControlResult
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
@@ -59,6 +62,7 @@ import com.aniob.core.knowledge.AniobAppRegistry
 import com.aniob.core.ladder.AniobExecutionRouter
 import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.AniobLaunchHub
+import com.aniob.core.ladder.AniobReflexResolver
 import com.aniob.core.ladder.AppLaunchTarget
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
@@ -99,6 +103,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 data class AniobUiState(
@@ -2553,10 +2558,22 @@ class AniobViewModel(
                         // the screen before it may close the run.
                         if (currentStep == 0) {
                             val beforePackage = accessibility?.currentForegroundPackage() ?: screenBefore?.packageName
-                            if (dispatchSystemIntent(shortcut)) {
+                            val deviceCommand = AniobReflexResolver.commandOf(shortcut)
+                            val dispatched = if (deviceCommand != null) {
+                                runDeviceShortcut(deviceCommand, AniobReflexResolver.argsOf(shortcut))
+                            } else {
+                                dispatchSystemIntent(shortcut)
+                            }
+                            if (dispatched) {
                                 actionsDispatched++
                                 app.researchTelemetry.recordStep()
-                                val landed = awaitIntentScreen(beforePackage, INTENT_SETTLE_MS)
+                                // A silent device command (volume, torch, pause...) changes nothing on
+                                // screen: waiting for a window change would burn the whole settle budget.
+                                val landed = if (deviceCommand != null && deviceCommand.completesOnDispatch) {
+                                    null
+                                } else {
+                                    awaitIntentScreen(beforePackage, INTENT_SETTLE_MS)
+                                }
                                 screenBefore = landed ?: screenBefore
                                 if (shortcut.requiresObservation) {
                                     currentStep++
@@ -2747,7 +2764,14 @@ class AniobViewModel(
                             burstMode = burstEnabled
                         )
                         val executorPrompt = executorRequest.toPromptString()
-                        val baseSystemPrompt = configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call."
+                        val configuredPrompt = configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call."
+                        // The model is told, every run, that it is wired into this phone, which direct
+                        // commands exist, and which of them are switched off right now. A small
+                        // on-device model gets the terse catalogue; a cloud model the full one.
+                        val capabilityState = AniobCapabilityProbe.snapshot(app)
+                        fun withCapabilities(base: String, compact: Boolean): String =
+                            base + "\n\n" + com.aniob.core.capability.AniobCapabilityManifest.render(capabilityState, compact)
+                        val baseSystemPrompt = withCapabilities(configuredPrompt, compact = localCanDrive)
                         val systemPrompt = if (burstEnabled) {
                             // The bundled prompt insists on one action per reply; the burst
                             // contract is appended so it overrides that line instead of fighting it.
@@ -2756,7 +2780,9 @@ class AniobViewModel(
                                 "object and nothing else:\n" +
                                 "{\"thought\": \"brief 10-word plan\", \"is_complete\": false, " +
                                 "\"actions\": [{\"type\": \"tap|input|scroll|back\", \"id\": 2, \"text\": \"optional input\"}]}\n" +
-                                "1-3 actions, only targets already visible, no pixel coordinates, under 60 tokens."
+                                "1-3 actions, only targets already visible, no pixel coordinates, under 60 tokens.\n" +
+                                "Exception: a chore that needs no screen (media, volume, flashlight, calls, codes, files, " +
+                                "alarms...) is NOT a burst; reply with the single DEVICE_CONTROL JSON object instead."
                         } else if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
                             baseSystemPrompt
                         } else {
@@ -2774,11 +2800,17 @@ class AniobViewModel(
 
                         // The plain one-action prompts, for any model that cannot read a burst contract.
                         fun singleActionPrompts(): Pair<String, String> {
-                            if (!burstEnabled) return systemPrompt to activePrompt
-                            val singleSystem = if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
-                                baseSystemPrompt
+                            if (!burstEnabled && primaryProvider != "LOCAL_SLM") return systemPrompt to activePrompt
+                            // A step handed to the on-device model after a cloud failure gets the terse catalogue.
+                            val singleBase = if (primaryProvider == "LOCAL_SLM") {
+                                withCapabilities(configuredPrompt, compact = true)
                             } else {
-                                "$baseSystemPrompt\n\nSchema:\n${com.aniob.core.domain.AniobActionSchema.ACTION_JSON_SCHEMA}"
+                                baseSystemPrompt
+                            }
+                            val singleSystem = if (singleBase.contains("ACTION_JSON_SCHEMA")) {
+                                singleBase
+                            } else {
+                                "$singleBase\n\nSchema:\n${com.aniob.core.domain.AniobActionSchema.ACTION_JSON_SCHEMA}"
                             }
                             val singleObservation = taskContext.buildExecutorRequest(
                                 screen = currentScreen,
@@ -3077,6 +3109,19 @@ class AniobViewModel(
                             val screenAfter = awaitTransition(act)
                             actionsDispatched++
                             StepPipeline.DispatchOutcome(dispatched = ok, reason = act.describeAction(), screenAfter = screenAfter)
+                        }
+                        act is AniobAction.DeviceControl -> {
+                            val result = runDeviceCommand(act.command, act.args)
+                            postDeviceResult(result)
+                            actionsDispatched++
+                            // The result text is what the model reads next; a silent command leaves the
+                            // screen untouched, so the planning screen is reused instead of a capture.
+                            val after = when {
+                                !result.ok -> null
+                                act.command.completesOnDispatch -> dispatchOrigin
+                                else -> awaitTransition(act)
+                            }
+                            StepPipeline.DispatchOutcome(dispatched = result.ok, reason = result.message, screenAfter = after)
                         }
                         act is AniobAction.Finish -> {
                             StepPipeline.DispatchOutcome(dispatched = true, reason = act.summary)
@@ -3740,6 +3785,35 @@ class AniobViewModel(
             delay(120)
         }
         return service?.captureCurrentScreenState()
+    }
+
+    /** Runs one direct device command on the thread it needs (accessibility calls: main; queries: IO). */
+    private suspend fun runDeviceCommand(command: DeviceCommand, args: Map<String, String>): DeviceControlResult =
+        withContext(if (command.needsAccessibility) Dispatchers.Main else Dispatchers.IO) {
+            AniobDeviceControl.execute(app, command, args, AniobAccessibilityService.instance)
+        }
+
+    /** Reflex path: 0 tokens. A command that cannot run says which setting to enable, then planning continues. */
+    private suspend fun runDeviceShortcut(command: DeviceCommand, args: Map<String, String>): Boolean {
+        val result = runDeviceCommand(command, args)
+        app.eventLogger.info("AniobViewModel", "Device reflex ${command.wire}: ok=${result.ok}")
+        postDeviceResult(result)
+        return result.ok
+    }
+
+    /**
+     * Shows answers ("12 GB free") and actionable blocks ("turn on notification access") in the chat.
+     * Silent successes stay silent. Results never contain a verification code, so this is safe to show.
+     */
+    private fun postDeviceResult(result: DeviceControlResult) {
+        if (!result.informational && result.blockedBy == null) return
+        val message = ChatMessage(
+            id = "msg_device_${System.currentTimeMillis()}",
+            role = "assistant",
+            content = (if (result.ok) "\uD83D\uDCF1 " else "\u26A0\uFE0F ") + result.message,
+            stepIndex = 0
+        )
+        _uiState.update { it.copy(chatMessages = it.chatMessages + message) }
     }
 
     private fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut): Boolean {

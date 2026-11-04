@@ -1,42 +1,64 @@
 package com.aniob.app.service
 
-import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import com.aniob.app.device.AniobNotificationHub
 
 /**
- * Reflex 4: Notification monitor (macroDroid trigger provider).
- * Watches for OTP / password / pin notifications and blocks them from entering the
- * LLM context window by never forwarding the content anywhere (safety interceptor).
- * This is a zero-LLM reflex.
+ * Tier-2 background interceptor (zero-LLM).
+ *
+ * Feeds [AniobNotificationHub] so the agent can read notifications, dismiss them, reply inline,
+ * press their buttons, and copy a verification code without opening the messaging app.
+ *
+ * The original privacy rule still holds and is stronger now that codes are captured: a verification
+ * code is held in memory only, masked in every list the model can read, and never logged. Only the
+ * notification's package name is logged, never its content.
  */
 class AniobNotificationListenerService : NotificationListenerService() {
 
-    override fun onNotificationPosted(sbn: StatusBarNotification) {
-        try {
-            val text = sbn.notification?.extras
-                ?.getCharSequence(Notification.EXTRA_TEXT)
-                ?.toString()
-                .orEmpty()
-            val title = sbn.notification?.extras
-                ?.getCharSequence(Notification.EXTRA_TITLE)
-                ?.toString()
-                .orEmpty()
-            val combined = "$title $text"
-            if (SENSITIVE_PATTERNS.any { combined.contains(it, ignoreCase = true) }) {
-                // Blocklist match: never surface notification content to any prompt.
-                Log.i(TAG, "Blocked sensitive notification from ${sbn.packageName} (OTP/password reflex)")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Notification inspect failed", e)
-        }
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        instance = this
+        // Seed the hub with what is already in the shade so "copy the OTP" works for a code that
+        // arrived while the listener was still binding.
+        val active = runCatching { activeNotifications }.getOrNull().orEmpty()
+        active.forEach { sbn -> if (sbn.packageName != packageName) AniobNotificationHub.onPosted(sbn, labelOf(sbn.packageName)) }
+        Log.i(TAG, "Notification listener connected (${active.size} active)")
     }
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification) = Unit
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        if (instance === this) instance = null
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (sbn.packageName == packageName) return
+        AniobNotificationHub.onPosted(sbn, labelOf(sbn.packageName))
+        Log.i(TAG, "Notification captured from ${sbn.packageName}")
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        AniobNotificationHub.onRemoved(sbn.key)
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+
+    private fun labelOf(pkg: String): String =
+        runCatching {
+            val info = packageManager.getApplicationInfo(pkg, 0)
+            packageManager.getApplicationLabel(info).toString()
+        }.getOrDefault(pkg)
 
     companion object {
         private const val TAG = "AniobNotifListener"
-        private val SENSITIVE_PATTERNS = listOf("otp", "one-time", "verification code", "password", "pin")
+
+        /** Bound instance, or null while notification access is off or the service is still binding. */
+        @Volatile
+        var instance: AniobNotificationListenerService? = null
+            private set
     }
 }

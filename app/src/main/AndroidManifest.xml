@@ -16,6 +16,27 @@
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Direct device commands (DeviceCommand catalogue). All are optional at runtime: a command whose
+         permission is missing reports the exact setting to enable instead of failing silently. -->
+    <!-- Volume / speakerphone. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Lists Aniob under Settings > Do Not Disturb access so dnd_on / dnd_off can be granted. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <!-- call (ACTION_CALL) and contact-name lookup for call / whatsapp / sms. -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- location_share: last known location only, never tracked. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- file_find / file_open over MediaStore. Media types need the READ_MEDIA_* grants; PDFs and
+         downloads need "All files access", which Android only offers through its own settings page. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
     <queries>
         <!-- Android 11 package visibility: without this, queryIntentActivities(MAIN/LAUNCHER)
              returns a partial list and the app registry silently under-reports installed apps. -->

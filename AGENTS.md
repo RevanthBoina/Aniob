@@ -82,3 +82,18 @@ core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing cha
 - **Burst replan.** A burst target that vanished mid-burst (`BurstTargetGuard.Verdict.shouldReplan`) drops the
   rest of the burst, re-observes, and plans single actions for the rest of the run. A safety block is still
   a hard stop.
+
+## Device capabilities (DEVICE_CONTROL)
+
+- `DeviceCommand` (`core-agent/domain`) is the **only** list of direct device commands. Schema, prompt
+  manifest, reflex resolver and the Android implementation (`app/device/AniobDeviceControl`) all derive
+  from it; add a command there and let the exhaustive `when`s tell you what is missing.
+- The executor system prompt always carries `AniobCapabilityManifest.render(...)`; never hand-copy the
+  command list into a prompt file. `configs/`, `android-agent/configs/` and the APK assets must stay in
+  sync (`scripts/config-assets-sync-check.sh`).
+- Verification codes are masked (`AniobOtpExtractor.mask`) in anything a model, log or chat can read.
+  They leave memory only through `otp_copy` / `otp_paste`.
+- `CONFIRM`-risk commands are never reflexes. `AniobReflexResolver` ignores multi-goal sentences.
+- No new broad `catch (e: Exception)`: the preflight ratchet counts them. Catch the specific exception.
+- See `docs/DEVICE_CAPABILITIES.md`.
+

@@ -82,6 +82,10 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             private set
         var isTaskActive: Boolean = false
 
+        /** Answer of the last device command dispatched through this service (replays, skills). */
+        @Volatile
+        var lastDeviceResult: com.aniob.app.device.DeviceControlResult? = null
+
         /**
          * Fired when the service is destroyed, carrying whether a task was still running.
          * UX-6 turns this into the "Aniob lost access" recovery surface. Zero-cost when unset.
@@ -153,6 +157,8 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         super.onServiceConnected()
         instance = this
         isServiceConnected = true
+        // Copy-paste flows: remember clipboard changes while this service is allowed to read them.
+        com.aniob.app.device.AniobClipboardWatcher.start(this)
         notifySystemState()
         // Refresh the app registry off the main thread to avoid ANR on devices with hundreds of
         // apps. This is the *launchable* inventory (MAIN/LAUNCHER), hydrated at application start
@@ -266,6 +272,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     override fun onDestroy() {
         super.onDestroy()
         recycleLatestRefs()
+        com.aniob.app.device.AniobClipboardWatcher.stop()
         instance = null
         isServiceConnected = false
         // Accessibility access dies mid-task: surface the loss so UX-6's recovery flow can react.
@@ -1150,13 +1157,41 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                 }
             }
             "SYSTEM_KEY" -> {
-                val globalAction = when ((action as? AniobAction.SystemKey)?.key ?: (action as? AniobAction.PressKey)?.key) {
-                    KeyType.HOME -> GLOBAL_ACTION_HOME
-                    KeyType.RECENTS -> GLOBAL_ACTION_RECENTS
-                    else -> GLOBAL_ACTION_BACK
+                val key = (action as? AniobAction.SystemKey)?.key ?: (action as? AniobAction.PressKey)?.key
+                // VOLUME_UP/DOWN used to fall through to BACK and navigate away from the app instead.
+                val volume = when (key) {
+                    KeyType.VOLUME_UP -> DeviceCommand.VOLUME_UP
+                    KeyType.VOLUME_DOWN -> DeviceCommand.VOLUME_DOWN
+                    else -> null
                 }
-                callback(performGlobalAction(globalAction))
+                if (volume != null) {
+                    runDeviceCommand(volume, mapOf("steps" to "1"), callback)
+                } else {
+                    val globalAction = when (key) {
+                        KeyType.HOME -> GLOBAL_ACTION_HOME
+                        KeyType.RECENTS -> GLOBAL_ACTION_RECENTS
+                        else -> GLOBAL_ACTION_BACK
+                    }
+                    callback(performGlobalAction(globalAction))
+                }
             }
+            "DEVICE_CONTROL" -> {
+                val device = action as? AniobAction.DeviceControl
+                if (device == null) callback(false) else runDeviceCommand(device.command, device.args, callback)
+            }
+            "CLIPBOARD" -> {
+                val clip = action as? AniobAction.Clipboard
+                if (clip?.operation == ClipboardOp.SET && !clip.text.isNullOrEmpty()) {
+                    runDeviceCommand(DeviceCommand.CLIPBOARD_SET, mapOf("text" to clip.text.orEmpty()), callback)
+                } else {
+                    runDeviceCommand(DeviceCommand.CLIPBOARD_GET, emptyMap(), callback)
+                }
+            }
+            "GET_NOTIFICATIONS" -> runDeviceCommand(
+                DeviceCommand.NOTIFICATION_LIST,
+                command.argument?.let { mapOf("package" to it) } ?: emptyMap(),
+                callback
+            )
             "CONFIRM_WITH_USER" -> callback(true)
             "FINISH", "WAIT" -> callback(true)
             "TAKE_SCREENSHOT" -> {
@@ -1179,13 +1214,27 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                     callback(false)
                 }
             }
-            "CLIPBOARD", "GET_SCREEN_INFO", "GET_NOTIFICATIONS", "GET_DEVICE_INFO", "GET_INSTALLED_APPS" -> {
+            "GET_SCREEN_INFO", "GET_DEVICE_INFO", "GET_INSTALLED_APPS" -> {
                 Log.w(TAG, "Unsupported utility action: ${command.name}")
                 callback(false)
             }
             "FAIL" -> callback(false)
             else -> callback(false)
         }
+    }
+
+    /**
+     * Runs a direct device command off the UI loop's critical path and reports success. Commands that
+     * drive this service (global actions, focused-field edits) run on the main thread; the rest
+     * (file index, contacts) on the service's IO scope. The answer is parked in [lastDeviceResult].
+     */
+    private fun runDeviceCommand(command: DeviceCommand, args: Map<String, String>, callback: (Boolean) -> Unit) {
+        val work = {
+            val result = com.aniob.app.device.AniobDeviceControl.execute(this, command, args, this)
+            lastDeviceResult = result
+            callback(result.ok)
+        }
+        if (command.needsAccessibility) mainHandler.post(work) else serviceScope.launch { work() }
     }
 
     /**

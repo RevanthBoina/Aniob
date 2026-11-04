@@ -36,6 +36,7 @@ object StepNarration {
         is AniobAction.GetNotifications -> "Reading notifications"
         is AniobAction.GetInstalledApps -> "Listing your apps"
         is AniobAction.Clipboard -> "Using the clipboard"
+        is AniobAction.DeviceControl -> DeviceNarration.phrase(action.command)
     }
 
     private fun isSecret(node: AniobNode?, target: String): Boolean {
