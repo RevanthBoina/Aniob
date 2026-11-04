@@ -110,7 +110,7 @@ object RememberTemplate {
     /** Placeholder written into a cached action whose value came from the prompt. */
     fun placeholder(index: Int): String = "{PARAM_$index}"
 
-    private val PLACEHOLDER = Regex("\\{PARAM_(\\d+)}")
+    private val PLACEHOLDER = Regex("\\{PARAM_(\\d+)\\}")
 
     /** Rewrites `{PARAM_n}` occurrences with [params] (1-based); null when one has no value. */
     fun inject(value: String, params: List<String>): String? {

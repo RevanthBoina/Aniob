@@ -83,8 +83,7 @@ android {
     includeInBundle = true
   }
   lint {
-    abortOnError = false
-    checkReleaseBuilds = false
+    baseline = file("lint-baseline.xml")
   }
 }
 
