@@ -1406,6 +1406,8 @@ class AniobViewModel(
      * both fields is a real "turn Cloud AI off" action, not a validation failure.
      */
     fun saveCloudSettings(apiKey: String, model: String, baseUrl: String) {
+        // A new address or key deserves a fresh chance: forget which gateways were marked down.
+        com.aniob.core.external.AniobGatewayHealth.shared.reset()
         val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
         val key = apiKey.trim()
 
@@ -1488,6 +1490,7 @@ class AniobViewModel(
      */
     fun testCloudConnection(apiKey: String, baseUrl: String) {
         if (_uiState.value.cloudTest.testing) return
+        com.aniob.core.external.AniobGatewayHealth.shared.reset()
         val key = apiKey.trim()
         val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
         val validationError = when {
@@ -1540,6 +1543,7 @@ class AniobViewModel(
 
     /** Sets the OmniRoute gateway base URL. Not a secret, so it is persisted in plaintext prefs. */
     fun setOmniRouteBaseUrl(baseUrl: String) {
+        com.aniob.core.external.AniobGatewayHealth.shared.reset()
         val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
         secretStore.setOmniRouteBaseUrl(address)
         _uiState.update {
@@ -2394,6 +2398,10 @@ class AniobViewModel(
         val preObservedScreens = HashSet<String>()
         // Viewport merged after that scroll, handed to the next planning pass.
         var preObservedScreen: AniobScreenState? = null
+        // Set once a burst's target vanished mid-burst. The screen in front is dynamic (search
+        // results re-indexing, animated lists), so the rest of the run plans one action at a time
+        // from a fresh observation instead of trusting a multi-action plan again.
+        var burstsSuspended = false
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
@@ -2582,8 +2590,22 @@ class AniobViewModel(
                                         currentStep++
                                         continue
                                     }
+                                    shortcut.completesOnDispatch && resolvedCriteria?.hasObservableCheck != true -> {
+                                        // A system reflex (alarm/timer with SKIP_UI, torch, battery, dial,
+                                        // URL, a settings panel that is the whole request): Android resolved
+                                        // the intent or the system service accepted the call, and no
+                                        // interactive screen is left to read. The dispatch IS the
+                                        // verification, so the run is a verified success; recording it as
+                                        // UNVERIFIED made research telemetry count a clean run as failed.
+                                        completedByIntent = true
+                                        finalOutcome = Outcome.SUCCESS
+                                        terminalReason = shortcut.label?.let { "Dispatched $it" }
+                                            ?: "System intent dispatched"
+                                        break
+                                    }
                                     else -> {
-                                        // Nothing machine-checkable: honest, and never a claimed success.
+                                        // Nothing machine-checkable and not a finished reflex (an editor
+                                        // that was only opened): honest, and never a claimed success.
                                         completedByIntent = true
                                         finalOutcome = Outcome.UNVERIFIED
                                         terminalReason = shortcut.label?.let { "Dispatched $it" }
@@ -2716,7 +2738,7 @@ class AniobViewModel(
 
                         // The cloud path can parse a burst; the local resolver is single-action, so
                         // the local prompt keeps the one-action shape.
-                        val burstEnabled = researchMode.actionBursts && !localCanDrive
+                        val burstEnabled = researchMode.actionBursts && !localCanDrive && !burstsSuspended
                         val executorRequest = taskContext.buildExecutorRequest(
                             screen = currentScreen,
                             activeSubgoal = taskProgress?.summary,
@@ -2750,7 +2772,73 @@ class AniobViewModel(
                         )
                         val activePrompt = assembledPrompt.text
 
-                        suspend fun runOmniRouteStep(): AniobAction {
+                        // The plain one-action prompts, for any model that cannot read a burst contract.
+                        fun singleActionPrompts(): Pair<String, String> {
+                            if (!burstEnabled) return systemPrompt to activePrompt
+                            val singleSystem = if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
+                                baseSystemPrompt
+                            } else {
+                                "$baseSystemPrompt\n\nSchema:\n${com.aniob.core.domain.AniobActionSchema.ACTION_JSON_SCHEMA}"
+                            }
+                            val singleObservation = taskContext.buildExecutorRequest(
+                                screen = currentScreen,
+                                activeSubgoal = taskProgress?.summary,
+                                lastAction = taskContext.trajectory.lastOrNull()?.describeAction(),
+                                lastResult = taskContext.condensedHistory.lastOrNull(),
+                                burstMode = false
+                            ).toPromptString()
+                            val singleTail = com.aniob.core.speed.PromptAssembler.Tail(observation = singleObservation)
+                            return singleSystem to com.aniob.core.speed.PromptAssembler(singleSystem).assemble(singleTail).text
+                        }
+
+                        // Resilient provider ladder. A cloud step that comes back unusable (HTTP 4xx/5xx,
+                        // an HTML page where JSON belongs, gateway down, no assistant message) must not
+                        // end the task: the same step is retried on the on-device model. Only when that
+                        // cannot produce a real action does the step fail, with a reason the user can act
+                        // on. A cloud-only routing choice is honoured and never downgraded.
+                        suspend fun degradeAfterCloudFailure(error: Throwable, allowLocal: Boolean): AniobAction {
+                            val kind = com.aniob.core.external.AniobGatewayClassifier.kindOf(error)
+                            val detail = error.message ?: "network error"
+                            val cloudFailure = "Cloud action generation failed: $detail"
+                            app.eventLogger.warn("AniobViewModel", "Cloud step failed (${kind.name}): $detail")
+                            if (!allowLocal || userRouting == "cloud-only") return AniobAction.Fail(cloudFailure)
+                            refreshLocalEngine()
+                            val caps = localLlmClient.capabilities()
+                            if (!localLlmClient.isModelLoaded() || !caps.canDriveActions) {
+                                return AniobAction.Fail(
+                                    "$cloudFailure. No on-device model is ready (${caps.reason}): install one in " +
+                                        "Models, or check the gateway address in Settings."
+                                )
+                            }
+                            primaryProvider = "LOCAL_SLM"
+                            decisionReason = "Downgraded to the on-device model after a cloud failure (${kind.name})"
+                            _uiState.update {
+                                it.copy(
+                                    statusMessage = "Cloud unavailable. Continuing on the on-device model...",
+                                    lastProviderUsed = primaryProvider,
+                                    lastRoutingReason = decisionReason
+                                )
+                            }
+                            val (localSystem, localObservation) = singleActionPrompts()
+                            app.researchTelemetry.recordLocalInference()
+                            val gen = localLlmClient.generateStepResult(localSystem, localObservation)
+                            val localPromptEst = (localSystem.length + localObservation.length) / 4
+                            app.researchTelemetry.recordPromptTokens(localPromptEst)
+                            totalTokens += localPromptEst.coerceAtLeast(80)
+                            val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
+                            if (structured.usedFallback) {
+                                app.eventLogger.warn(
+                                    "AniobViewModel",
+                                    "On-device fallback produced no schema-valid action: ${structured.reason}"
+                                )
+                                return AniobAction.Fail(
+                                    "$cloudFailure. The on-device model could not plan this step either (${structured.reason})."
+                                )
+                            }
+                            return structured.action
+                        }
+
+                        suspend fun runOmniRouteStep(allowLocalFallback: Boolean = true): AniobAction {
                             val omniroute = getOmniRouteProvider(sessionId = task.id)
                             val promptAsksForVisualInspection = (localFailCount > 0) || task.rawPrompt.contains(
                                 Regex("(?i)look|see|inspect|read|image|photo|visual")
@@ -2846,9 +2934,7 @@ class AniobViewModel(
                                         structured.action
                                     }
                                 },
-                                onFailure = { error ->
-                                    AniobAction.Fail("Cloud action generation failed: ${error.message ?: "network error"}")
-                                }
+                                onFailure = { error -> degradeAfterCloudFailure(error, allowLocalFallback) }
                             )
                         }
 
@@ -2880,7 +2966,7 @@ class AniobViewModel(
                                             lastRoutingReason = decisionReason
                                         )
                                     }
-                                    runOmniRouteStep()
+                                    runOmniRouteStep(allowLocalFallback = false)
                                 } else {
                                     structured.action
                                 }
@@ -2898,7 +2984,7 @@ class AniobViewModel(
                                     lastRoutingReason = decisionReason
                                 )
                             }
-                            runOmniRouteStep()
+                            runOmniRouteStep(allowLocalFallback = false)
                         } else if (decision.target == RouteTarget.LOCAL_SLM) {
                             AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && isOmniRouteReady()) {
@@ -3081,6 +3167,11 @@ class AniobViewModel(
                 // as the screen navigates away or a target disappears.
                 // ---------------------------------------------------------------------------
                 var burstAbort: String? = null
+                // A burst whose target vanished is not a failed task: the plan was made for a screen
+                // that has since moved (Files/Search re-index and hide nodes after the first tap).
+                // The rest of the burst is dropped and the next step is planned from a fresh screen.
+                var burstReplan: String? = null
+                var lastHeadCtx: com.aniob.core.domain.TaskContext? = null
                 if (plannedBurst != null && plannedBurst!!.head.isNotEmpty()) {
                     val burst = plannedBurst!!
                     for ((offset, burstAction) in burst.head.withIndex()) {
@@ -3096,8 +3187,8 @@ class AniobViewModel(
                         }
                         val verdict = com.aniob.core.perception.BurstTargetGuard
                             .check(burstAction, currentScreen, liveScreen)
-                        if (!verdict.allowed) {
-                            burstAbort = verdict.reason
+                        if (verdict.shouldReplan) {
+                            burstReplan = verdict.reason
                             break
                         }
                         val target = com.aniob.core.perception.BurstTargetGuard
@@ -3111,6 +3202,7 @@ class AniobViewModel(
                         // Every head action must pass the same safety, physical and verification
                         // pipeline as the tail. A burst never prompts mid-flight: stop and replan.
                         burstDispatchTreeHash = com.aniob.core.diff.AniobScreenDiff.computeTreeHash(liveScreen.nodes)
+                        val blockedBefore = taskBlockedFingerprints.size
                         val headResult = stepPipe.executeStep(
                             ctx = taskContext,
                             planningScreen = liveScreen,
@@ -3122,9 +3214,17 @@ class AniobViewModel(
                         )
                         burstDispatchTreeHash = null
                         app.researchTelemetry.recordStep()
+                        lastHeadCtx = headResult.nextCtx
                         if (headResult.terminalState != StepResult.TerminalState.CONTINUE ||
                             headResult.verification?.isSuccessful != true) {
-                            burstAbort = "action ${offset + 1} was blocked or not verified"
+                            val blockedBySafety = taskBlockedFingerprints.size > blockedBefore ||
+                                (headResult.terminalState == StepResult.TerminalState.FAIL &&
+                                    liveScreen.treeHash in taskBlockedFingerprints)
+                            val why = "action ${offset + 1} was blocked or not verified"
+                            // A safety block is final. Anything else (the tap did not change the
+                            // screen yet, the node moved before dispatch) is a plan that no longer
+                            // fits the screen: re-plan from what is there now.
+                            if (blockedBySafety) burstAbort = why else burstReplan = why
                             break
                         }
                         rememberTransitions.add(
@@ -3136,7 +3236,7 @@ class AniobViewModel(
                 // The last planned action still goes through the pipeline so Verify runs on it. It
                 // is re-grounded against the post-burst screen first; if it is gone, the burst is
                 // closed with a provisional finish and the step goes straight to verification.
-                if (plannedBurst != null && burstAbort == null && plannedBurst!!.tail != null) {
+                if (plannedBurst != null && burstAbort == null && burstReplan == null && plannedBurst!!.tail != null) {
                     val tail = plannedBurst!!.tail!!
                     // With no head there is nothing to re-observe: the tail was planned on
                     // `currentScreen`, and re-reading would only re-index the same window.
@@ -3146,8 +3246,8 @@ class AniobViewModel(
                         accessibility?.captureCurrentScreenState() ?: currentScreen
                     }
                     val verdict = com.aniob.core.perception.BurstTargetGuard.check(tail, currentScreen, liveScreen)
-                    if (!verdict.allowed) {
-                        burstAbort = verdict.reason
+                    if (verdict.shouldReplan) {
+                        burstReplan = verdict.reason
                     } else {
                         val target = com.aniob.core.perception.BurstTargetGuard.findTarget(tail, currentScreen, liveScreen)
                         if (target != null) {
@@ -3158,6 +3258,23 @@ class AniobViewModel(
                         }
                         currentScreen = liveScreen
                     }
+                }
+                if (plannedBurst != null && burstAbort == null && burstReplan != null) {
+                    app.eventLogger.info(
+                        "AniobViewModel",
+                        "Burst target invalidated ($burstReplan); dropping the rest and re-planning one action from a fresh screen"
+                    )
+                    burstsSuspended = true
+                    // The head actions that did run are part of this task's history.
+                    lastHeadCtx?.let { taskContext = it }
+                    delay(BURST_REPLAN_SETTLE_MS)
+                    accessibility?.captureCurrentScreenState()?.let { fresh ->
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                        screenBefore = fresh
+                    }
+                    _uiState.update { it.copy(statusMessage = "The screen changed. Planning the next step from what is on screen...") }
+                    currentStep++
+                    continue
                 }
                 if (plannedBurst != null && burstAbort != null) {
                     app.eventLogger.warn("AniobViewModel", "Burst stopped: $burstAbort")
@@ -3687,6 +3804,16 @@ class AniobViewModel(
                         shortcut.dataType?.let { type = it }
                         shortcut.extras.forEach { (key, value) -> putShortcutExtra(this, key, value) }
                     }
+                    // "open linkedin in chrome": the browser is a preference. Try it pinned first; if it
+                    // cannot take the URL (not installed, disabled) the system default still can.
+                    val preferred = shortcut.preferredPackage
+                    if (preferred != null && shortcut.uriString != null) {
+                        if (startActivitySafely(launchCtx, Intent(intent).setPackage(preferred))) return true
+                        app.eventLogger.info(
+                            "AniobViewModel",
+                            "$preferred could not open the URL; using the system default browser"
+                        )
+                    }
                     if (startActivitySafely(launchCtx, intent)) return true
                     // Some launchers only resolve with the package's own launch intent.
                     val pkg = shortcut.targetPackage ?: return false
@@ -3783,6 +3910,9 @@ class AniobViewModel(
 
         /** Output budget for a burst reply (the schema asks for < 60 tokens). */
         const val BURST_MAX_OUTPUT_TOKENS = 96
+
+        /** Lets a dynamic screen finish animating before the post-burst re-observation. */
+        const val BURST_REPLAN_SETTLE_MS = 250L
 
         /**
          * Budget for hydrating learned state before step 0 yields to the model. Hydration keeps

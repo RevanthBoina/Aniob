@@ -220,16 +220,18 @@ object AniobProviderConfig {
 
     /**
      * Ordered candidate `/v1/chat/completions` endpoints.
+     *
+     * The implicit ladder for a local/blank address is the address itself, then the emulator host.
+     * It deliberately does **not** append [OMNIROUTE_CLOUD_BASE_URL]: that host is only used when
+     * the user picks it, because silently re-sending a local gateway's key to a third-party host
+     * is a leak, and a hosted address that answers an HTML 404 turned every step into extra
+     * doomed requests. Unreachable candidates are skipped by `AniobGatewayHealth`, not tried.
      */
     fun candidateEndpoints(baseUrl: String): List<String> {
         val primary = resolveEndpoint(baseUrl)
         val trimmed = baseUrl.trim()
         return if (trimmed.isBlank() || trimmed.contains("localhost:20128") || trimmed.contains("127.0.0.1:20128")) {
-            listOf(
-                primary,
-                resolveEndpoint(OMNIROUTE_EMULATOR_BASE_URL),
-                resolveEndpoint(OMNIROUTE_CLOUD_BASE_URL)
-            ).distinct()
+            listOf(primary, resolveEndpoint(OMNIROUTE_EMULATOR_BASE_URL)).distinct()
         } else {
             listOf(primary)
         }
@@ -242,11 +244,7 @@ object AniobProviderConfig {
         val primary = resolveModelsEndpoint(baseUrl)
         val trimmed = baseUrl.trim()
         return if (trimmed.isBlank() || trimmed.contains("localhost:20128") || trimmed.contains("127.0.0.1:20128")) {
-            listOf(
-                primary,
-                resolveModelsEndpoint(OMNIROUTE_EMULATOR_BASE_URL),
-                resolveModelsEndpoint(OMNIROUTE_CLOUD_BASE_URL)
-            ).distinct()
+            listOf(primary, resolveModelsEndpoint(OMNIROUTE_EMULATOR_BASE_URL)).distinct()
         } else {
             listOf(primary)
         }

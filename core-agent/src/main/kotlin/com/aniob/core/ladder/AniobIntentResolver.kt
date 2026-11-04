@@ -26,8 +26,29 @@ data class ResolvedIntentShortcut(
     /** True when the only honest way to confirm this is to observe the screen after dispatch. */
     val requiresObservation: Boolean = false,
     /** App label for the transcript ("Opening Clock…"), when the target is an app. */
-    val label: String? = null
-)
+    val label: String? = null,
+    /**
+     * A browser the dispatcher should try first for a URI shortcut ("open linkedin in chrome").
+     * Unlike [targetPackage] it is only a preference: when that package cannot handle the URI the
+     * dispatcher retries with the system default, and the doctor never treats it as a required app.
+     */
+    val preferredPackage: String? = null,
+    /**
+     * True when the dispatch only opens an editor or list the user still has to act on (a bare
+     * "set alarm" with no time). Such a shortcut is not a finished task even though it asks for no
+     * observation, so it must never be reported as complete.
+     */
+    val opensEditorOnly: Boolean = false
+) {
+    /**
+     * True for a reflex whose effect *is* the dispatch: Android resolved the intent (or the
+     * system service accepted the call) and there is no interactive screen left to check — alarm
+     * and timer with `SKIP_UI`, torch, battery, dial, URL, maps and a settings panel that is the
+     * whole request. The caller may close the run as verified on a successful dispatch.
+     */
+    val completesOnDispatch: Boolean
+        get() = !requiresObservation && !opensEditorOnly
+}
 
 /**
  * System Intent Shortcut Resolver.
@@ -138,6 +159,7 @@ object AniobIntentResolver {
             ?: url(raw, lower)
             ?: maps(raw, lower)
             ?: appViaRegistry(raw)
+            ?: webFallback(raw)
             ?: clockOrAlarm(lower)
             ?: appCategory(lower)
     }
@@ -267,6 +289,7 @@ object AniobIntentResolver {
         return ResolvedIntentShortcut(
             action = if (isAlarm) ACTION_SET_ALARM else "android.intent.action.SHOW_ALARMS",
             requiresObservation = false,
+            opensEditorOnly = true,
             label = "Clock"
         )
     }
@@ -399,8 +422,35 @@ object AniobIntentResolver {
         parseSettingsPanel(lower)?.let { return it }
         parseContactInsert(raw, lower)?.let { return it }
         parseWebSearch(lower)?.let { return it }
+        parseWebLaunch(raw)?.let { return it }
         return null
     }
+
+    /**
+     * `open linkedin in chrome`, `search for lofi in youtube`: a web destination named together with
+     * its browser or site. Answered with a URL intent so the run never waits on a model for it.
+     */
+    private fun parseWebLaunch(raw: String): ResolvedIntentShortcut? {
+        val plan = AniobLaunchHub.planWeb(raw, AniobAppRegistry.getInstance())
+            ?.takeIf { it.source != WebLaunchPlan.SOURCE_APP_FALLBACK } ?: return null
+        return webShortcut(plan)
+    }
+
+    /**
+     * `open linkedin` with nothing installed under that name: its web page, in the default browser.
+     * Runs after the app lookup, so an installed app (or an ambiguity) always keeps priority.
+     */
+    private fun webFallback(raw: String): ResolvedIntentShortcut? {
+        val plan = AniobLaunchHub.planWeb(raw, AniobAppRegistry.getInstance()) ?: return null
+        return webShortcut(plan)
+    }
+
+    private fun webShortcut(plan: WebLaunchPlan): ResolvedIntentShortcut = ResolvedIntentShortcut(
+        action = ACTION_VIEW,
+        uriString = plan.url,
+        preferredPackage = plan.browserPackage,
+        label = plan.label
+    )
 
     /**
      * `set an alarm for 7:30 am` -> SET_ALARM with hour/minute, plus `SKIP_UI` when the prompt does

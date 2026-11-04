@@ -7,6 +7,10 @@ import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.core.external.AniobCloudLlmProvider
+import com.aniob.core.external.AniobGatewayClassifier
+import com.aniob.core.external.AniobGatewayException
+import com.aniob.core.external.AniobGatewayHealth
+import com.aniob.core.external.GatewayFailureKind
 import com.aniob.core.speed.JsonPrefix
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -31,11 +35,17 @@ import kotlin.coroutines.resume
  * Talks to an OmniRoute gateway's `/v1/chat/completions` and `/v1/models` endpoints.
  * Supports:
  * - Local Termux / desktop gateway (`http://localhost:20128/v1`, `http://10.0.2.2:20128/v1`, or custom LAN/VPS URL)
- * - Hosted OmniRoute Cloud (`https://omniroute.online/v1`)
+ * - Hosted OmniRoute Cloud (`https://omniroute.online/v1`), only when the user selects it: it is no
+ *   longer an implicit fallback (see [AniobProviderConfig.candidateEndpoints])
  * - Zero-Config Auto-Combo channels (`auto`, `auto/fast`, `auto/smart`, `auto/vision`, `auto/coding`, `auto/cheap`)
  *   and explicit `<provider>/<model>` or custom combo targets
  * - `x-omniroute-no-memory` and `X-OmniRoute-Session-Id` headers for deterministic UI action steps
  *   and LKGP / cache-affinity session stickiness.
+ *
+ * Resilience: every response is classified (status + `Content-Type`) *before* it is parsed, a dead
+ * or unreachable endpoint goes into a cool-down shared across providers ([AniobGatewayHealth]), and
+ * a local gateway must accept a TCP connection within 500 ms before any request is built. All of
+ * that surfaces as a typed [AniobGatewayException] so the caller can drop to the on-device model.
  *
  * When [jsonMode] is enabled, all generation requests enforce `response_format:
  * json_object` with temperature 0.1 so the ladder can trust structured output.
@@ -51,7 +61,12 @@ class AniobOmniRouteProvider(
      * `AniobViewModel` wires this to `ResearchTelemetryManager.recordLlmCall()`; the default no-op
      * keeps tests and one-off callers unchanged. The Settings connection probe does not use it.
      */
-    private val onLlmRequest: () -> Unit = {}
+    private val onLlmRequest: () -> Unit = {},
+    /**
+     * Process-wide cool-down + reachability state. Providers are rebuilt per step, so the state
+     * that stops a dead gateway from being re-tried on every action has to live outside them.
+     */
+    private val health: AniobGatewayHealth = AniobGatewayHealth.shared
 ) : AniobCloudLlmProvider {
     override val name: String = "OMNIROUTE_CLOUD"
     override val isConfigured: Boolean get() = apiKey.isNotBlank() || isLocalGateway(baseUrl)
@@ -86,7 +101,7 @@ class AniobOmniRouteProvider(
             }
             val effectiveModel = AniobProviderConfig.coerceModel(model)
             val payload = buildChatPayload(effectiveModel, messages, maxTokens = 1024, enforceJsonObject = jsonMode)
-            val endpoints = AniobProviderConfig.candidateEndpoints(baseUrl)
+            val endpoints = admittedEndpoints()
             var lastError = "Unreachable"
             for (endpoint in endpoints) {
                 try {
@@ -94,8 +109,18 @@ class AniobOmniRouteProvider(
                     val responseResult = executeWithJsonFallback(endpoint, payload, enforceJson = jsonMode)
                     val code = responseResult.code
                     val body = responseResult.body
-                    if (code in 200..299) {
-                        val fullContent = extractAssistantContent(body)
+                    val gatewayFailure = AniobGatewayClassifier.classifyHttp(
+                        code, responseResult.contentType, body, endpoint
+                    )
+                    if (gatewayFailure == null) {
+                        health.recordSuccess(endpoint)
+                        val fullContent = try {
+                            extractAssistantContent(body)
+                        } catch (e: org.json.JSONException) {
+                            health.recordFailure(endpoint, GatewayFailureKind.MALFORMED)
+                            lastError = "Error from Omniroute Cloud ($code): reply had no assistant message"
+                            continue
+                        }
                         val routedModel = responseResult.routedModel ?: effectiveModel
                         AniobEgressLedger.record(
                             name,
@@ -106,10 +131,12 @@ class AniobOmniRouteProvider(
                         )
                         return@withContext fullContent
                     } else {
-                        lastError = "Error from Omniroute Cloud ($code): $body"
+                        health.recordFailure(endpoint, gatewayFailure.kind)
+                        lastError = "Error from Omniroute Cloud ${gatewayFailure.message?.removePrefix("Omniroute Cloud API error ")}"
                         if (code == 401 || code == 403) return@withContext lastError
                     }
                 } catch (ioe: IOException) {
+                    health.recordFailure(endpoint, AniobGatewayClassifier.kindOf(ioe))
                     lastError = "Request failed: ${ioe.message}"
                 }
             }
@@ -142,8 +169,40 @@ class AniobOmniRouteProvider(
         model = model,
         jsonMode = true,
         sessionId = sessionId,
-        onLlmRequest = onLlmRequest
+        onLlmRequest = onLlmRequest,
+        health = health
     )
+
+    /**
+     * The endpoints worth contacting right now.
+     *
+     * An endpoint in its cool-down, or a local one that does not accept a TCP connection within
+     * 500 ms (no `adb reverse tcp:20128 tcp:20128`, proxy down), is dropped here — before a request
+     * is built and before [onLlmRequest] counts a call that never left the device. When nothing is
+     * left the failure is immediate and typed, so the caller can fall back to the on-device model.
+     */
+    private fun admittedEndpoints(): List<String> {
+        val candidates = AniobProviderConfig.candidateEndpoints(baseUrl)
+        val skipped = mutableListOf<String>()
+        val admitted = candidates.filter { endpoint ->
+            when (val verdict = health.admit(endpoint, isLocalGateway(endpoint))) {
+                AniobGatewayHealth.Admission.Go -> true
+                is AniobGatewayHealth.Admission.Skip -> {
+                    skipped += verdict.reason
+                    false
+                }
+            }
+        }
+        if (admitted.isEmpty()) {
+            throw AniobGatewayException(
+                kind = GatewayFailureKind.UNREACHABLE,
+                httpCode = null,
+                endpoint = candidates.firstOrNull(),
+                message = "Request failed: gateway unavailable (${skipped.firstOrNull() ?: "no endpoint configured"})"
+            )
+        }
+        return admitted
+    }
 
     private suspend fun streamingResult(
         prompt: String,
@@ -160,7 +219,7 @@ class AniobOmniRouteProvider(
             val messages = buildMessages(systemPrompt, prompt, screenshotBase64)
             val effectiveModel = resolveModelForVision(AniobProviderConfig.coerceModel(model), screenshotBase64)
             val payload = buildChatPayload(effectiveModel, messages, maxTokens = 1024, enforceJsonObject = jsonMode)
-            val endpoints = AniobProviderConfig.candidateEndpoints(baseUrl)
+            val endpoints = admittedEndpoints()
 
             var lastError = "Request failed: gateway unreachable"
             for (endpoint in endpoints) {
@@ -169,8 +228,18 @@ class AniobOmniRouteProvider(
                     val responseResult = executeWithJsonFallback(endpoint, payload, enforceJson = jsonMode)
                     val code = responseResult.code
                     val body = responseResult.body
-                    if (code in 200..299) {
-                        val full = extractAssistantContent(body)
+                    val gatewayFailure = AniobGatewayClassifier.classifyHttp(
+                        code, responseResult.contentType, body, endpoint
+                    )
+                    if (gatewayFailure == null) {
+                        health.recordSuccess(endpoint)
+                        val full = try {
+                            extractAssistantContent(body)
+                        } catch (e: org.json.JSONException) {
+                            health.recordFailure(endpoint, GatewayFailureKind.MALFORMED)
+                            lastError = "Error from Omniroute Cloud ($code): reply had no assistant message"
+                            continue
+                        }
                         val routedModel = responseResult.routedModel ?: effectiveModel
                         AniobEgressLedger.record(
                             name,
@@ -182,12 +251,14 @@ class AniobOmniRouteProvider(
                         onDelta(full)
                         return@withContext full
                     } else {
-                        lastError = "Error from Omniroute Cloud ($code): $body"
+                        health.recordFailure(endpoint, gatewayFailure.kind)
+                        lastError = "Error from Omniroute Cloud ${gatewayFailure.message?.removePrefix("Omniroute Cloud API error ")}"
                         if (code == 401 || code == 403) {
                             return@withContext lastError
                         }
                     }
                 } catch (ioe: IOException) {
+                    health.recordFailure(endpoint, AniobGatewayClassifier.kindOf(ioe))
                     lastError = "Request failed: ${ioe.message}"
                 }
             }
@@ -210,6 +281,8 @@ class AniobOmniRouteProvider(
     suspend fun prewarm() = withContext(Dispatchers.IO) {
         if (apiKey.isBlank() && !isLocalGateway(baseUrl)) return@withContext
         runCatching {
+            // A gateway that is down or inside its cool-down is not worth a 4 s warm-up.
+            admittedEndpoints()
             val warmClient = client.newBuilder().callTimeout(4, TimeUnit.SECONDS).build()
             for (endpoint in AniobProviderConfig.candidateModelsEndpoints(baseUrl)) {
                 val request = Request.Builder()
@@ -257,10 +330,11 @@ class AniobOmniRouteProvider(
                 .apply { remove("response_format") }
                 .put("stream", true)
             var lastFailure: Exception = IOException("OmniRoute gateway unreachable")
-            for (endpoint in AniobProviderConfig.candidateEndpoints(baseUrl)) {
+            for (endpoint in admittedEndpoints()) {
                 onLlmRequest()
                 val attempt = streamOnce(endpoint, payload, onFirstToken)
                 if (attempt.isSuccess) {
+                    health.recordSuccess(endpoint)
                     val raw = attempt.getOrThrow()
                     AniobEgressLedger.record(
                         name,
@@ -277,6 +351,9 @@ class AniobOmniRouteProvider(
                     return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
                 }
                 lastFailure = error as? Exception ?: lastFailure
+                // Only a classified HTTP failure opens the cool-down here. A dropped SSE is plain
+                // I/O and is retried once in the non-streaming shape below, which records it.
+                if (error is AniobGatewayException) health.recordFailure(endpoint, error.kind)
                 if (error?.message?.contains("(401)") == true || error?.message?.contains("(403)") == true) {
                     return@withContext Result.failure(lastFailure)
                 }
@@ -284,7 +361,7 @@ class AniobOmniRouteProvider(
             // A dropped SSE (proxy idle timeout, Wi-Fi handover) must not fail the whole task: the
             // same request goes out once in the plain shape, which is what non-streaming gateways
             // use anyway. Auth and shape rejections returned above and never reach this.
-            if (lastFailure is IOException) {
+            if (lastFailure is IOException && lastFailure !is AniobGatewayException) {
                 return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
             }
             Result.failure(lastFailure)
@@ -330,16 +407,24 @@ class AniobOmniRouteProvider(
      * so the caller never has to branch on the transport.
      */
     private fun readReply(call: Call, response: Response, onFirstToken: () -> Unit): Result<String> {
+        val endpoint = call.request().url.toString()
         if (!response.isSuccessful) {
-            val text = runCatching { response.body?.string() }.getOrDefault("")
-            val message = "Omniroute Cloud API error (${response.code}): $text"
+            val text = runCatching { response.body?.string() }.getOrNull().orEmpty()
+            val failure = AniobGatewayClassifier.classifyHttp(response.code, response.header("Content-Type"), text, endpoint)
+                ?: AniobGatewayException(
+                    GatewayFailureKind.SERVER_ERROR, response.code, endpoint, "Omniroute Cloud API error (${response.code})"
+                )
+            // Only a request-shaped 4xx (400/422...) is worth a plain retry. 404, auth and
+            // HTML answers are about the *gateway*: re-sending the same URL cannot change them.
             return Result.failure(
-                if (response.code in 400..499) StreamingRejected(message) else IOException(message)
+                if (failure.kind == GatewayFailureKind.CLIENT_ERROR) StreamingRejected(failure.message.orEmpty()) else failure
             )
         }
         val contentType = response.header("Content-Type").orEmpty().lowercase()
-        if (!contentType.contains("event-stream")) {
+        if (!AniobGatewayClassifier.isEventStream(contentType)) {
             val body = response.body?.string().orEmpty()
+            AniobGatewayClassifier.classifyHttp(response.code, contentType, body, endpoint)
+                ?.let { return Result.failure(it) }
             val text = runCatching { extractAssistantContent(body) }.getOrElse { body }
             if (text.isNotBlank()) onFirstToken()
             return Result.success(text)
@@ -431,7 +516,7 @@ class AniobOmniRouteProvider(
                 maxTokens = maxTokens,
                 enforceJsonObject = true
             )
-            val endpoints = AniobProviderConfig.candidateEndpoints(baseUrl)
+            val endpoints = admittedEndpoints()
             var lastFailure: Exception = IOException("OmniRoute gateway unreachable")
 
             for (endpoint in endpoints) {
@@ -439,7 +524,17 @@ class AniobOmniRouteProvider(
                 val attempt = executeAsyncWithJsonFallback(endpoint, payload)
                 if (attempt.isSuccess) {
                     val responseResult = attempt.getOrThrow()
-                    val rawContent = extractAssistantContent(responseResult.body)
+                    health.recordSuccess(endpoint)
+                    val rawContent = try {
+                        extractAssistantContent(responseResult.body)
+                    } catch (e: org.json.JSONException) {
+                        health.recordFailure(endpoint, GatewayFailureKind.MALFORMED)
+                        lastFailure = AniobGatewayException(
+                            GatewayFailureKind.MALFORMED, responseResult.code, endpoint,
+                            "Omniroute Cloud API error (${responseResult.code}): reply had no assistant message", e
+                        )
+                        continue
+                    }
                     val routedModel = responseResult.routedModel ?: effectiveModel
                     AniobEgressLedger.record(
                         name,
@@ -452,6 +547,7 @@ class AniobOmniRouteProvider(
                 } else {
                     val ex = attempt.exceptionOrNull() as? Exception ?: Exception("OmniRoute request failed")
                     lastFailure = ex
+                    health.recordFailure(endpoint, AniobGatewayClassifier.kindOf(ex))
                     // Do not fail over to other hosts if key was explicitly rejected by the gateway
                     if (ex.message?.contains("(401)") == true || ex.message?.contains("(403)") == true) {
                         return@withContext Result.failure(ex)
@@ -469,7 +565,8 @@ class AniobOmniRouteProvider(
         val body: String,
         val routedModel: String?,
         val routedProvider: String?,
-        val decisionHeader: String?
+        val decisionHeader: String?,
+        val contentType: String? = null
     )
 
     private fun buildChatPayload(
@@ -525,7 +622,8 @@ class AniobOmniRouteProvider(
                         body = retryResp.body?.string().orEmpty(),
                         routedModel = retryResp.header("X-OmniRoute-Model"),
                         routedProvider = retryResp.header("X-OmniRoute-Provider"),
-                        decisionHeader = retryResp.header("X-OmniRoute-Decision")
+                        decisionHeader = retryResp.header("X-OmniRoute-Decision"),
+                        contentType = retryResp.header("Content-Type")
                     )
                 }
             }
@@ -534,7 +632,8 @@ class AniobOmniRouteProvider(
                 body = body,
                 routedModel = response.header("X-OmniRoute-Model"),
                 routedProvider = response.header("X-OmniRoute-Provider"),
-                decisionHeader = response.header("X-OmniRoute-Decision")
+                decisionHeader = response.header("X-OmniRoute-Decision"),
+                contentType = response.header("Content-Type")
             )
         }
     }
@@ -565,12 +664,13 @@ class AniobOmniRouteProvider(
                 override fun onResponse(call: Call, response: Response) {
                     try {
                         val body = response.body?.string().orEmpty()
-                        if (!response.isSuccessful) {
-                            if (continuation.isActive) {
-                                continuation.resume(
-                                    Result.failure(Exception("Omniroute Cloud API error (${response.code}): $body"))
-                                )
-                            }
+                        // Status *and* content are checked before anything is parsed: an HTML page
+                        // behind a 200 is a failure, and a failure's message is a summary, not the page.
+                        val failure = AniobGatewayClassifier.classifyHttp(
+                            response.code, response.header("Content-Type"), body, call.request().url.toString()
+                        )
+                        if (failure != null) {
+                            if (continuation.isActive) continuation.resume(Result.failure(failure))
                             return
                         }
                         val outcome = HttpOutcome(
@@ -578,7 +678,8 @@ class AniobOmniRouteProvider(
                             body = body,
                             routedModel = response.header("X-OmniRoute-Model"),
                             routedProvider = response.header("X-OmniRoute-Provider"),
-                            decisionHeader = response.header("X-OmniRoute-Decision")
+                            decisionHeader = response.header("X-OmniRoute-Decision"),
+                            contentType = response.header("Content-Type")
                         )
                         if (continuation.isActive) {
                             continuation.resume(Result.success(outcome))
@@ -775,6 +876,7 @@ suspend fun verifyOmniRouteGateway(
         put("max_tokens", 1)
     }
 
+    var sawHtml = false
     for (endpoint in AniobProviderConfig.candidateEndpoints(baseUrl)) {
         val startMs = System.currentTimeMillis()
         val reqBuilder = Request.Builder()
@@ -794,8 +896,13 @@ suspend fun verifyOmniRouteGateway(
                 val routedModel = response.header("X-OmniRoute-Model") ?: targetModel
                 val routedProvider = response.header("X-OmniRoute-Provider")
                 val version = response.header("X-OmniRoute-Version")
-                when (response.code) {
-                    in 200..299 -> {
+                val replyBody = runCatching { response.body?.string() }.getOrNull().orEmpty()
+                // A 2xx that is not JSON is a web page, not a gateway: never report it as connected.
+                val notJson = response.isSuccessful &&
+                    AniobGatewayClassifier.classifyHttp(response.code, response.header("Content-Type"), replyBody, endpoint) != null
+                if (notJson || AniobGatewayClassifier.looksLikeHtml(replyBody)) sawHtml = true
+                when {
+                    response.code in 200..299 && !notJson -> {
                         val providerSuffix = if (!routedProvider.isNullOrBlank()) " via $routedProvider" else ""
                         val modelCountSuffix = if (discoveredModels.isNotEmpty()) " · ${discoveredModels.size} models available" else ""
                         return@withContext OmniRouteDiagnostics(
@@ -809,7 +916,7 @@ suspend fun verifyOmniRouteGateway(
                             message = "Connected ✓ (${latency}ms · $routedModel$providerSuffix$modelCountSuffix)"
                         )
                     }
-                    401, 403 -> {
+                    response.code == 401 || response.code == 403 -> {
                         return@withContext OmniRouteDiagnostics(
                             status = OmniRouteConnectionStatus.BAD_KEY,
                             resolvedEndpoint = endpoint.removeSuffix(AniobProviderConfig.CHAT_COMPLETIONS_PATH),
@@ -853,7 +960,12 @@ suspend fun verifyOmniRouteGateway(
     OmniRouteDiagnostics(
         status = OmniRouteConnectionStatus.UNREACHABLE,
         resolvedEndpoint = AniobProviderConfig.resolveBaseUrl(baseUrl),
-        message = "Gateway unreachable at ${AniobProviderConfig.resolveBaseUrl(baseUrl)} — verify server address or network."
+        message = if (sawHtml) {
+            "The address ${AniobProviderConfig.resolveBaseUrl(baseUrl)} answered with a web page, not the OmniRoute API — " +
+                "check the address (it should end with /v1)."
+        } else {
+            "Gateway unreachable at ${AniobProviderConfig.resolveBaseUrl(baseUrl)} — verify server address or network."
+        }
     )
 }
 

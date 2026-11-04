@@ -133,6 +133,20 @@ object AniobLaunchHub {
     }
 
     /**
+     * The web page the task names, when no installed app is the right answer.
+     *
+     * Covers the compound `open <site> in chrome|browser` (the browser clause wins over an
+     * installed app), a site-scoped search, and the web fallback for an app that is **not
+     * installed** (`open linkedin` with no LinkedIn app). All three are lookups: a gateway outage
+     * must never be the reason these fail. See [AniobWebLaunchPlanner] for the rules.
+     */
+    fun planWeb(
+        prompt: String,
+        registry: AniobAppRegistry = AniobAppRegistry.getInstance(),
+        isLaunchable: (String) -> Boolean = { true }
+    ): WebLaunchPlan? = AniobWebLaunchPlanner.plan(prompt, registry, isLaunchable)
+
+    /**
      * An app the goal names later in the task ("… then open Instagram"), skipping the apps this
      * task already opened and the one that is already in front.
      *

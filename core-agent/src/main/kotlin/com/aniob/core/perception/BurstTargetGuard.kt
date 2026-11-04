@@ -91,7 +91,15 @@ object BurstTargetGuard {
      * Whether the burst can continue with [action]. [reason] explains an abort in the log and in
      * the step record; it is empty when the action may run.
      */
-    data class Verdict(val allowed: Boolean, val reason: String = "")
+    data class Verdict(val allowed: Boolean, val reason: String = "") {
+        /**
+         * True when the burst cannot continue but the **task** can: a hidden, re-indexed or
+         * disabled target, or a screen that moved on, only means the plan was made for a screen
+         * that no longer exists. The right answer is to drop the rest of the burst, observe the
+         * screen as it is now and plan one action from it — never to fail the whole task.
+         */
+        val shouldReplan: Boolean get() = !allowed
+    }
 
     fun check(action: AniobAction, origin: AniobScreenState, current: AniobScreenState): Verdict {
         if (screenNavigated(origin, current)) {

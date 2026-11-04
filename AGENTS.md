@@ -62,3 +62,23 @@ core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing cha
   - Adopt prebuilt Google AI Edge LiteRT (`com.google.ai.edge.litert`) runtime dependencies in `:app`.
   - `:core-agent` remains a pure Kotlin/JVM module with 0 `android.*` dependencies. All native runtime drivers live in `:app` behind domain contracts.
   - Model catalog entries are strictly aligned with unauthenticated range-request HTTP 206 endpoints and verifiable SHA-256 hashes.
+
+## Cloud gateway resilience, reflex completion, web launch, burst replan
+
+- **Gateway ladder.** Every OmniRoute response is classified (`AniobGatewayClassifier`, pure JVM) by status
+  *and* `Content-Type` before any parsing; an HTML page is never fed to the JSON parser and never echoed to
+  the user (its `<title>` is). A failure is a typed `AniobGatewayException`; the endpoint then sits in a
+  cool-down (`AniobGatewayHealth.shared`) and a local gateway must accept TCP within 500 ms (the
+  `adb reverse tcp:20128 tcp:20128` check) before a request is built. A skipped endpoint is not counted as
+  an LLM call. `AniobViewModel.degradeAfterCloudFailure` then retries the step on the on-device model
+  (`cloud-only` routing is honoured and never downgraded). The hosted `omniroute.online` is **not** an
+  implicit fallback any more; it is used only when the user picks it.
+- **Reflexes complete on dispatch.** `ResolvedIntentShortcut.completesOnDispatch` (alarm/timer with
+  `SKIP_UI`, torch, battery, dial, URL, a settings panel that is the whole request) closes the run as
+  `SUCCESS`; a bare "set alarm" that only opens the editor stays `UNVERIFIED`.
+- **Web launch.** `AniobLaunchHub.planWeb` (`AniobWebLaunchPlanner`): `open <site> in chrome|browser`,
+  `search [for X] in <site>`, and the web fallback for an app that is *not installed*. An installed app or an
+  ambiguity always wins over the web fallback; a bare word only becomes `<word>.com` with an explicit browser cue.
+- **Burst replan.** A burst target that vanished mid-burst (`BurstTargetGuard.Verdict.shouldReplan`) drops the
+  rest of the burst, re-observes, and plans single actions for the rest of the run. A safety block is still
+  a hard stop.
