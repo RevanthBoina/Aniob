@@ -53,28 +53,19 @@ object AniobGroundingResolver {
         is SemanticTarget.BoundingBox -> resolveBoundingBox(target, liveScreen)
     }
 
-    private fun resolveNormalizedCoordinate(target: SemanticTarget.NormalizedCoordinate, screen: AniobScreenState): Resolved {
-        val enclosing = screen.nodes.firstOrNull { it.isVisibleToUser && it.isEnabled && target.matches(it) }
-        val node = enclosing ?: AniobNode(
-            id = 9999,
-            className = "android.view.View",
-            bounds = com.aniob.core.domain.AniobRect(target.normX - 5, target.normY - 5, target.normX + 5, target.normY + 5),
-            source = GroundingSource.VISUAL_MODEL
-        )
-        return Resolved(node = node, x = target.normX, y = target.normY, source = GroundingSource.VISUAL_MODEL)
+    // A coordinate is not evidence of an element. Require an actual visible node rather
+    // than inventing one; unsupported canvas targets fail closed until grounded by perception.
+    private fun resolveNormalizedCoordinate(target: SemanticTarget.NormalizedCoordinate, screen: AniobScreenState): Resolved? {
+        val candidates = screen.nodes.filter { it.isVisibleToUser && it.isEnabled && target.matches(it) }
+        val node = candidates.minByOrNull { it.bounds.area } ?: return null
+        return Resolved(node, target.normX, target.normY, GroundingSource.VISUAL_MODEL)
     }
 
-    private fun resolveBoundingBox(target: SemanticTarget.BoundingBox, screen: AniobScreenState): Resolved {
-        val centerX = (target.left + target.right) / 2
-        val centerY = (target.top + target.bottom) / 2
-        val enclosing = screen.nodes.firstOrNull { it.isVisibleToUser && it.isEnabled && target.matches(it) }
-        val node = enclosing ?: AniobNode(
-            id = 9998,
-            className = "android.view.View",
-            bounds = com.aniob.core.domain.AniobRect(target.left, target.top, target.right, target.bottom),
-            source = GroundingSource.VISUAL_MODEL
-        )
-        return Resolved(node = node, x = centerX, y = centerY, source = GroundingSource.VISUAL_MODEL)
+    private fun resolveBoundingBox(target: SemanticTarget.BoundingBox, screen: AniobScreenState): Resolved? {
+        if (target.left >= target.right || target.top >= target.bottom) return null
+        val candidates = screen.nodes.filter { it.isVisibleToUser && it.isEnabled && target.matches(it) }
+        val node = candidates.minByOrNull { it.bounds.area } ?: return null
+        return Resolved(node, (target.left + target.right) / 2, (target.top + target.bottom) / 2, GroundingSource.VISUAL_MODEL)
     }
 
     private fun resolveText(target: SemanticTarget.Text, screen: AniobScreenState): Resolved? {
@@ -95,7 +86,7 @@ object AniobGroundingResolver {
             val topTied = fuzzyHits.filter { kotlin.math.abs(it.second - topScore) <= 1e-4 }.map { it.first }
             val clickableTied = topTied.filter { it.isClickable || it.isEditable }
             if (clickableTied.size == 1) return clickableTied.first().toResolved()
-            return fuzzyHits.first().first.toResolved()
+            return if (topTied.size == 1) topTied.first().toResolved() else null
         }
         return null
     }

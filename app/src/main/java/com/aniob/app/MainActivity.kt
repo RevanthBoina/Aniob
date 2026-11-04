@@ -6,6 +6,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.aniob.app.background.AniobBackgroundController
 import com.aniob.app.ui.AniobMainScreen
@@ -41,7 +46,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             AniobTheme {
-                AniobMainScreen(viewModel = viewModel)
+                // Expose Compose test tags to external accessibility automation.
+                Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
+                    AniobMainScreen(viewModel = viewModel)
+                }
             }
         }
     }
@@ -100,6 +108,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        com.aniob.app.background.AniobForegroundService.onStopRequestedFromNotification = null
+        com.aniob.app.background.AniobForegroundService.onPauseToggleFromNotification = null
         (application as AniobApplication).workflowActionHost.detach()
         AniobBackgroundController.unregisterActivity(this)
     }

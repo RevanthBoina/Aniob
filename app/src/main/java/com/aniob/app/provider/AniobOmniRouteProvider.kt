@@ -153,7 +153,6 @@ class AniobOmniRouteProvider(
     ): String = withContext(Dispatchers.IO) {
         if (apiKey.isBlank() && !isLocalGateway(baseUrl)) {
             val msg = "Omniroute API key is not configured. Please add it in Settings."
-            onDelta(msg)
             return@withContext msg
         }
         val startTime = System.currentTimeMillis()
@@ -185,7 +184,6 @@ class AniobOmniRouteProvider(
                     } else {
                         lastError = "Error from Omniroute Cloud ($code): $body"
                         if (code == 401 || code == 403) {
-                            onDelta(lastError)
                             return@withContext lastError
                         }
                     }
@@ -193,11 +191,11 @@ class AniobOmniRouteProvider(
                     lastError = "Request failed: ${ioe.message}"
                 }
             }
-            onDelta(lastError)
             lastError
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             val msg = "Request failed: ${e.message}"
-            onDelta(msg)
             msg
         }
     }

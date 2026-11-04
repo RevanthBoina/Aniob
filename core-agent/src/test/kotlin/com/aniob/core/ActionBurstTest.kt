@@ -23,6 +23,18 @@ import org.junit.Test
  */
 class ActionBurstTest {
 
+    @Test
+    fun `malformed or ungrounded burst becomes a bounded wait`() {
+        val malformed = """{"actions":[{"type":"tap","id":1},{"type":"bogus"}]}"""
+        val missing = """{"actions":[{"type":"tap","id":999}]}"""
+        for (raw in listOf(malformed, missing)) {
+            val result = com.aniob.core.providers.AniobStructuredOutput.parseBurstOrRepair(raw, screen)
+            assertNotNull(result)
+            assertEquals(1, result!!.actions.size)
+            assertTrue(result.actions.single() is AniobAction.Wait)
+        }
+    }
+
     private val screen = AniobScreenState(
         packageName = "com.example.app",
         nodes = listOf(
@@ -78,14 +90,13 @@ class ActionBurstTest {
     }
 
     @Test
-    fun capsTheBurstAtThreeActions() {
+    fun rejectsBurstsOverThreeActions() {
         val burst = AniobActionSchema.parseActionBurstOrNull(
             """{"thought":"too much","actions":[
                 {"type":"tap","id":1},{"type":"tap","id":2},{"type":"tap","id":1},
                 {"type":"tap","id":2},{"type":"tap","id":1}]}"""
         )
-        assertNotNull(burst)
-        assertEquals(ActionBurst.MAX_ACTIONS, burst!!.actions.size)
+        assertNull(burst)
     }
 
     @Test

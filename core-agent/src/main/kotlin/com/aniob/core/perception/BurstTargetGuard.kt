@@ -48,18 +48,16 @@ object BurstTargetGuard {
 
     /** Same element on a new observation, matched most-specific first. */
     fun match(nodes: List<AniobNode>, planned: AniobNode): AniobNode? {
-        if (planned.viewId.isNotBlank()) {
-            nodes.firstOrNull { it.viewId == planned.viewId }?.let { return it }
+        // Do not fall back to a recycled SoM index or to the first ambiguous match.
+        val candidates = nodes.filter { node ->
+            node.isVisibleToUser && node.isEnabled && node.className == planned.className && when {
+                planned.viewId.isNotBlank() -> node.viewId == planned.viewId
+                planned.text.isNotBlank() -> node.text == planned.text
+                planned.contentDescription.isNotBlank() -> node.contentDescription == planned.contentDescription
+                else -> false
+            }
         }
-        if (planned.text.isNotBlank()) {
-            nodes.firstOrNull { it.text == planned.text }?.let { return it }
-        }
-        if (planned.contentDescription.isNotBlank()) {
-            nodes.firstOrNull { it.contentDescription == planned.contentDescription }?.let { return it }
-        }
-        nodes.firstOrNull { it.bounds == planned.bounds }?.let { return it }
-        // Last resort: the id survived because nothing moved — safe only within one observation.
-        return nodes.firstOrNull { it.id == planned.id }
+        return candidates.singleOrNull()
     }
 
     /**

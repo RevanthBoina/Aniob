@@ -183,7 +183,12 @@ class RememberCache(
 
             val node = resolve(descriptor, screen) ?: return null
             if (!node.isEnabled || !node.isVisibleToUser) return null
-            val target = SemanticTarget.SomIndex(node.id)
+            val target = when {
+                node.viewId.isNotBlank() -> SemanticTarget.ResourceId(node.viewId)
+                node.text.isNotBlank() -> SemanticTarget.Text(node.text, exact = true)
+                node.contentDescription.isNotBlank() -> SemanticTarget.ContentDesc(node.contentDescription, exact = true)
+                else -> return null // A position is not a stable identity across captures.
+            }
             return when (descriptor.kind) {
                 RememberAction.TAP -> AniobAction.Tap(target)
                 RememberAction.LONG_PRESS -> AniobAction.LongPress(target)

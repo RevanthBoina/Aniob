@@ -72,6 +72,20 @@ class AniobExternalAiTriggerTest {
     )
 
     @Test
+    fun `local failure envelope is not streamed or saved as an answer`() = runBlocking {
+        val local = FakeLocalProvider(reply = """{"tool":"fail","reason":"engine unavailable"}""")
+        val knowledge = FakeKnowledgeStore()
+        val deltas = mutableListOf<String>()
+        val result = AniobExternalAiTrigger(null, local, knowledge).query(
+            prompt = "remember my preference", intent = AniobIntent.KNOWLEDGE_QA,
+            powerState = defaultPower, autoMode = "local-only", onDelta = { deltas.add(it) }
+        )
+        assertTrue(result is ExternalAiResult.Error)
+        assertTrue(deltas.isEmpty())
+        assertTrue(knowledge.getAll().isEmpty())
+    }
+
+    @Test
     fun testLocalFallbackWhenCloudUnconfigured() = runBlocking {
         val local = FakeLocalProvider(available = true, reply = "Paris is the capital")
         val cloudUnconfigured = FakeCloudProvider(isConfigured = false)

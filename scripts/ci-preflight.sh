@@ -21,12 +21,15 @@ if [ -n "$BAD_CORE_IMPORTS" ]; then
 fi
 echo "Core-agent purity verified (0 android.* imports)."
 
-# 4. Check for empty catch blocks
-echo "[Guard 4/8] Checking for empty catch blocks..."
-EMPTY_CATCHES=$(grep -rn "catch\\s*(.*)\\s*{\\s*}" app/src/ core-agent/src/ 2>/dev/null || true)
-if [ -n "$EMPTY_CATCHES" ]; then
-    echo "WARNING: Empty catch blocks detected:"
-    echo "$EMPTY_CATCHES"
+# 4. Ratchet broad catches. This counts catch declarations, not necessarily silent
+# catches: an exception named e may be handled. Lower the baseline as they are fixed.
+echo "[Guard 4/8] Checking broad catch declarations..."
+SILENT_CATCH_BASELINE=${SILENT_CATCH_BASELINE:-129}
+SILENT_CATCHES=$( (grep -rEn 'catch\s*\(\s*(_|e)\s*:\s*(Exception|Throwable)\s*\)' app/src/ core-agent/src/ 2>/dev/null || true) | wc -l | tr -d ' ')
+echo "Broad catch declarations: ${SILENT_CATCHES} (baseline ${SILENT_CATCH_BASELINE})"
+if [ "${SILENT_CATCHES}" -gt "${SILENT_CATCH_BASELINE}" ]; then
+    echo "ERROR: broad catch count rose above the baseline. Handle or rethrow the new catch."
+    exit 1
 fi
 
 # 5. Prompt 4 Master-Spec smoke M0 (UI-TARS / Ferret-UI / CogAgent / SeeClick)

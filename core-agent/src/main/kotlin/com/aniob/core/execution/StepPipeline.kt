@@ -124,6 +124,7 @@ class StepPipeline(
 
         // OBSERVE: always a fresh capture. Failed capture must not silently reuse stale planning data!
         val observed = runCatching { capture() }.getOrElse {
+            if (it is kotlinx.coroutines.CancellationException) throw it
             val nextCtx = ctx.withStep(ctx.stepIndex + 1, planningScreen, NeutralWordingContract.neutralize("capture did not return a screen: ${it.message}")).withFailure()
             return finish(
                 action, proposal, nextCtx, planningScreen, null,
@@ -215,7 +216,12 @@ class StepPipeline(
             val healed = gateB.healedTarget
             if (healed != null && healed.id != resolvedNode.id) {
                 effectiveNode = healed
-                val healedTarget = com.aniob.core.domain.SemanticTarget.SomIndex(healed.id)
+                val healedTarget = when {
+                    healed.viewId.isNotBlank() -> com.aniob.core.domain.SemanticTarget.ResourceId(healed.viewId)
+                    healed.text.isNotBlank() -> com.aniob.core.domain.SemanticTarget.Text(healed.text, exact = true)
+                    healed.contentDescription.isNotBlank() -> com.aniob.core.domain.SemanticTarget.ContentDesc(healed.contentDescription, exact = true)
+                    else -> com.aniob.core.domain.SemanticTarget.BoundingBox(healed.bounds.left, healed.bounds.top, healed.bounds.right, healed.bounds.bottom)
+                }
                 effectiveAction = when (action) {
                     is AniobAction.Tap -> action.copy(target = healedTarget)
                     is AniobAction.LongPress -> action.copy(target = healedTarget)
@@ -228,15 +234,14 @@ class StepPipeline(
         // Typing into a search field is only half an action: the box holds the query, but nothing
         // is searched until the keyboard's own action key is pressed. Models rarely say so, and a
         // separate "find the enter key" step is exactly what they fail at, so submit is derived
-        // when the goal is a search and the grounded field is a search box.
+        // from the grounded field metadata rather than the user's wording.
         val typed = effectiveAction as? AniobAction.InputText
         if (typed != null && !typed.submit && effectiveNode != null) {
             val field = effectiveNode
             val isSearchField = field.viewId.contains("search", ignoreCase = true) ||
                 field.contentDescription.contains("search", ignoreCase = true) ||
-                field.text.contains("search", ignoreCase = true) ||
                 field.className.contains("search", ignoreCase = true)
-            if (isSearchField && ctx.instruction.contains("search", ignoreCase = true)) {
+            if (isSearchField) {
                 effectiveAction = typed.copy(submit = true)
             }
         }
@@ -259,7 +264,10 @@ class StepPipeline(
         // DISPATCH: grounding is redone against the live tree inside the seam; a miss is never a tap.
         currentCoroutineContext().ensureActive()
         val outcome = runCatching { dispatch(effectiveAction) }
-            .getOrElse { DispatchOutcome(dispatched = false, reason = "dispatch threw: ${it.message}") }
+            .getOrElse {
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                DispatchOutcome(dispatched = false, reason = "dispatch threw: ${it.message}")
+            }
 
         val liveCommand = AniobActionExecutor.planDispatch(effectiveAction, observed)
 
@@ -276,7 +284,10 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // SETTLE: idle-gate instead of a fixed sleep
-        val screenAfter = outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrDefault(observed)
+        val screenAfter = outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            observed
+        }
 
         currentCoroutineContext().ensureActive()
 

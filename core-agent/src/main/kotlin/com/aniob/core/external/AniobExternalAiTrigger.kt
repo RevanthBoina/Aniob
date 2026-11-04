@@ -4,6 +4,7 @@ import com.aniob.core.intent.AniobIntent
 import com.aniob.core.memory.AniobSharedKnowledgeStore
 import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.tools.DevicePowerState
+import kotlinx.coroutines.CancellationException
 
 /**
  * Interface for Cloud AI Providers (Omniroute etc.) in core-agent.
@@ -132,15 +133,7 @@ class AniobExternalAiTrigger(
         val result: ExternalAiResult = try {
             if (isLocalModeOnly) {
                 if (isLocalReady) {
-                    val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
-                        onDelta(delta)
-                    }
-                    ExternalAiResult.Success(
-                        answer = fullAnswer,
-                        provider = "LOCAL_SLM",
-                        intent = intent,
-                        latencyMs = System.currentTimeMillis() - startMs
-                    )
+                    queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
                 } else {
                     val reason = "Local-only mode active: local model is missing or not installed"
                     val answer = "⚠️ $reason"
@@ -154,15 +147,7 @@ class AniobExternalAiTrigger(
                     )
                 }
             } else if (useLocal && isLocalReady) {
-                val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
-                    onDelta(delta)
-                }
-                ExternalAiResult.Success(
-                    answer = fullAnswer,
-                    provider = "LOCAL_SLM",
-                    intent = intent,
-                    latencyMs = System.currentTimeMillis() - startMs
-                )
+                queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
             } else if (isCloudReady) {
                 val fullAnswer = cloudProvider!!.generateStreaming(prompt, systemPrompt) { delta ->
                     onDelta(delta)
@@ -172,15 +157,7 @@ class AniobExternalAiTrigger(
                     fullAnswer.startsWith("Request failed:")
                 if (isProviderError) {
                     if (isLocalReady) {
-                        val fallbackAnswer = localProvider!!.chatStreaming(prompt) { delta ->
-                            onDelta(delta)
-                        }
-                        ExternalAiResult.Success(
-                            answer = fallbackAnswer,
-                            provider = "LOCAL_SLM",
-                            intent = intent,
-                            latencyMs = System.currentTimeMillis() - startMs
-                        )
+                        queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
                     } else {
                         ExternalAiResult.Error(
                             answer = fullAnswer,
@@ -199,15 +176,7 @@ class AniobExternalAiTrigger(
                     )
                 }
             } else if (isLocalReady) {
-                val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
-                    onDelta(delta)
-                }
-                ExternalAiResult.Success(
-                    answer = fullAnswer,
-                    provider = "LOCAL_SLM",
-                    intent = intent,
-                    latencyMs = System.currentTimeMillis() - startMs
-                )
+                queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
             } else {
                 val reason = "No AI provider or on-device model is configured to answer this question. Download an on-device model in Models or configure an API key in Settings."
                 val answer = "⚠️ $reason"
@@ -220,6 +189,8 @@ class AniobExternalAiTrigger(
                     reason = reason
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val errMsg = "Failed to query AI provider: ${e.message ?: "Unknown error"}"
             onDelta(errMsg)
@@ -241,4 +212,53 @@ class AniobExternalAiTrigger(
 
         return result
     }
+    private fun queryLocal(
+        provider: AniobLocalLlmProvider,
+        prompt: String,
+        intent: AniobIntent,
+        startMs: Long,
+        onDelta: (String) -> Unit
+    ): ExternalAiResult {
+        // A JSON-shaped reply may be the provider's failure envelope. Hold it until
+        // classified so it never appears briefly as a successful chat bubble.
+        val prefix = StringBuilder()
+        var jsonShaped: Boolean? = null
+        val answer = provider.chatStreaming(prompt) { delta ->
+            if (jsonShaped == null) {
+                prefix.append(delta)
+                val first = prefix.firstOrNull { !it.isWhitespace() }
+                if (first != null) {
+                    jsonShaped = first == '{'
+                    if (jsonShaped == false) { onDelta(prefix.toString()); prefix.clear() }
+                }
+            } else if (jsonShaped == true) {
+                prefix.append(delta)
+            } else {
+                onDelta(delta)
+            }
+        }
+        val result = localResult(answer, intent, startMs)
+        if (result is ExternalAiResult.Success && prefix.isNotEmpty()) onDelta(prefix.toString())
+        return result
+    }
+
+    private fun localResult(answer: String, intent: AniobIntent, startMs: Long): ExternalAiResult {
+        // The local provider uses an action-shaped failure envelope for missing engines.
+        // Do not display or remember that envelope as an ordinary answer.
+        val failure = runCatching {
+            @Suppress("UNCHECKED_CAST")
+            com.squareup.moshi.Moshi.Builder().build().adapter(Any::class.java).fromJson(answer) as? Map<String, Any?>
+        }.getOrNull()?.takeIf { it["tool"] == "fail" }
+        val elapsed = System.currentTimeMillis() - startMs
+        return if (failure != null) {
+            val reason = failure["reason"] as? String ?: "The on-device model could not generate an answer."
+            ExternalAiResult.Error(
+                answer = "The on-device model could not answer. Check your model in Models and try again.",
+                provider = "LOCAL_SLM", intent = intent, latencyMs = elapsed, cause = reason
+            )
+        } else {
+            ExternalAiResult.Success(answer = answer, provider = "LOCAL_SLM", intent = intent, latencyMs = elapsed)
+        }
+    }
+
 }

@@ -43,6 +43,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showWhyModelDialog by remember { mutableStateOf(false) }
+    var showClearChatDialog by remember { mutableStateOf(false) }
     var lastBackPress by remember { mutableStateOf(0L) }
     var reducedMotion by remember { mutableStateOf(false) }
 
@@ -138,7 +139,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             }
 
                             IconButton(
-                                onClick = { viewModel.clearChat() },
+                                onClick = { showClearChatDialog = true },
                                 modifier = Modifier.testTag("clear_chat_button")
                             ) {
                                 Icon(Icons.Default.DeleteOutline, contentDescription = "Clear chat")
@@ -355,6 +356,27 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             }
         }
         else -> {}
+    }
+
+    if (showClearChatDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearChatDialog = false },
+            modifier = Modifier.testTag("clear_chat_dialog"),
+            title = { Text("Clear this chat?") },
+            text = {
+                Text(if (uiState.isRunning) {
+                    "This will stop the current task and clear the conversation. Changes already made on your device will not be undone."
+                } else {
+                    "This clears the conversation from this screen. Saved history is not deleted."
+                })
+            },
+            confirmButton = {
+                TextButton(onClick = { showClearChatDialog = false; viewModel.clearChat() }, modifier = Modifier.testTag("clear_chat_confirm")) {
+                    Text(if (uiState.isRunning) "Stop and clear" else "Clear chat")
+                }
+            },
+            dismissButton = { TextButton(onClick = { showClearChatDialog = false }) { Text("Cancel") } }
+        )
     }
 
     if (showWhyModelDialog) {

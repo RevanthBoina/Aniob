@@ -323,6 +323,26 @@ class StepPipelineTest {
     }
 
     @Test
+    fun `burst head model actions cannot dispatch risky targets without confirmation`() = runBlocking {
+        for (label in listOf("Pay now", "Send message", "Delete file")) {
+            val before = screen("com.a", label, "Settings")
+            com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(before.treeHash)
+            var dispatched = false
+            val result = pipeline().executeStep(
+                ctx = ctx,
+                planningScreen = before,
+                proposal = StepPipeline.Proposal.Model(tap(label), "CLOUD"),
+                capture = { before },
+                dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) },
+                confirm = { false }
+            )
+            assertFalse("$label must not dispatch", dispatched)
+            assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+            com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(before.treeHash)
+        }
+    }
+
+    @Test
     fun `high risk skill proposal requires user confirmation before dispatch`() = runBlocking {
         var confirmCalled = false
         var dispatched = false
