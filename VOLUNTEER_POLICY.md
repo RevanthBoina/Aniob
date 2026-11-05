@@ -1,23 +1,24 @@
 # Volunteer participation policy
 
-Aniob is a founder-led commercial product project that welcomes voluntary contributions from students and other developers. Participation is optional. This policy explains project expectations; it is not an employment offer, payment promise, or substitute for any separate agreement.
+Aniob welcomes students and volunteers who want to learn, build, and improve the project. Participation is optional, flexible, and currently unpaid. There is no minimum number of hours, commits, or issues; you can take a break or stop whenever you need to.
 
-## Participation and responsibilities
+## Taking part
 
-- Contribute through your own fork and a pull request. Do not expect or request direct write/admin access to the official repository.
-- Choose a task you can reasonably complete, communicate if the scope or timing changes, and keep work respectful and focused.
-- Follow the Code of Conduct, security practices, project architecture, and any applicable separate contribution agreement before work is accepted into the product.
-- Ask for clarification when uncertain. You may stop at any time; there is no minimum number of hours, commits, or issues.
-- Do not submit work you do not have the right to contribute, expose confidential information, or include third-party material without checking its terms.
+- Pick an open issue, ask questions, and contribute through your own fork and pull request. No application form or direct write access is needed.
+- Keep changes focused, communicate if the scope changes, and follow the [Code of Conduct](CODE_OF_CONDUCT.md), security guidance, and project conventions.
+- Submit only work you have the right to contribute. Identify third-party code or assets and their terms.
+- You do not need paperwork to ask questions, explore issues, or open a PR. If a separate agreement is needed before accepted work can be merged or incorporated into the product, the founder will explain it separately and give you time to review it. See [IP_POLICY.md](IP_POLICY.md).
 
 ## Recognition
 
-The founder may recognize actual accepted contributions in `CONTRIBUTORS.md`, release notes, GitHub contributor history, or project acknowledgements. Recognition is based on contribution and acceptance, not merely applying, opening an issue, or submitting an unmerged PR. **Recommendation if the founder chooses to offer certificates:** publish a simple threshold in advance, such as three substantive accepted PRs across at least two issues, or equivalent sustained work, with tests/documentation where appropriate and respectful collaboration. The founder may adjust the threshold and assess actual contribution quality; this is guidance, not a certificate promise. No employment, equity, stipend, prize, guaranteed certificate, or future financial benefit is promised.
+The founder may acknowledge actual accepted work in `CONTRIBUTORS.md`, release notes, or GitHub contribution history. Please share how you would like to be credited; a public GitHub username is usually enough. Recognition is based on accepted contributions, not simply opening an issue or an unmerged PR.
 
-## Ending participation
+If the founder offers certificates, the criteria should be shared in advance. A reasonable starting point could be three substantive accepted PRs across at least two issues, or equivalent sustained work. This is guidance only: there is no guaranteed certificate or other reward.
 
-A volunteer can stop whenever they wish. They may close an unmerged PR or ask the maintainer to close it. The founder may also pause or end project participation for conduct, security, scope, or maintenance reasons, with a brief explanation where appropriate. Accepted work remains subject to the separate agreement that applied to it; closing a PR does not create an assignment of copyright.
+## Taking a break or leaving
+
+You can stop at any time. You may close an unmerged PR or ask the founder to close it. Accepted work remains subject to any separate agreement you chose to sign; leaving the project does not create or change an assignment of copyright.
 
 ## Contact
 
-For ordinary coordination, comment on the issue or PR. For private concerns, contact [Revanth Boina](https://github.com/RevanthBoina). Report security issues using [SECURITY.md](SECURITY.md), not a public discussion.
+For ordinary coordination, comment on the issue or PR. For a private concern, contact [Revanth Boina](https://github.com/RevanthBoina). Report vulnerabilities using [SECURITY.md](SECURITY.md), not a public discussion.

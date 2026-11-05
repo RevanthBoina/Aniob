@@ -24,7 +24,7 @@ Use `feature/*` for features, `bugfix/*` for fixes, and `docs/*` for documentati
 
 ## Automated checks
 
-Existing `.github/workflows/ci.yml` is the pull-request validation path. It uses JDK 17/Gradle 9.3.1 and runs project preflight, JVM tests, and Android lint. Review the Action run and resolve failures before merging. A PR can still be reviewed if an external model URL check has a transient failure, but the founder should confirm the failure is unrelated and decide whether to rerun; do not silently bypass a security or test failure.
+Existing `.github/workflows/ci.yml` is the pull-request validation path. It uses JDK 17 and the repository's checksum-pinned Gradle 9.3.1 Wrapper, then runs project preflight, JVM tests, and Android lint. Review the Action run and resolve failures before merging. A PR can still be reviewed if an external model URL check has a transient failure, but the founder should confirm the failure is unrelated and decide whether to rerun; do not silently bypass a security or test failure.
 
 The release workflow is separate, tag-driven, and writes release artifacts. Do not use it as a PR check or grant contributors release permissions. Dependency review is not currently active: GitHub's dependency-review action reported that the repository Dependency Graph is disabled. The founder may enable it and add the action in a later change; this task does not modify repository security settings. A full dependency inventory/license scan is also not configured; arrange release SBOM/license review separately.
 
@@ -34,15 +34,18 @@ Contributors should fetch the latest upstream `main` and rebase their own featur
 
 ## Main branch protection recommendation
 
-In GitHub repository **Settings → Rules → Rulesets**, configure a ruleset targeting the default branch `main`:
+The official repository is a personal repository with one owner, Revanth Boina. `.github/CODEOWNERS` requests his review for changes; it does not create an independent reviewer. GitHub does not allow the PR author to approve their own PR, so requiring one approval for every PR would also block Revanth's own PRs unless he uses a bypass or another reviewer is available.
 
-- Require a pull request before merging and at least one approval from the founder/maintainer (CODEOWNERS review can be required if available for this personal repo).
-- Require the CI status check to pass; select the actual CI job/check name shown by Actions after confirming it in GitHub.
-- Require conversations to be resolved; dismiss stale approvals when new commits are pushed if appropriate.
-- Block force pushes and branch deletion.
-- Keep bypass rights limited to the founder/administrator; do not add ordinary contributors as bypass actors or collaborators.
+In GitHub repository **Settings → Rules → Rulesets**, configure a ruleset targeting `main`:
 
-GitHub UI capabilities vary by account/repository plan; choose the closest supported settings and verify a test PR is blocked until requirements are met. `CODEOWNERS` requests review but does not enforce a ruleset. Only the founder should decide/enable repository settings; this change does not modify them.
+- Require a pull request before merging; do not require an approval globally while Revanth is the sole owner/reviewer.
+- Require the existing CI check to pass; choose its actual check name in GitHub and keep the required status check enabled.
+- Require conversations to be resolved and block force pushes and branch deletion.
+- Keep bypass rights limited to the founder/administrator. Do not add ordinary contributors as repository collaborators or bypass actors.
+
+As the governance rule, Revanth reviews and decides on contributor PRs before merging them. The ruleset can enforce PRs and checks, but cannot technically require the sole owner to review their own PR. For a founder-authored PR, CI and self-review are the available safeguards unless an independent reviewer is involved. If the founder later chooses to require independent approvals, design an explicit owner-PR exception without granting ordinary contributors repository write access.
+
+GitHub UI capabilities vary by plan; the founder should verify the configured rules with a test fork PR. `CODEOWNERS` requests review but does not enforce a ruleset. Only the founder should change repository settings; this PR does not modify them.
 
 ## Releases
 

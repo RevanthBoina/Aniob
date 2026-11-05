@@ -11,9 +11,9 @@ Aniob is a public personal repository owned and controlled by founder Revanth Bo
 
 ## How accepted contributions are handled
 
-The founder reviews contributions and may accept, request revisions, or decline them. **Before accepted volunteer work is merged or incorporated into the commercial product, the founder and contributor must separately agree in writing to the applicable contribution terms, including any agreed copyright assignment.** The scope and terms must be shared clearly with the contributor; do not treat GitHub's PR interface or this policy as the agreement. A PR may be discussed and reviewed before then, but repository access or review does not change ownership.
+Normal onboarding stays simple: anyone can discuss an issue, fork the repository, and open a PR without an application or agreement. The founder reviews contributions and may accept, request revisions, or decline them. If a contribution is selected for commercial product integration, **before it is merged or incorporated the founder and contributor must separately agree in writing to the terms for that contribution, including any agreed copyright assignment**. The founder should explain the short agreement directly, allow questions and time to review, and provide a copy. A PR, repository access, or this policy is not that agreement and does not transfer copyright.
 
-A contributor should not sign or accept terms they do not understand. The founder should obtain appropriate advice and confirm the contributor has authority to enter any agreement. No agreement is signed on behalf of either party through this repository policy.
+A contributor may decline the proposed terms; the founder will not merge or incorporate that contribution into the product without the separate agreement. Do not sign or accept terms you do not understand. The founder should confirm the contributor has authority to agree and seek appropriate advice. No agreement is signed on behalf of either party through this repository policy.
 
 ## Founder checklist (handled separately)
 
