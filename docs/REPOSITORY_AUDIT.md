@@ -83,6 +83,7 @@ The catalog also declares optional/inactive libraries; the exact resolved app gr
 7. **Dependency license inventory remains incomplete:** the repository's Dependency Graph is currently disabled, so the GitHub dependency-review action cannot run. The founder may enable the graph in repository settings and add vulnerability review after deciding; this task does not change security settings. A full SBOM/license report for the exact release graph is also still needed.
 8. **Contributor protections are not enforceable by files alone:** founder should enable a main-branch ruleset, keep administrator/bypass rights founder-controlled, require CI and review, and avoid collaborator grants. CODEOWNERS requests review; it does not configure GitHub protections.
 9. **Confirm communications/contact details:** use the founder's GitHub profile until a dedicated security/contact address is selected; configure GitHub private vulnerability reporting if desired.
+10. **Current PR CI failure:** during this review, preflight passed but the existing unit-test task failed in KSP with `Cannot invoke ... Application.getService(...)` because the KSP `ApplicationManager` application was null; Android lint was skipped after the test failure. This change does not touch app/KSP build code. Investigate the existing toolchain/plugin compatibility before treating CI as green. GitHub also reports upcoming Node.js/action deprecation warnings for the existing Actions v4 dependencies; update them in a separately validated maintenance change.
 
 ## Recommended next steps
 
