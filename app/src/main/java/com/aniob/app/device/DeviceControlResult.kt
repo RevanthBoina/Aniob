@@ -12,5 +12,11 @@ data class DeviceControlResult(
     val message: String,
     /** True for answers worth showing the user ("Storage: 12 GB free"), false for silent success. */
     val informational: Boolean = false,
-    val blockedBy: String? = null
+    val blockedBy: String? = null,
+    /**
+     * What an independent observer (a PlaybackState read, a hardware callback) saw AFTER dispatch, e.g.
+     * "media_session: paused". Null when nothing was observed. The ViewModel turns this into an EvidenceRef;
+     * a command that returns ok=true with evidence=null can never produce a VERIFIED run.
+     */
+    val evidence: String? = null
 )

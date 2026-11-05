@@ -62,10 +62,12 @@ class AniobReflectionAgent {
         val screenChanged = screenBefore.treeHash != screenAfter.treeHash
 
         // Check if expected screen change is visible or indicated in the post-action screen state
-        val expectedClean = expectedProofOfSuccess.lowercase().trim()
-        val textMatches = screenAfter.nodes.any { node ->
-            node.text.lowercase().contains(expectedClean) ||
-            node.contentDescription.lowercase().contains(expectedClean)
+        // Folded, not lowercased: a Turkish-locale "İNSTALL" must still prove an "install" expectation.
+        // An empty expectation proves nothing (String.contains("") is always true).
+        val expectedClean = com.aniob.core.text.AniobTextFold.fold(expectedProofOfSuccess)
+        val textMatches = expectedClean.isNotEmpty() && screenAfter.nodes.any { node ->
+            com.aniob.core.text.AniobTextFold.fold(node.text).contains(expectedClean) ||
+                com.aniob.core.text.AniobTextFold.fold(node.contentDescription).contains(expectedClean)
         }
 
         if (!screenChanged) {

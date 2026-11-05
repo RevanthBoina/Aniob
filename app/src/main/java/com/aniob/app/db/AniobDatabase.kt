@@ -13,9 +13,10 @@ import androidx.room.RoomDatabase
         LogEventEntity::class,
         ActiveTaskEntity::class,
         WorkflowEntity::class,
-        AuditLogEntity::class
+        AuditLogEntity::class,
+        TaskOutcomeEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class AniobDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class AniobDatabase : RoomDatabase() {
     abstract fun activeTaskDao(): ActiveTaskDao
     abstract fun workflowDao(): WorkflowDao
     abstract fun auditLogDao(): AuditLogDao
+    abstract fun taskOutcomeDao(): TaskOutcomeDao
 
     companion object {
         @Volatile
@@ -67,8 +69,9 @@ abstract class AniobDatabase : RoomDatabase() {
                     MIGRATION_1_2,
                     WorkflowDatabaseMigrations.MIGRATION_2_3,
                     WorkflowDatabaseMigrations.MIGRATION_3_4,
-                    MIGRATION_4_5
-                ).build()
+                    MIGRATION_4_5,
+                    OutcomeGuard.MIGRATION_5_6
+                ).addCallback(OutcomeGuard.callback).build()
                 INSTANCE = instance
                 instance
             }

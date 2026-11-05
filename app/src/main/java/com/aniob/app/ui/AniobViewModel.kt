@@ -56,6 +56,21 @@ import kotlinx.coroutines.isActive
 import com.aniob.core.external.AniobExternalAiTrigger
 import com.aniob.core.grillme.AniobGrillMeEngine
 import com.aniob.core.grillme.AniobGrillMeResult
+import com.aniob.core.grillme.AniobPromptGrillMeClient
+import com.aniob.core.feasibility.ActionGate
+import com.aniob.core.feasibility.AniobFeasibility
+import com.aniob.core.feasibility.CapabilityEnvelope
+import com.aniob.core.feasibility.Feasibility
+import com.aniob.core.feasibility.PlanStep
+import com.aniob.core.feasibility.Postcondition
+import com.aniob.core.feasibility.Privilege
+import com.aniob.core.narration.AgentPhase
+import com.aniob.core.narration.PhaseSnapshot
+import com.aniob.core.narration.ThinkSource
+import com.aniob.core.outcome.SealedOutcome
+import com.aniob.core.outcome.UserDecision
+import com.aniob.core.understander.AniobPromptUnderstanding
+import com.aniob.app.db.OutcomeStore
 import com.aniob.core.intent.AniobIntent
 import com.aniob.core.intent.AniobTaskIntentClassifier
 import com.aniob.core.knowledge.AniobAppRegistry
@@ -113,6 +128,11 @@ data class AniobUiState(
     val currentStep: Int = 0,
     val grillMeResult: AniobGrillMeResult? = null,
     val showGrillMeSheet: Boolean = false,
+    /** Audit: what the agent is doing right now, and whether a model is really involved. */
+    val agentPhase: PhaseSnapshot = PhaseSnapshot(),
+    /** Audit: the closed-set result of the last run, with its evidence and the user's thumbs. */
+    val lastSealedOutcome: SealedOutcome? = null,
+    val lastSealedTaskId: String? = null,
     val showTrackerSheet: Boolean = false,
     val trackerFilter: String = "ALL", // ALL, CORRECT, FAILED
     val steps: List<AniobStepRecord> = emptyList(),
@@ -267,7 +287,7 @@ class AniobViewModel(
     val uiState: StateFlow<AniobUiState> = _uiState.asStateFlow()
 
     private val semanticSkillMatcher = AniobSemanticSkillMatcher()
-    private val grillMeEngine = AniobGrillMeEngine()
+    private val grillMeEngine by lazy { AniobGrillMeEngine(llmClient = buildGrillLlmClient()) }
     private val planningAgent = AniobPlanningAgent()
     private val memoryStore = AniobEmbeddingStore()
     private val reflectionAgent = AniobReflectionAgent()
@@ -437,7 +457,10 @@ class AniobViewModel(
             sessionId = sessionId,
             // Research metric #2: one count per outbound generation request. No-ops when no
             // instrumented task is running (for example a chat-only Q&A).
-            onLlmRequest = { app.researchTelemetry.recordLlmCall() }
+            onLlmRequest = { app.researchTelemetry.recordLlmCall() },
+            onRateLimited = { waitMs ->
+                setPhase(AgentPhase.RATE_LIMITED, ThinkSource.MODEL_CLOUD, retryAtMs = System.currentTimeMillis() + waitMs)
+            }
         )
     }
 
@@ -934,6 +957,7 @@ class AniobViewModel(
         node: AniobNode? = null
     ): StepEvent {
         val narration = StepNarration.narrate(action, node)
+        advancePhase(AgentPhase.ACTING, action.thought.orEmpty())
         val event = StepEvent(
             stepIndex = stepIndex,
             narration = narration,
@@ -1392,6 +1416,114 @@ class AniobViewModel(
     // =========================================================================================
 
     /** UX-6: last completed task as a card on next open (Quiet Return). */
+    // ------------------------------------------------------------------------------------------
+    // Audit patch: phase visibility, closed-set outcome, plan-time feasibility, grill-me wiring
+    // ------------------------------------------------------------------------------------------
+
+    /** Starts a new phase and says whether a model is really involved (RULES = no model). */
+    internal fun setPhase(
+        phase: AgentPhase,
+        source: ThinkSource = ThinkSource.RULES,
+        thought: String = "",
+        retryAtMs: Long? = null,
+        provider: String = ""
+    ) {
+        _uiState.update {
+            it.copy(agentPhase = PhaseSnapshot(phase, source, System.currentTimeMillis(), thought.take(160), retryAtMs, provider))
+        }
+    }
+
+    /** Moves to the next phase of the SAME step, keeping the source and provider already shown. */
+    internal fun advancePhase(phase: AgentPhase, thought: String = "") {
+        _uiState.update {
+            it.copy(
+                agentPhase = it.agentPhase.copy(
+                    phase = phase,
+                    sinceMs = System.currentTimeMillis(),
+                    thoughtPreview = thought.take(160).ifBlank { it.agentPhase.thoughtPreview },
+                    retryAtMs = null
+                )
+            )
+        }
+    }
+
+    private val outcomeStore by lazy { OutcomeStore(app.database.taskOutcomeDao()) }
+
+    /** The only way a run's result is stored: a SealedOutcome, which cannot be VERIFIED without evidence. */
+    internal fun recordSealedOutcome(taskId: String, sealed: SealedOutcome) {
+        _uiState.update { it.copy(lastSealedOutcome = sealed, lastSealedTaskId = taskId) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                outcomeStore.record(taskId, sealed)
+            } catch (e: android.database.sqlite.SQLiteException) {
+                // The SQL guard refused it (or the disk did). Never crash the UI over a result row.
+                app.eventLogger.warn("AniobViewModel", "Outcome not stored: ${e.message}")
+            }
+        }
+    }
+
+    /** The user's thumbs on the last result. YES attests an unconfirmed run; NO demotes a claimed success. */
+    fun onOutcomeDecision(decision: UserDecision) {
+        val taskId = _uiState.value.lastSealedTaskId ?: return
+        val current = _uiState.value.lastSealedOutcome ?: return
+        if (current.userDecision != null) return
+        recordSealedOutcome(taskId, current.withUserDecision(decision, System.currentTimeMillis()))
+    }
+
+    private fun buildGrillLlmClient(): AniobPromptGrillMeClient? {
+        val systemPrompt = try {
+            app.assets.open("aniob_config/prompts/grill_me_prompt.txt").bufferedReader().use { it.readText() }
+        } catch (e: java.io.IOException) {
+            return null
+        }
+        return AniobPromptGrillMeClient(systemPrompt = systemPrompt) { system, user ->
+            // Never send the request to the cloud in local-only mode or without a configured gateway.
+            if (!isCloudConfigured() || _uiState.value.autoRouterMode.lowercase() == "local-only") null
+            else try {
+                getOmniRouteProvider(sessionId = "grill").generate(user, system)
+            } catch (e: java.io.IOException) {
+                null
+            }
+        }
+    }
+
+    /** What this phone will let us do and OBSERVE right now. Shizuku/device-owner are not integrated, so never claimed. */
+    private fun capabilityEnvelope(): CapabilityEnvelope {
+        val state = AniobCapabilityProbe.snapshot(app)
+        return CapabilityEnvelope(
+            buildSet {
+                add(Privilege.PACKAGE_QUERY) // launcher-visible packages via <queries>; see AndroidManifest
+                if (state.accessibility) add(Privilege.ACCESSIBILITY)
+                if (state.notificationAccess) add(Privilege.NOTIFICATION_LISTENER)
+            }
+        )
+    }
+
+    /** Conservative plan shape from the words of the request: only steps that are certainly system-gated. */
+    private fun planStepsFor(prompt: String): List<PlanStep> {
+        val words = com.aniob.core.text.AniobTextFold.tokens(prompt).toSet()
+        return buildList {
+            if ("apk" in words || "sideload" in words) {
+                add(PlanStep("install the APK", ActionGate.SYSTEM_PACKAGE_DIALOG, setOf(Postcondition.PACKAGE_INSTALLED)))
+            } else if ("uninstall" in words) {
+                add(PlanStep("uninstall the app", ActionGate.SYSTEM_PACKAGE_DIALOG, setOf(Postcondition.PACKAGE_REMOVED)))
+            }
+        }
+    }
+
+    private fun finishDelegated(task: AniobTask, whatUserMustDo: String) {
+        recordSealedOutcome(task.id, SealedOutcome.delegated(whatUserMustDo))
+        setPhase(AgentPhase.DELEGATED)
+        val note = ChatMessage(
+            id = "msg_deleg_${System.currentTimeMillis()}",
+            role = "assistant",
+            content = whatUserMustDo,
+            provider = "DELEGATED",
+            badge = "\uD83E\uDD1D Your turn"
+        )
+        updateToIdle { it.copy(showGrillMeSheet = false, statusMessage = whatUserMustDo, chatMessages = it.chatMessages + note) }
+    }
+
     internal fun postSummaryCard(summary: TaskSummary) {
         _uiState.update { it.copy(lastSummary = summary) }
     }
@@ -2048,12 +2180,60 @@ class AniobViewModel(
                     // BUG-01: this metric records ANSWER DELIVERY, never a device change — say so.
                     decisionReason = "Conversational answer (asserts no device change) for ${intent.name}"
                 )
+                recordSealedOutcome(
+                    taskId,
+                    if (answered) SealedOutcome.answered("Answered via ${result.provider}")
+                    else SealedOutcome.failed("Answer unavailable")
+                )
                 return@launch
+            }
+
+            // Step 0.5 (audit): say what was understood, then check the plan is feasible BEFORE anything is dispatched.
+            setPhase(AgentPhase.UNDERSTANDING)
+            val understood = AniobPromptUnderstanding.understand(trimmed)
+            if (understood.needsEcho) {
+                val echo = ChatMessage(
+                    id = "msg_echo_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = understood.echo,
+                    provider = "UNDERSTANDING",
+                    badge = "\uD83D\uDC42 Understood"
+                )
+                _uiState.update { it.copy(chatMessages = it.chatMessages + echo) }
+            }
+            when (val feasibility = AniobFeasibility.assess(planStepsFor(trimmed), capabilityEnvelope())) {
+                is Feasibility.Infeasible -> {
+                    val hint = feasibility.enable?.let { " To fix: $it." }.orEmpty()
+                    recordSealedOutcome(task.id, SealedOutcome.failed(feasibility.reason + hint))
+                    val note = ChatMessage(
+                        id = "msg_infeasible_${System.currentTimeMillis()}",
+                        role = "assistant",
+                        content = feasibility.reason + hint,
+                        provider = "FEASIBILITY",
+                        badge = "\u26D4 Not started"
+                    )
+                    setPhase(AgentPhase.IDLE)
+                    updateToIdle { it.copy(chatMessages = it.chatMessages + note, statusMessage = "Not started") }
+                    return@launch
+                }
+                is Feasibility.DelegateToUser -> {
+                    setPhase(AgentPhase.ASKING)
+                    _uiState.update {
+                        it.copy(
+                            grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(feasibility.question)),
+                            showGrillMeSheet = true,
+                            statusMessage = feasibility.whatUserMustDo
+                        )
+                    }
+                    return@launch
+                }
+                Feasibility.Feasible -> Unit
             }
 
             // Step 1: Grill-Me Check with remembered vault preferences
             val grillResult = grillMeEngine.evaluateTask(trimmed, sharedKnowledgeStore.getAll())
             if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
+                setPhase(AgentPhase.ASKING)
                 _uiState.update {
                     it.copy(
                         grillMeResult = grillResult,
@@ -2166,6 +2346,21 @@ class AniobViewModel(
 
     fun onGrillAnswersSubmitted(answers: Map<String, String>, rememberKeys: Set<String> = emptySet()) {
         val currentTask = _uiState.value.activeTask ?: return
+        // Plan-time feasibility hand-off ("I can't tap the system dialog for you"): the choice is not a task slot.
+        answers.entries.firstOrNull { it.key.startsWith("delegate.") }?.let { (_, choice) ->
+            when (choice) {
+                AniobFeasibility.OPT_CANCEL -> {
+                    recordSealedOutcome(currentTask.id, SealedOutcome.stopped("Cancelled at the hand-off"))
+                    cancelGrillMe()
+                    return
+                }
+                AniobFeasibility.OPT_WAIT -> {
+                    finishDelegated(currentTask, "I can set this up, but the last tap is yours. Tell me with \uD83D\uDC4D when it worked.")
+                    return
+                }
+                else -> Unit // OPT_SKIP: continue with the rest of the plan, without the gated step
+            }
+        }
         // Persist the answers the user ticked so the question is skipped next time (UX-2).
         rememberKeys.forEach { key ->
             answers[key]?.let { rememberGrillAnswer(key, it) }
@@ -2459,6 +2654,8 @@ class AniobViewModel(
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
+                // Honest default for each step: no model, until a branch below really calls one.
+                setPhase(AgentPhase.PLANNING, ThinkSource.RULES)
                 if (taskGeneration != activeGeneration || !currentCoroutineContext().isActive) {
                     finalOutcome = Outcome.STOPPED
                     break
@@ -2888,7 +3085,15 @@ class AniobViewModel(
                         // on. A cloud-only routing choice is honoured and never downgraded.
                         suspend fun degradeAfterCloudFailure(error: Throwable, allowLocal: Boolean): AniobAction {
                             val kind = com.aniob.core.external.AniobGatewayClassifier.kindOf(error)
-                            val detail = error.message ?: "network error"
+                            val detail = if (kind == com.aniob.core.external.GatewayFailureKind.RATE_LIMIT) {
+                                com.aniob.core.narration.FailureReasonCopy.gatewayRateLimited(
+                                    retryAfterMs = (error as? com.aniob.core.external.AniobGatewayException)?.retryAfterMs,
+                                    willRetryHere = false,
+                                    localFallbackReady = allowLocal && userRouting != "cloud-only"
+                                )
+                            } else {
+                                error.message ?: "network error"
+                            }
                             val cloudFailure = "Cloud action generation failed: $detail"
                             app.eventLogger.warn("AniobViewModel", "Cloud step failed (${kind.name}): $detail")
                             if (!allowLocal || userRouting == "cloud-only") return AniobAction.Fail(cloudFailure)
@@ -2966,11 +3171,13 @@ class AniobViewModel(
                             // Streaming + early parse: the action leaves the device the moment the
                             // reply's JSON object closes, instead of waiting for the model to stop
                             // talking, for the socket to close and for a full body read.
+                            setPhase(AgentPhase.PLANNING, ThinkSource.MODEL_CLOUD, provider = "OmniRoute")
                             val raw = omniroute.getNextActionRawStreaming(
                                 systemPrompt = systemPrompt,
                                 userPrompt = activePrompt,
                                 screenshotBase64 = screenshotBase64,
-                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512
+                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512,
+                                onFirstToken = { advancePhase(AgentPhase.STREAMING) }
                             )
                             val promptEstTokens = (systemPrompt.length + activePrompt.length) / 4
                             app.researchTelemetry.recordPromptTokens(promptEstTokens)
@@ -3031,6 +3238,7 @@ class AniobViewModel(
                         val canEscalateToCloud = userRouting != "local-only" && isCloudConfigured() && powerState.isNetworkAvailable
 
                         val plannedAction = if (localCanDrive) {
+                            setPhase(AgentPhase.PLANNING, ThinkSource.MODEL_LOCAL)
                             app.researchTelemetry.recordLocalInference()
                             val gen = localLlmClient.generateStepResult(
                                 systemPrompt,
@@ -3433,6 +3641,20 @@ class AniobViewModel(
                     terminalReason = res.verification?.reason ?: "Verified successfully"
                     break
                 } else if (res.terminalState == StepResult.TerminalState.FAIL) {
+                    // GRILL-ME for the model: "FAIL: ASK_USER: question | opt | opt" becomes the Grill sheet, once per task.
+                    val ask = com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
+                    if (ask != null && task.grillAnswers.isEmpty()) {
+                        setPhase(AgentPhase.ASKING)
+                        updateToIdle {
+                            it.copy(
+                                activeTask = task,
+                                grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(ask)),
+                                showGrillMeSheet = true,
+                                statusMessage = ask.question
+                            )
+                        }
+                        return
+                    }
                     finalOutcome = Outcome.FAILED
                     terminalReason = (res.action as? AniobAction.Fail)?.reason
                         ?: res.verification?.reason
@@ -3470,6 +3692,7 @@ class AniobViewModel(
         // to re-check at all.
         // Device evidence is merged into EVERY closing path (intent, pipeline, model Finish).
         // v1 only wired it into the intent branch, leaving the common ladder path unguarded.
+        setPhase(AgentPhase.VERIFYING)
         val finalDeviceState = probeDeviceState(resolvedCriteria)
         val deviceEvaluations = evalDeviceAssertions(resolvedCriteria, finalDeviceState)
         val criteriaEvaluations = (
@@ -3629,6 +3852,16 @@ class AniobViewModel(
             reason = terminalReason.ifBlank { null }
         )
         postSummaryCard(summaryCard)
+        // Step 1 invariant: SUCCESS survives only with observer-made evidence; otherwise UNVERIFIED.
+        recordSealedOutcome(
+            task.id,
+            AniobOutcomeBridge.seal(
+                outcome = finalOutcome ?: Outcome.FAILED,
+                reason = terminalReason.ifBlank { resultSummary },
+                evaluations = criteriaEvaluations
+            )
+        )
+        setPhase(AgentPhase.IDLE)
         clearRunningMarker()
 
         AniobBackgroundController.onTaskFinished(

@@ -70,7 +70,7 @@ object AniobGroundingResolver {
 
     private fun resolveText(target: SemanticTarget.Text, screen: AniobScreenState): Resolved? {
         val eligible = screen.fusedIndex.elements.filter { it.isVisibleToUser && it.isEnabled }
-        val exactHits = eligible.filter { it.text.equals(target.text, ignoreCase = true) }
+        val exactHits = eligible.filter { com.aniob.core.text.AniobTextFold.same(it.text, target.text) }
         if (exactHits.size == 1) return exactHits.first().toResolved()
         if (exactHits.size > 1) {
             val clickables = exactHits.filter { it.isClickable }
@@ -93,7 +93,7 @@ object AniobGroundingResolver {
 
     private fun resolveContentDesc(target: SemanticTarget.ContentDesc, screen: AniobScreenState): Resolved? {
         val eligible = screen.fusedIndex.elements.filter { it.isVisibleToUser && it.isEnabled }
-        val exactHits = eligible.filter { it.contentDescription.equals(target.desc, ignoreCase = true) }
+        val exactHits = eligible.filter { com.aniob.core.text.AniobTextFold.same(it.contentDescription, target.desc) }
         if (exactHits.size == 1) return exactHits.first().toResolved()
         if (exactHits.size > 1) {
             val clickables = exactHits.filter { it.isClickable }
@@ -102,7 +102,7 @@ object AniobGroundingResolver {
         }
         if (target.exact) return null
 
-        val partialHits = eligible.filter { it.contentDescription.contains(target.desc, ignoreCase = true) }
+        val partialHits = eligible.filter { com.aniob.core.text.AniobTextFold.containsPhrase(it.contentDescription, target.desc) }
         if (partialHits.size == 1) return partialHits.first().toResolved()
         if (partialHits.size > 1) {
             val clickables = partialHits.filter { it.isClickable }

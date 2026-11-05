@@ -23,6 +23,12 @@ enum class GatewayFailureKind(val cooldownMs: Long) {
     /** 404 / 405 / 410: the path does not exist on that host. */
     NOT_FOUND(120_000L),
 
+    /**
+     * 429. The server told us to slow down: re-sending now only makes it worse. The real cool-down is the
+     * `Retry-After` value ([AniobGatewayException.retryAfterMs]); this is the fallback when it is absent.
+     */
+    RATE_LIMIT(30_000L),
+
     /** Any other 4xx. Often specific to the request (400 on `response_format`), so no cool-down. */
     CLIENT_ERROR(0L),
 
@@ -48,7 +54,9 @@ class AniobGatewayException(
     val httpCode: Int?,
     val endpoint: String?,
     message: String,
-    cause: Throwable? = null
+    cause: Throwable? = null,
+    /** Parsed `Retry-After`, clamped to [AniobRetryAfter.MAX_MS]; null when the server sent none. */
+    val retryAfterMs: Long? = null
 ) : IOException(message, cause)
 
 /**
@@ -86,7 +94,24 @@ object AniobGatewayClassifier {
      * missing / `text/plain` and the body starts like JSON (some self-hosted gateways do that).
      * Anything that looks like a web page is rejected whatever its status or header says.
      */
-    fun classifyHttp(code: Int, contentType: String?, body: String, endpoint: String? = null): AniobGatewayException? {
+    fun classifyHttp(
+        code: Int,
+        contentType: String?,
+        body: String,
+        endpoint: String? = null,
+        retryAfterHeader: String? = null,
+        nowMs: Long = System.currentTimeMillis()
+    ): AniobGatewayException? {
+        if (code == 429) {
+            // Before the HTML check: a proxy's 429 page is still a rate limit, not "the wrong address".
+            val wait = AniobRetryAfter.parseMs(retryAfterHeader, nowMs)
+            val hint = if (wait != null) "retry in ${(wait + 999) / 1000}s" else "no Retry-After given"
+            return AniobGatewayException(
+                GatewayFailureKind.RATE_LIMIT, 429, endpoint,
+                "Omniroute Cloud API error (429): rate limited, $hint: ${summarize(body)}",
+                retryAfterMs = wait
+            )
+        }
         val html = looksLikeHtml(body) || mediaType(contentType).let { it == "text/html" || it == "application/xhtml+xml" }
         if (code in 200..299) {
             if (html) return notJson(code, contentType, body, endpoint)
@@ -153,8 +178,17 @@ class AniobGatewayCircuitBreaker(private val clock: () -> Long = System::current
         return true
     }
 
-    fun recordFailure(key: String, kind: GatewayFailureKind) {
-        if (kind.cooldownMs > 0) openUntil[key] = clock() + kind.cooldownMs
+    fun recordFailure(key: String, kind: GatewayFailureKind, retryAfterMs: Long? = null) {
+        val cooldown = if (kind == GatewayFailureKind.RATE_LIMIT) {
+            (retryAfterMs ?: kind.cooldownMs).coerceIn(AniobRetryAfter.MIN_MS, AniobRetryAfter.MAX_MS)
+        } else kind.cooldownMs
+        if (cooldown > 0) openUntil[key] = clock() + cooldown
+    }
+
+    /** Milliseconds until [key] may be contacted again; 0 when it is not cooling down. For honest UI copy. */
+    fun remainingMs(key: String): Long {
+        val until = openUntil[key] ?: return 0L
+        return (until - clock()).coerceAtLeast(0L)
     }
 
     fun recordSuccess(key: String) {
@@ -218,7 +252,9 @@ class AniobGatewayHealth(
     }
 
     fun admit(endpoint: String, isLocal: Boolean): Admission {
-        if (breaker.isOpen(endpoint)) return Admission.Skip("gateway recently failed; not retrying yet")
+        if (breaker.isOpen(endpoint)) {
+            return Admission.Skip("gateway recently failed; not retrying yet (retry in ${retryInSeconds(endpoint)}s)")
+        }
         if (!isLocal) return Admission.Go
         val cached = reachableUntil[endpoint]
         if (cached != null && clock() < cached) return Admission.Go
@@ -235,10 +271,13 @@ class AniobGatewayHealth(
         breaker.recordSuccess(endpoint)
     }
 
-    fun recordFailure(endpoint: String, kind: GatewayFailureKind) {
+    fun recordFailure(endpoint: String, kind: GatewayFailureKind, retryAfterMs: Long? = null) {
         reachableUntil.remove(endpoint)
-        breaker.recordFailure(endpoint, kind)
+        breaker.recordFailure(endpoint, kind, retryAfterMs)
     }
+
+    /** Seconds until [endpoint] is admitted again (0 when it is not cooling down): honest copy for the UI. */
+    fun retryInSeconds(endpoint: String): Long = (breaker.remainingMs(endpoint) + 999) / 1000
 
     fun reset() {
         breaker.reset()
@@ -248,5 +287,41 @@ class AniobGatewayHealth(
     companion object {
         /** Process-wide instance: providers are rebuilt per step, health must outlive them. */
         val shared = AniobGatewayHealth()
+    }
+}
+
+/** `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110 §10.2.3). Anything else is ignored, never guessed. */
+object AniobRetryAfter {
+    const val MIN_MS = 1_000L
+    const val MAX_MS = 120_000L
+
+    fun parseMs(header: String?, nowMs: Long = System.currentTimeMillis()): Long? {
+        val v = header?.trim().orEmpty()
+        if (v.isEmpty()) return null
+        v.toLongOrNull()?.let { return if (it < 0) null else (it * 1000L).coerceIn(MIN_MS, MAX_MS) }
+        return try {
+            val at = java.time.ZonedDateTime.parse(v, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
+            (at - nowMs).coerceIn(MIN_MS, MAX_MS)
+        } catch (e: java.time.format.DateTimeParseException) {
+            null
+        }
+    }
+}
+
+/**
+ * Bounded in-step backoff for a 429. Waits only when the server's own `Retry-After` (or our fallback) fits the
+ * remaining budget; otherwise returns null and the caller degrades to the on-device model instead of hammering
+ * the gateway or sleeping through the user's patience.
+ */
+object AniobRateLimitBackoff {
+    const val MAX_ATTEMPTS = 2
+    const val MAX_TOTAL_WAIT_MS = 10_000L
+    private const val FALLBACK_BASE_MS = 1_500L
+
+    /** @return how long to wait before retry number [attempt] (0-based), or null to stop retrying. */
+    fun waitMs(attempt: Int, retryAfterMs: Long?, waitedSoFarMs: Long = 0L, jitterMs: Long = 0L): Long? {
+        if (attempt >= MAX_ATTEMPTS) return null
+        val wait = (retryAfterMs ?: (FALLBACK_BASE_MS shl attempt)) + jitterMs.coerceIn(0L, 250L)
+        return if (waitedSoFarMs + wait <= MAX_TOTAL_WAIT_MS) wait else null
     }
 }
