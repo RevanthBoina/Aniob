@@ -39,6 +39,7 @@ class AniobAuthRepositoryTest {
         assertEquals("the-verifier", form["code_verifier"])
         assertEquals("http://127.0.0.1:1455/auth/callback", form["redirect_uri"])
         assertEquals("test_client", form["client_id"])
+        assertEquals("https://api.openai.com/v1", form["resource"])
 
         val state = repository.state.value as AniobAuthState.SignedIn
         assertEquals("j***@example.com", state.displayLabel)
@@ -75,6 +76,7 @@ class AniobAuthRepositoryTest {
         assertEquals("refresh_token", sent["grant_type"])
         assertEquals("ref-1", sent["refresh_token"])
         assertEquals("test_client", sent["client_id"])
+        assertEquals("https://api.openai.com/v1", sent["resource"])
 
         assertEquals(listOf("save:ref-2"), store.log) // saved, and nothing else
         assertEquals("acc-2", (result as AniobAccessResult.Granted).grant.accessToken)

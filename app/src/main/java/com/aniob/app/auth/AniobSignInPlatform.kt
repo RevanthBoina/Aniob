@@ -101,6 +101,10 @@ class AniobSignInCoordinator(
     private val lock = Any()
     private var job: Job? = null
 
+    init {
+        AniobSignInService.onCancelRequested = { cancel() }
+    }
+
     fun start() = launch(resume = false)
 
     /** Called when the account screen opens: continue a sign-in the system interrupted. */
@@ -108,6 +112,7 @@ class AniobSignInCoordinator(
 
     fun cancel() {
         synchronized(lock) { job?.cancel() }
+        AniobSignInService.stop(context)
     }
 
     private fun launch(resume: Boolean) = synchronized(lock) {
@@ -115,8 +120,13 @@ class AniobSignInCoordinator(
         job = scope.launch {
             previous?.cancelAndJoin()
             val pending = if (resume) pendingStore.load() ?: return@launch else null
-            val error: AniobAuthError? = flow.run(resume = pending)
-            if (error == null) onSignedIn()
+            AniobSignInService.start(context)
+            try {
+                val error: AniobAuthError? = flow.run(resume = pending)
+                if (error == null) onSignedIn()
+            } finally {
+                AniobSignInService.stop(context)
+            }
         }
     }
 

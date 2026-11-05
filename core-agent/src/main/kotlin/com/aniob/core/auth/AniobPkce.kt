@@ -43,7 +43,7 @@ object AniobPkce {
 object AniobAuthorizeUrlBuilder {
     private val RESERVED = setOf(
         "response_type", "client_id", "redirect_uri", "scope",
-        "code_challenge", "code_challenge_method", "state"
+        "code_challenge", "code_challenge_method", "state", "resource"
     )
 
     fun build(config: AniobAuthConfig, codeChallenge: String, state: String): String {
@@ -55,6 +55,7 @@ object AniobAuthorizeUrlBuilder {
         params["code_challenge"] = codeChallenge
         params["code_challenge_method"] = AniobPkce.METHOD
         params["state"] = state
+        params["resource"] = "https://api.openai.com/v1"
         // Extras may add parameters but can never override the protocol ones above.
         config.extraAuthorizeParams.forEach { (k, v) -> if (k !in RESERVED) params[k] = v }
         val query = params.entries.joinToString("&") { (k, v) -> "${percentEncode(k)}=${percentEncode(v)}" }

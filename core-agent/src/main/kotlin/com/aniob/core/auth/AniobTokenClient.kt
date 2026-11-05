@@ -38,7 +38,8 @@ class AniobTokenClient(
             "client_id" to config.clientId,
             "code" to code,
             "redirect_uri" to config.redirectUri,
-            "code_verifier" to codeVerifier
+            "code_verifier" to codeVerifier,
+            "resource" to "https://api.openai.com/v1"
         ).joinToString("&") { (k, v) ->
             AniobAuthorizeUrlBuilder.percentEncode(k) + "=" + AniobAuthorizeUrlBuilder.percentEncode(v)
         }
@@ -51,7 +52,8 @@ class AniobTokenClient(
             linkedMapOf(
                 "client_id" to config.clientId,
                 "grant_type" to "refresh_token",
-                "refresh_token" to previous.refreshToken
+                "refresh_token" to previous.refreshToken,
+                "resource" to "https://api.openai.com/v1"
             )
         )
         return call(json, "application/json", previous = previous, isRefresh = true)

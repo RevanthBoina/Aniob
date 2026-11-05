@@ -28,14 +28,23 @@ class AniobAccountContainer(private val app: Application) {
 
     /** Null (feature hidden) unless every required BuildConfig value is present and well formed. */
     val config: AniobAuthConfig? by lazy {
+        val configuredClientId = unset(BuildConfig.ACCOUNT_AUTH_CLIENT_ID)
+        val isDynamic = configuredClientId.isBlank()
+        val clientId = if (isDynamic) "dynamic_agent_client" else configuredClientId
+
+        val extraParams = AniobAuthConfig.parseExtraParams(BuildConfig.ACCOUNT_AUTH_EXTRA_PARAMS).toMutableMap()
+        if (isDynamic || clientId == "dynamic_agent_client") {
+            extraParams["ext_agent_host_id"] = getOrCreateExtAgentHostId()
+        }
+
         val c = AniobAuthConfig(
-            clientId = unset(BuildConfig.ACCOUNT_AUTH_CLIENT_ID),
-            authorizeUrl = BuildConfig.ACCOUNT_AUTH_AUTHORIZE_URL,
-            tokenUrl = BuildConfig.ACCOUNT_AUTH_TOKEN_URL,
-            redirectUri = BuildConfig.ACCOUNT_AUTH_REDIRECT_URI,
-            scopes = BuildConfig.ACCOUNT_AUTH_SCOPES,
-            inferenceBaseUrl = BuildConfig.ACCOUNT_AUTH_INFERENCE_URL,
-            extraAuthorizeParams = AniobAuthConfig.parseExtraParams(BuildConfig.ACCOUNT_AUTH_EXTRA_PARAMS),
+            clientId = clientId,
+            authorizeUrl = unset(BuildConfig.ACCOUNT_AUTH_AUTHORIZE_URL).ifBlank { "https://auth.openai.com/api/accounts/authorize" },
+            tokenUrl = unset(BuildConfig.ACCOUNT_AUTH_TOKEN_URL).ifBlank { "https://auth.openai.com/api/accounts/oauth/token" },
+            redirectUri = unset(BuildConfig.ACCOUNT_AUTH_REDIRECT_URI).ifBlank { "http://127.0.0.1:1455/auth/callback" },
+            scopes = unset(BuildConfig.ACCOUNT_AUTH_SCOPES).ifBlank { "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" },
+            inferenceBaseUrl = unset(BuildConfig.ACCOUNT_AUTH_INFERENCE_URL).ifBlank { "https://api.openai.com/v1" },
+            extraAuthorizeParams = extraParams,
             originator = unset(BuildConfig.ACCOUNT_AUTH_ORIGINATOR).ifBlank { "aniob" },
             betaHeader = unset(BuildConfig.ACCOUNT_AUTH_BETA_HEADER)
         )
@@ -115,6 +124,14 @@ class AniobAccountContainer(private val app: Application) {
         prefs.edit().remove(KEY_MODEL).remove(KEY_EFFORT).putString(KEY_SOURCE, AniobCloudSource.OMNIROUTE.prefValue).apply()
     }
 
+    private fun getOrCreateExtAgentHostId(): String {
+        val existing = prefs.getString(KEY_EXT_AGENT_HOST_ID, null)
+        if (!existing.isNullOrBlank()) return existing
+        val newId = "urn:uuid:${java.util.UUID.randomUUID()}"
+        prefs.edit().putString(KEY_EXT_AGENT_HOST_ID, newId).apply()
+        return newId
+    }
+
     private companion object {
         /** `.env` values cannot be empty (see .env.example), so "no value" is spelled UNSET or NONE. */
         fun unset(value: String): String = if (value.isBlank() || value == "UNSET" || value == "NONE") "" else value
@@ -122,5 +139,6 @@ class AniobAccountContainer(private val app: Application) {
         const val KEY_SOURCE = "cloud_source"
         const val KEY_MODEL = "account_model"
         const val KEY_EFFORT = "account_effort"
+        const val KEY_EXT_AGENT_HOST_ID = "account_ext_agent_host_id"
     }
 }
