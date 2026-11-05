@@ -49,7 +49,7 @@ The debug APK build needs a local debug keystore. `AGENTS.md` documents a `keyto
 - `.github/workflows/ci.yml`: runs for pull requests, pushes to `main`, and manual dispatch. Sets up Temurin 17 and Gradle 9.3.1, runs `scripts/ci-preflight.sh`, JVM tests, Android lint, and uploads test/lint reports.
 - `.github/workflows/release.yml`: runs on `v*` tags or manual dispatch, runs preflight, builds a release APK, publishes artifacts/checksum, and creates a GitHub Release for a version tag. It uses `contents: write` for release publication and has a failure-diagnostics step that may post a commit comment.
 - Existing scripts check billing references, config/skill asset drift, Android imports in `core-agent`, broad-catch count, selected behavior pins, user-facing copy, model catalog links, and tracked secret/build-output hygiene.
-- This contributor-readiness change adds GitHub's dependency-review action for pull requests with a high-severity vulnerability threshold. It relies on GitHub's dependency graph and does not produce a complete license inventory/SBOM. Existing CI covers build/test/lint and project-specific PR checks, but CI does not establish copyright ownership or dependency license compliance.
+- No dependency vulnerability/license review is active in CI. A trial of GitHub's dependency-review action on the review PR failed because Dependency Graph is not enabled for this repository. This work does not alter repository security settings; the founder can enable the graph and add the review action later if desired. Existing CI covers build/test/lint and project-specific PR checks, but CI does not establish copyright ownership or dependency license compliance.
 
 ## Security and ownership observations
 
