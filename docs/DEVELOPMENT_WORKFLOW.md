@@ -26,7 +26,7 @@ Use `feature/*` for features, `bugfix/*` for fixes, and `docs/*` for documentati
 
 Existing `.github/workflows/ci.yml` is the pull-request validation path. It uses JDK 17/Gradle 9.3.1 and runs project preflight, JVM tests, and Android lint. Review the Action run and resolve failures before merging. A PR can still be reviewed if an external model URL check has a transient failure, but the founder should confirm the failure is unrelated and decide whether to rerun; do not silently bypass a security or test failure.
 
-The release workflow is separate, tag-driven, and writes release artifacts. Do not use it as a PR check or grant contributors release permissions. CI now runs GitHub's dependency-review action against PR dependency changes and fails for high-severity vulnerabilities. This depends on GitHub dependency graph availability; it is not a full dependency inventory or license scan. The founder should verify the check on a real PR and arrange a release SBOM/license review separately.
+The release workflow is separate, tag-driven, and writes release artifacts. Do not use it as a PR check or grant contributors release permissions. Dependency review is not currently active: GitHub's dependency-review action reported that the repository Dependency Graph is disabled. The founder may enable it and add the action in a later change; this task does not modify repository security settings. A full dependency inventory/license scan is also not configured; arrange release SBOM/license review separately.
 
 ## Conflicts and updates
 
