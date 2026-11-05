@@ -6,7 +6,7 @@
 
 Aniob is a native Android application for natural-language UI automation. Its Android app coordinates task understanding, screen observation, action planning, safety checks, and execution through Android services and user-approved capabilities. The project separates most agent/domain logic into a Kotlin/JVM module so it can be tested without Android. It supports on-device model integration, an optional OpenAI-compatible cloud gateway, model/skill YAML assets, task history and metrics, and research/benchmark tooling.
 
-The repository has substantial automated tests and two existing GitHub Actions workflows. Contributor-facing documentation and governance are missing: there is no root README, CONTRIBUTING guide, Code of Conduct, SECURITY policy, volunteer/IP policy, contributor acknowledgements file, issue/PR templates, or CODEOWNERS. No root license or copyright notice is present. This is a public repository, but it does not currently grant an explicit open-source license; do not infer permission to reuse or redistribute code from its public visibility.
+The audited baseline had substantial automated tests and two existing GitHub Actions workflows, but lacked contributor-facing documentation and governance: no root README, CONTRIBUTING guide, Code of Conduct, SECURITY policy, volunteer/IP policy, contributor acknowledgements file, issue/PR templates, or CODEOWNERS. This PR adds those onboarding materials. No root license or copyright notice is present. This is a public repository, but it does not currently grant an explicit open-source license; do not infer permission to reuse or redistribute code from its public visibility.
 
 ## Structure and architecture
 
@@ -32,21 +32,21 @@ The repository has substantial automated tests and two existing GitHub Actions w
 
 ## Setup, build, and test
 
-There is **no committed Gradle wrapper**. Maintainer instructions and CI pin Gradle `9.3.1` and JDK 17. A local Android SDK is also required. Android Studio can configure the SDK and generate `local.properties`; keep it untracked. `google-services.json` is intentionally absent and the Google Services plugin is configured to warn when missing.
+At the audited base commit, there was **no committed Gradle wrapper**; CI pinned Gradle `9.3.1`, and contributors had to install it separately. This PR adds the official Gradle Wrapper scripts/JAR from the `gradle/gradle` `v9.3.1` tag and pins the distribution URL and SHA-256 (`b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06`) in `gradle/wrapper/gradle-wrapper.properties`. The distribution hash was cross-checked against JetBrains Android's Gradle SHA-256 catalog and Qt's build scripts; the wrapper JAR Git blob SHA from the official tag is `61285a659d17295f1de7c53e24fdf13ad755c379`. This wrapper addition is isolated in its own build-tooling commit in PR #26. Contributors still need JDK 17 and an Android SDK; Gradle itself is downloaded and checksum-verified on first use. Android Studio can configure the SDK and generate `local.properties`; keep it untracked. `google-services.json` is intentionally absent and the Google Services plugin is configured to warn when missing.
 
-Typical commands (from repository root, with JDK 17, Android SDK, and Gradle 9.3.1 installed):
+Current commands (from repository root, with JDK 17 and Android SDK):
 
 ```bash
-gradle :core-agent:test :app:testDebugUnitTest --console=plain
-gradle :app:lintDebug --console=plain
-gradle :app:assembleDebug --console=plain
+./gradlew :core-agent:test :app:testDebugUnitTest --console=plain
+./gradlew :app:lintDebug --console=plain
+./gradlew :app:assembleDebug --console=plain
 ```
 
 The debug APK build needs a local debug keystore. `AGENTS.md` documents a `keytool` command to create one; signing keys and passwords must never be committed. `bash scripts/ci-preflight.sh` runs project-specific guards, including model catalog URL checks that require working network access. Existing test inventory at audit time: 68 core-agent test classes/files, 19 app JVM test files, and 2 instrumentation test files (test counts are file counts, not test-case totals).
 
 ## Existing automation
 
-- `.github/workflows/ci.yml`: runs for pull requests, pushes to `main`, and manual dispatch. Sets up Temurin 17 and Gradle 9.3.1, runs `scripts/ci-preflight.sh`, JVM tests, Android lint, and uploads test/lint reports.
+- `.github/workflows/ci.yml`: runs for pull requests, pushes to `main`, and manual dispatch. Sets up Temurin 17, uses the checksum-pinned `./gradlew` wrapper, runs `scripts/ci-preflight.sh`, JVM tests, Android lint, and uploads test/lint reports.
 - `.github/workflows/release.yml`: runs on `v*` tags or manual dispatch, runs preflight, builds a release APK, publishes artifacts/checksum, and creates a GitHub Release for a version tag. It uses `contents: write` for release publication and has a failure-diagnostics step that may post a commit comment.
 - Existing scripts check billing references, config/skill asset drift, Android imports in `core-agent`, broad-catch count, selected behavior pins, user-facing copy, model catalog links, and tracked secret/build-output hygiene.
 - No dependency vulnerability/license review is active in CI. A trial of GitHub's dependency-review action on the review PR failed because Dependency Graph is not enabled for this repository. This work does not alter repository security settings; the founder can enable the graph and add the review action later if desired. Existing CI covers build/test/lint and project-specific PR checks, but CI does not establish copyright ownership or dependency license compliance.
@@ -74,16 +74,16 @@ The catalog also declares optional/inactive libraries; the exact resolved app gr
 
 ## Gaps, technical concerns, and recommendations
 
-1. **No contributor entry point:** add a short README, fork/PR guide, issue forms, review ownership, and simple recognition guidelines.
+1. **Contributor entry point:** addressed in this PR with a short README, fork/PR guide, issue forms, review ownership, and recognition guidance.
 2. **Ownership terms not configured:** founder should obtain a suitable, short separate contribution agreement before accepting contributions for commercial incorporation. Do not make a form, PR, or access imply assignment.
 3. **No published project license or dependency inventory:** do not advertise the code as open source; decide licensing separately and add verified notices only with founder approval. Generate an SBOM/license report as a release check.
-4. **No wrapper:** pinning the Gradle distribution in CI reduces variance there, but local setup is less reproducible. Consider committing a verified Gradle wrapper in a separate change after validating the project and update process.
+4. **Gradle Wrapper:** addressed in this PR's isolated build-tooling commit. Keep the wrapper scripts/JAR aligned with the selected Gradle release and update the verified distribution SHA-256 on future version bumps.
 5. **Release signing needs founder attention:** the current build script falls back to a debug keystore/default values when a release keystore is absent, and the release workflow generates a debug keystore before building. Do not treat resulting APKs as production-signed; configure an explicit protected release signing setup and fail closed before any commercial/store release.
 6. **CI has external network coupling:** the preflight model URL health test depends on remote model hosting. Decide whether transient upstream outages should block all PRs; if not, separate deterministic checks from optional network health checks in a reviewed future change.
 7. **Dependency license inventory remains incomplete:** the repository's Dependency Graph is currently disabled, so the GitHub dependency-review action cannot run. The founder may enable the graph in repository settings and add vulnerability review after deciding; this task does not change security settings. A full SBOM/license report for the exact release graph is also still needed.
-8. **Contributor protections are not enforceable by files alone:** founder should enable a main-branch ruleset, keep administrator/bypass rights founder-controlled, require CI and review, and avoid collaborator grants. CODEOWNERS requests review; it does not configure GitHub protections.
+8. **Contributor protections are not enforceable by files alone:** founder should enable a main-branch ruleset, keep administrator/bypass rights founder-controlled, require PRs and CI, and avoid collaborator grants. Since the founder is the sole owner and cannot approve their own PR, do not set a global mandatory-approval count unless an owner-PR exception or independent reviewer is planned. CODEOWNERS requests review; it does not configure GitHub protections.
 9. **Confirm communications/contact details:** use the founder's GitHub profile until a dedicated security/contact address is selected; configure GitHub private vulnerability reporting if desired.
-10. **Current PR CI failure:** during this review, preflight passed but the existing unit-test task failed in KSP with `Cannot invoke ... Application.getService(...)` because the KSP `ApplicationManager` application was null; Android lint was skipped after the test failure. This change does not touch app/KSP build code. Investigate the existing toolchain/plugin compatibility before treating CI as green. GitHub also reports upcoming Node.js/action deprecation warnings for the existing Actions v4 dependencies; update them in a separately validated maintenance change.
+10. **Pre-existing CI/KSP failure:** CI on `main` at the exact PR base commit `a3c40a41416348a560c48e1eac6dc1e57ff26589` already failed at the JVM unit-test job ([run #41877216464](https://github.com/RevanthBoina/Aniob/actions/runs/41877216464)); the PR's test job fails in the same place. The PR contains no app/KSP source, dependency-version, or test changes. The observed exception is `Cannot invoke ... Application.getService(...)` because KSP's `ApplicationManager.getApplication()` was null. This establishes that the failure predates the PR; the precise toolchain/plugin root cause is still unconfirmed. Investigate the Kotlin `2.2.10` / KSP `2.3.5` / AGP `9.1.1` / Gradle `9.3.1` interaction. Tests have not been skipped or disabled. GitHub also reports upcoming Node.js/action deprecation warnings for existing Actions v4 dependencies; update them in a separately validated maintenance change.
 
 ## Recommended next steps
 
