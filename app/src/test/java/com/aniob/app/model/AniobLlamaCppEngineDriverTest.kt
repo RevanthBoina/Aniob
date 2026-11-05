@@ -67,9 +67,6 @@ class AniobLlamaCppEngineDriverTest {
         val llamaDriver = AniobLlamaCppEngineDriver(
             simulatedGenerator = { "{\"action\": \"wait\"}" }
         )
-        val liteRtEngine = AniobLiteRtLmEngine(
-            cacheDir = java.io.File(System.getProperty("java.io.tmpdir") ?: "/tmp")
-        )
 
         // Load llama.cpp engine
         llamaDriver.load("/tmp/fake_gemma.gguf")
