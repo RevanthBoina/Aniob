@@ -21,9 +21,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Gradle caching
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        # The checksum-verified Gradle Wrapper selects the Gradle distribution and version.
+        with:
+          # AGP 9.1.1 requires Gradle >= 9.3.1 (AGENTS.md documents 9.3.1 as the toolchain).
+          # A wrapper is intentionally not committed, so this pin IS the build toolchain.
+          gradle-version: '9.3.1'
 
       - name: Run CI Preflight Guards
         run: |
@@ -37,7 +40,7 @@ jobs:
       - name: Build Android Release APK
         run: |
           set -o pipefail
-          ./gradlew :app:assembleRelease --stacktrace 2>&1 | tee build.log
+          gradle :app:assembleRelease --stacktrace 2>&1 | tee build.log
 
       # Failure diagnostics: the Actions log archive is not always reachable outside GitHub, so a
       # failed build publishes the compiler/Gradle errors as a commit comment on the tagged commit.

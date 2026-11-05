@@ -4,14 +4,15 @@ Persistent, repo-specific knowledge for agents working in this repository.
 
 ## Build & test
 
-The repository includes the Gradle 9.3.1 Wrapper (`./gradlew`), with the distribution SHA-256 pinned in `gradle/wrapper/gradle-wrapper.properties`. JDK 17 and an Android SDK are still required. Typical commands:
+Gradle wrapper is not present; use an installed Gradle. This environment uses:
 
 ```bash
 export JAVA_HOME=/opt/jdk17
 export ANDROID_HOME=$HOME/android-sdk
+export PATH=/tmp/setup/gradle-dist/gradle-9.3.1/bin:$PATH
 
-./gradlew :core-agent:test :app:testDebugUnitTest --console=plain
-./gradlew :app:assembleDebug --console=plain
+gradle :core-agent:test :app:testDebugUnitTest --console=plain
+gradle :app:assembleDebug --console=plain
 ```
 
 - `:core-agent` is pure Kotlin/JVM. Guarded by CI preflight: **zero `android.*` imports**. Keep it
@@ -24,8 +25,8 @@ export ANDROID_HOME=$HOME/android-sdk
 
 ## CI preflight
 
-`bash scripts/ci-preflight.sh` runs the repository's compliance, sync, architecture, safety, UX, catalog,
-and hygiene guards. Run it before proposing changes; it must end with
+`bash scripts/ci-preflight.sh` runs five compliance guards (no billing/payment SDKs, skill-assets sync,
+core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing changes; it must end with
 `ALL PREFLIGHT CI GUARDS PASSED SUCCESSFULLY`.
 
 ## App discovery & launch
