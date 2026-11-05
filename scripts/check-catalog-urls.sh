@@ -2,10 +2,9 @@
 #
 # GUARD 7/7 — MODEL CATALOG URL HEALTH
 # ===================================
-# Fails if any catalog URL returns anything other than 206 for an unauthenticated Range request.
-# Gated repos (401/403) or broken URLs (404) are strictly disallowed from shipping in the catalog.
+# A public byte-range request must return HTTP 206. Transport/network failures,
+# invalid or gated URLs, and remote-service errors are reported separately.
 #
-
 set -euo pipefail
 
 URLS=(
@@ -30,7 +29,7 @@ for key in ram_4gb ram_6gb ram_8gb ram_8gb_coding ram_8gb_balanced; do
     echo "ERROR: Missing default mapping for key: $key"
     exit 1
   fi
-  if ! echo "$DECLARED_IDS" | grep -qx "$val"; then
+  if ! grep -qxF "$val" <<< "$DECLARED_IDS"; then
     echo "ERROR: Default '$key' points to undeclared model ID '$val'"
     exit 1
   fi
@@ -38,24 +37,57 @@ for key in ram_4gb ram_6gb ram_8gb ram_8gb_coding ram_8gb_balanced; do
 done
 
 echo "=== Verifying Catalog Model URLs (Unauthenticated HTTP 206 Range Check) ==="
-FAILED=0
+NETWORK_FAILURES=0
+NOT_FOUND_FAILURES=0
+ACCESS_FAILURES=0
+SERVICE_FAILURES=0
+OTHER_FAILURES=0
 
 for url in "${URLS[@]}"; do
-  # Follow redirects (-L) and perform a byte range request for bytes 0-0
-  status=$(curl -s -L -o /dev/null -w "%{http_code}" -r 0-0 "$url" || echo "000")
-  if [ "$status" != "206" ]; then
-    echo "ERROR: Catalog URL failed range check: HTTP $status (expected 206)"
-    echo "       URL: $url"
-    FAILED=1
+  # Follow redirects and request only byte 0. Preserve curl's exit status separately
+  # from the HTTP status so a transport error never becomes a malformed "000000".
+  if status=$(curl --silent --show-error --location --output /dev/null \
+      --write-out '%{http_code}' --range 0-0 \
+      --connect-timeout 15 --max-time 60 "$url"); then
+    curl_status=0
   else
+    curl_status=$?
+  fi
+
+  if [ "${status:-000}" = "000" ] || [ "$curl_status" -ne 0 ]; then
+    echo "ERROR: Network/transport unavailable (curl exit $curl_status; HTTP ${status:-000}); URL was not validated."
+    echo "       Check runner DNS, proxy, firewall, and remote connectivity; this is not evidence the URL is invalid."
+    echo "       URL: $url"
+    NETWORK_FAILURES=$((NETWORK_FAILURES + 1))
+  elif [ "$status" = "206" ]; then
     echo "OK: [HTTP 206] $url"
+  elif [ "$status" = "404" ]; then
+    echo "ERROR: Model URL not found (HTTP 404)."
+    echo "       URL: $url"
+    NOT_FOUND_FAILURES=$((NOT_FOUND_FAILURES + 1))
+  elif [ "$status" = "401" ] || [ "$status" = "403" ]; then
+    echo "ERROR: Model URL is gated or access denied (HTTP $status)."
+    echo "       URL: $url"
+    ACCESS_FAILURES=$((ACCESS_FAILURES + 1))
+  elif [ "$status" = "429" ]; then
+    echo "ERROR: Model host rate-limited the check (HTTP 429); retry later."
+    echo "       URL: $url"
+    SERVICE_FAILURES=$((SERVICE_FAILURES + 1))
+  elif [[ "$status" =~ ^5[0-9][0-9]$ ]]; then
+    echo "ERROR: Model host returned a server error (HTTP $status); retry after checking service status."
+    echo "       URL: $url"
+    SERVICE_FAILURES=$((SERVICE_FAILURES + 1))
+  else
+    echo "ERROR: Unexpected model URL response (HTTP $status; expected 206)."
+    echo "       URL: $url"
+    OTHER_FAILURES=$((OTHER_FAILURES + 1))
   fi
 done
 
-if [ "$FAILED" -ne 0 ]; then
-  echo "FAIL: One or more catalog URLs failed health check."
+TOTAL_FAILURES=$((NETWORK_FAILURES + NOT_FOUND_FAILURES + ACCESS_FAILURES + SERVICE_FAILURES + OTHER_FAILURES))
+if [ "$TOTAL_FAILURES" -ne 0 ]; then
+  echo "FAIL: catalog URL validation failed (network=$NETWORK_FAILURES, not-found=$NOT_FOUND_FAILURES, access=$ACCESS_FAILURES, server=$SERVICE_FAILURES, other=$OTHER_FAILURES)."
   exit 1
 fi
 
 echo "SUCCESS: All catalog URLs verified healthy with unauthenticated range support."
-exit 0

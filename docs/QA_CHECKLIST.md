@@ -14,11 +14,9 @@ Run each task in emulator + real device, and record: `primaryProvider`, `steps`,
 | "What apps do I have?" | LOCAL_SLM / OMNIROUTE_CLOUD get_installed_apps | launcher list rendered |
 | "Send message to {contact}" | OMNIROUTE_CLOUD confirm_with_user | confirmation gate raised before send |
 
-## Automated gates (CI)
+## Automated checks
 
-- `scripts/ci-preflight.sh` — billing/payment SDK zero-reference, YAML assets sync, core-agent purity, empty-catch warning.
-- `./gradlew :core-agent:test` — all JVM tests (router, watchdog, safety interceptor, intent resolver, token optimizer, exec report, app sessions).
-- `./gradlew :app:assembleDebug` — app APK builds.
+The pull-request workflow is the source of truth; see the [README setup guide](../README.md#get-started) for prerequisites and commands. CI runs `bash scripts/ci-preflight.sh`, `gradle :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace`, and `gradle :app:lintDebug --console=plain`. Debug APK packaging is a separate local check and may require a generated debug keystore.
 
 ## Perception pins (Prompt 4)
 
