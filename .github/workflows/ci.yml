@@ -2,11 +2,27 @@ name: CI
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
 
+# CI only reads source and uploads reports; never expose write permissions to fork PRs.
+permissions:
+  contents: read
+
 jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
   test:
     runs-on: ubuntu-latest
     steps:

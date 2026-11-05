@@ -1,0 +1,20 @@
+name: Feature idea
+description: Suggest a change or capability for Aniob.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Aniob to do?
+      description: A short explanation is enough. Include the problem this would solve if useful.
+      placeholder: Your idea
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Extra context (optional)
+      description: Add an example or sketch if it helps.
+    validations:
+      required: false
