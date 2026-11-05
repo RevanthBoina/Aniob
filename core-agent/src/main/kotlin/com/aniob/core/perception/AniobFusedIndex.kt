@@ -33,13 +33,14 @@ class AniobFusedIndex(
     }
 
     fun fuzzyTextSearch(query: String, minSimilarity: Double = 0.65): List<Pair<AniobNode, Double>> {
-        val q = query.trim().lowercase()
+        val q = com.aniob.core.text.AniobTextFold.compact(query)
         if (q.isEmpty()) return emptyList()
 
         return elements.mapNotNull { node ->
             val targets = listOf(node.text, node.contentDescription, node.tooltip)
                 .filter { it.isNotBlank() }
-                .map { it.lowercase() }
+                .map { com.aniob.core.text.AniobTextFold.compact(it) }
+                .filter { it.isNotEmpty() }
 
             val bestScore = targets.maxOfOrNull { textSimilarity(q, it, minSimilarity) } ?: 0.0
             if (bestScore >= minSimilarity) node to bestScore else null
@@ -68,7 +69,9 @@ class AniobFusedIndex(
             if (s1.isEmpty() || s2.isEmpty()) return 0.0
             val minLen = minOf(s1.length, s2.length)
             val maxLen = maxOf(s1.length, s2.length)
-            if (s1.contains(s2) || s2.contains(s1)) {
+            // A 2-letter query is a substring of half the labels on screen ("on" in "Notifications").
+            // Containment only counts as a match when the shorter side is a meaningful share of the longer.
+            if (minLen >= 3 && (s1.contains(s2) || s2.contains(s1))) {
                 return max(0.75, minLen.toDouble() / maxLen.toDouble())
             }
             // Mathematical Upper-Bound Pruning:

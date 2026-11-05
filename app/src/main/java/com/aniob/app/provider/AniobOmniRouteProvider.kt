@@ -10,6 +10,7 @@ import com.aniob.core.external.AniobCloudLlmProvider
 import com.aniob.core.external.AniobGatewayClassifier
 import com.aniob.core.external.AniobGatewayException
 import com.aniob.core.external.AniobGatewayHealth
+import com.aniob.core.external.AniobRateLimitBackoff
 import com.aniob.core.external.GatewayFailureKind
 import com.aniob.core.speed.JsonPrefix
 import kotlinx.coroutines.Dispatchers
@@ -66,7 +67,9 @@ class AniobOmniRouteProvider(
      * Process-wide cool-down + reachability state. Providers are rebuilt per step, so the state
      * that stops a dead gateway from being re-tried on every action has to live outside them.
      */
-    private val health: AniobGatewayHealth = AniobGatewayHealth.shared
+    private val health: AniobGatewayHealth = AniobGatewayHealth.shared,
+    /** U-03: called with the wait (ms) just before an in-step 429 backoff, so the UI can say so honestly. */
+    private val onRateLimited: (waitMs: Long) -> Unit = {}
 ) : AniobCloudLlmProvider {
     override val name: String = "OMNIROUTE_CLOUD"
     override val isConfigured: Boolean get() = apiKey.isNotBlank() || isLocalGateway(baseUrl)
@@ -105,13 +108,9 @@ class AniobOmniRouteProvider(
             var lastError = "Unreachable"
             for (endpoint in endpoints) {
                 try {
-                    onLlmRequest()
-                    val responseResult = executeWithJsonFallback(endpoint, payload, enforceJson = jsonMode)
+                    val (responseResult, gatewayFailure) = sendWithRateLimitBackoff(endpoint, payload, jsonMode)
                     val code = responseResult.code
                     val body = responseResult.body
-                    val gatewayFailure = AniobGatewayClassifier.classifyHttp(
-                        code, responseResult.contentType, body, endpoint
-                    )
                     if (gatewayFailure == null) {
                         health.recordSuccess(endpoint)
                         val fullContent = try {
@@ -131,7 +130,7 @@ class AniobOmniRouteProvider(
                         )
                         return@withContext fullContent
                     } else {
-                        health.recordFailure(endpoint, gatewayFailure.kind)
+                        health.recordFailure(endpoint, gatewayFailure.kind, gatewayFailure.retryAfterMs)
                         lastError = "Error from Omniroute Cloud ${gatewayFailure.message?.removePrefix("Omniroute Cloud API error ")}"
                         if (code == 401 || code == 403) return@withContext lastError
                     }
@@ -224,13 +223,9 @@ class AniobOmniRouteProvider(
             var lastError = "Request failed: gateway unreachable"
             for (endpoint in endpoints) {
                 try {
-                    onLlmRequest()
-                    val responseResult = executeWithJsonFallback(endpoint, payload, enforceJson = jsonMode)
+                    val (responseResult, gatewayFailure) = sendWithRateLimitBackoff(endpoint, payload, jsonMode)
                     val code = responseResult.code
                     val body = responseResult.body
-                    val gatewayFailure = AniobGatewayClassifier.classifyHttp(
-                        code, responseResult.contentType, body, endpoint
-                    )
                     if (gatewayFailure == null) {
                         health.recordSuccess(endpoint)
                         val full = try {
@@ -251,7 +246,7 @@ class AniobOmniRouteProvider(
                         onDelta(full)
                         return@withContext full
                     } else {
-                        health.recordFailure(endpoint, gatewayFailure.kind)
+                        health.recordFailure(endpoint, gatewayFailure.kind, gatewayFailure.retryAfterMs)
                         lastError = "Error from Omniroute Cloud ${gatewayFailure.message?.removePrefix("Omniroute Cloud API error ")}"
                         if (code == 401 || code == 403) {
                             return@withContext lastError
@@ -332,7 +327,7 @@ class AniobOmniRouteProvider(
             var lastFailure: Exception = IOException("OmniRoute gateway unreachable")
             for (endpoint in admittedEndpoints()) {
                 onLlmRequest()
-                val attempt = streamOnce(endpoint, payload, onFirstToken)
+                val attempt = withRateLimitBackoff { streamOnce(endpoint, payload, onFirstToken) }
                 if (attempt.isSuccess) {
                     health.recordSuccess(endpoint)
                     val raw = attempt.getOrThrow()
@@ -353,7 +348,7 @@ class AniobOmniRouteProvider(
                 lastFailure = error as? Exception ?: lastFailure
                 // Only a classified HTTP failure opens the cool-down here. A dropped SSE is plain
                 // I/O and is retried once in the non-streaming shape below, which records it.
-                if (error is AniobGatewayException) health.recordFailure(endpoint, error.kind)
+                if (error is AniobGatewayException) health.recordFailure(endpoint, error.kind, error.retryAfterMs)
                 if (error?.message?.contains("(401)") == true || error?.message?.contains("(403)") == true) {
                     return@withContext Result.failure(lastFailure)
                 }
@@ -410,8 +405,9 @@ class AniobOmniRouteProvider(
         val endpoint = call.request().url.toString()
         if (!response.isSuccessful) {
             val text = runCatching { response.body?.string() }.getOrNull().orEmpty()
-            val failure = AniobGatewayClassifier.classifyHttp(response.code, response.header("Content-Type"), text, endpoint)
-                ?: AniobGatewayException(
+            val failure = AniobGatewayClassifier.classifyHttp(
+                response.code, response.header("Content-Type"), text, endpoint, response.header("Retry-After")
+            ) ?: AniobGatewayException(
                     GatewayFailureKind.SERVER_ERROR, response.code, endpoint, "Omniroute Cloud API error (${response.code})"
                 )
             // Only a request-shaped 4xx (400/422...) is worth a plain retry. 404, auth and
@@ -521,7 +517,7 @@ class AniobOmniRouteProvider(
 
             for (endpoint in endpoints) {
                 onLlmRequest()
-                val attempt = executeAsyncWithJsonFallback(endpoint, payload)
+                val attempt = withRateLimitBackoff { executeAsyncWithJsonFallback(endpoint, payload) }
                 if (attempt.isSuccess) {
                     val responseResult = attempt.getOrThrow()
                     health.recordSuccess(endpoint)
@@ -547,7 +543,7 @@ class AniobOmniRouteProvider(
                 } else {
                     val ex = attempt.exceptionOrNull() as? Exception ?: Exception("OmniRoute request failed")
                     lastFailure = ex
-                    health.recordFailure(endpoint, AniobGatewayClassifier.kindOf(ex))
+                    health.recordFailure(endpoint, AniobGatewayClassifier.kindOf(ex), (ex as? AniobGatewayException)?.retryAfterMs)
                     // Do not fail over to other hosts if key was explicitly rejected by the gateway
                     if (ex.message?.contains("(401)") == true || ex.message?.contains("(403)") == true) {
                         return@withContext Result.failure(ex)
@@ -566,7 +562,8 @@ class AniobOmniRouteProvider(
         val routedModel: String?,
         val routedProvider: String?,
         val decisionHeader: String?,
-        val contentType: String? = null
+        val contentType: String? = null,
+        val retryAfter: String? = null
     )
 
     private fun buildChatPayload(
@@ -623,7 +620,8 @@ class AniobOmniRouteProvider(
                         routedModel = retryResp.header("X-OmniRoute-Model"),
                         routedProvider = retryResp.header("X-OmniRoute-Provider"),
                         decisionHeader = retryResp.header("X-OmniRoute-Decision"),
-                        contentType = retryResp.header("Content-Type")
+                        contentType = retryResp.header("Content-Type"),
+                        retryAfter = retryResp.header("Retry-After")
                     )
                 }
             }
@@ -633,8 +631,55 @@ class AniobOmniRouteProvider(
                 routedModel = response.header("X-OmniRoute-Model"),
                 routedProvider = response.header("X-OmniRoute-Provider"),
                 decisionHeader = response.header("X-OmniRoute-Decision"),
-                contentType = response.header("Content-Type")
+                contentType = response.header("Content-Type"),
+                retryAfter = response.header("Retry-After")
             )
+        }
+    }
+
+    /**
+     * U-03. One blocking request; on a 429 it waits (bounded by `Retry-After` and a 10 s total budget) and
+     * retries at most twice. When the budget does not allow, the 429 is returned like any other failure so
+     * the caller opens the circuit breaker and degrades to the on-device model instead of hammering the gateway.
+     */
+    private suspend fun sendWithRateLimitBackoff(
+        endpoint: String,
+        payload: JSONObject,
+        jsonMode: Boolean
+    ): Pair<HttpOutcome, AniobGatewayException?> {
+        var attempt = 0
+        var waited = 0L
+        while (true) {
+            onLlmRequest()
+            val outcome = executeWithJsonFallback(endpoint, payload, enforceJson = jsonMode)
+            val failure = AniobGatewayClassifier.classifyHttp(
+                outcome.code, outcome.contentType, outcome.body, endpoint, outcome.retryAfter
+            )
+            if (failure?.kind != GatewayFailureKind.RATE_LIMIT) return outcome to failure
+            val wait = AniobRateLimitBackoff.waitMs(attempt, failure.retryAfterMs, waited, (0L..250L).random())
+                ?: return outcome to failure
+            onRateLimited(wait)
+            delay(wait)
+            waited += wait
+            attempt++
+        }
+    }
+
+    /** Same budget for the Result-returning transports (streaming and async). */
+    private suspend fun <T> withRateLimitBackoff(call: suspend () -> Result<T>): Result<T> {
+        var attempt = 0
+        var waited = 0L
+        while (true) {
+            val result = call()
+            val failure = result.exceptionOrNull() as? AniobGatewayException
+            if (failure?.kind != GatewayFailureKind.RATE_LIMIT) return result
+            val wait = AniobRateLimitBackoff.waitMs(attempt, failure.retryAfterMs, waited, (0L..250L).random())
+                ?: return result
+            onRateLimited(wait)
+            delay(wait)
+            waited += wait
+            attempt++
+            onLlmRequest()
         }
     }
 
@@ -667,7 +712,8 @@ class AniobOmniRouteProvider(
                         // Status *and* content are checked before anything is parsed: an HTML page
                         // behind a 200 is a failure, and a failure's message is a summary, not the page.
                         val failure = AniobGatewayClassifier.classifyHttp(
-                            response.code, response.header("Content-Type"), body, call.request().url.toString()
+                            response.code, response.header("Content-Type"), body, call.request().url.toString(),
+                            response.header("Retry-After")
                         )
                         if (failure != null) {
                             if (continuation.isActive) continuation.resume(Result.failure(failure))
@@ -679,7 +725,8 @@ class AniobOmniRouteProvider(
                             routedModel = response.header("X-OmniRoute-Model"),
                             routedProvider = response.header("X-OmniRoute-Provider"),
                             decisionHeader = response.header("X-OmniRoute-Decision"),
-                            contentType = response.header("Content-Type")
+                            contentType = response.header("Content-Type"),
+                            retryAfter = response.header("Retry-After")
                         )
                         if (continuation.isActive) {
                             continuation.resume(Result.success(outcome))

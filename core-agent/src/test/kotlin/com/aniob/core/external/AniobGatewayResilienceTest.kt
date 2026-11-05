@@ -46,7 +46,9 @@ class AniobGatewayResilienceTest {
         assertEquals(GatewayFailureKind.AUTH, kind(403))
         assertEquals(GatewayFailureKind.NOT_FOUND, kind(404))
         assertEquals(GatewayFailureKind.CLIENT_ERROR, kind(400))
-        assertEquals(GatewayFailureKind.CLIENT_ERROR, kind(429))
+        // U-03: 429 used to be CLIENT_ERROR (cooldown 0) => the breaker ignored it and the stream path re-sent at once.
+        assertEquals(GatewayFailureKind.RATE_LIMIT, kind(429))
+        assertEquals(true, GatewayFailureKind.RATE_LIMIT.cooldownMs > 0L)
         assertEquals(GatewayFailureKind.SERVER_ERROR, kind(502))
         assertEquals("a 400 is request-specific and must not take the gateway out", 0L, GatewayFailureKind.CLIENT_ERROR.cooldownMs)
     }

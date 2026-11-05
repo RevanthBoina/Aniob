@@ -1,6 +1,7 @@
 package com.aniob.core.understander
 
 import com.aniob.core.domain.AniobPlan
+import com.aniob.core.text.AniobTextFold
 
 /**
  * Parses user prompt and generates execution decomposition plan.
@@ -16,14 +17,15 @@ object AniobTaskUnderstander {
     )
 
     fun parse(command: String): ParsedIntent {
-        val lower = command.lowercase().trim()
+        val words = AniobTextFold.tokens(command).toSet()
+        val lower = AniobTextFold.fold(command)
 
         val (pkg, category) = when {
-            lower.contains("setting") -> "com.android.settings" to "SETTINGS"
-            lower.contains("cab") || lower.contains("uber") || lower.contains("lyft") -> null to "TRANSPORT"
-            lower.contains("message") || lower.contains("sms") -> null to "COMMUNICATION"
-            lower.contains("calculator") -> "com.google.android.calculator" to "UTILITY"
-            lower.contains("camera") -> null to "CAMERA"
+            ("setting" in words || "settings" in words) -> "com.android.settings" to "SETTINGS"
+            ("cab" in words || "uber" in words || "lyft" in words) -> null to "TRANSPORT"
+            ("message" in words || "sms" in words) -> null to "COMMUNICATION"
+            ("calculator" in words) -> "com.google.android.calculator" to "UTILITY"
+            ("camera" in words) -> null to "CAMERA"
             else -> null to "GENERAL"
         }
 

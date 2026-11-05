@@ -53,13 +53,26 @@ object FailureReasonCopy {
         else -> code.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
 
+    /**
+     * U-03: the old copy promised "waiting a moment before retrying" while the code retried instantly (or never).
+     * Only claim a retry when one is really scheduled.
+     */
+    fun gatewayRateLimited(retryAfterMs: Long?, willRetryHere: Boolean, localFallbackReady: Boolean): String {
+        val secs = retryAfterMs?.let { (it + 999) / 1000 }
+        return when {
+            willRetryHere && secs != null -> "The cloud model asked me to slow down. Retrying in ${secs}s."
+            localFallbackReady -> "The cloud model is rate-limiting me" + (secs?.let { " (try again in ${it}s)" } ?: "") + ". Continuing on the on-device model."
+            else -> "The cloud model is rate-limiting me" + (secs?.let { ". Try again in ${it}s" } ?: ". Try again in a minute") + ", or install an on-device model in Models."
+        }
+    }
+
     /** Human-readable explanation for HTTP download failures (UX legible failure). */
     fun downloadError(code: Int, modelName: String = "model"): String = when (code) {
         401 -> "This model requires a sign-in. Try a different model."
         403 -> "Access to this model is restricted. Choose an alternative below."
         404 -> "The model file wasn't found at the source. The catalog may be out of date."
         416 -> "The partial download got out of sync. Starting fresh."
-        429 -> "Too many requests \u2014 waiting a moment before retrying."
+        429 -> "The model host is rate-limiting downloads. Try again in a minute."
         in 500..599 -> "The model host is having trouble right now. Try again later."
         else -> "Download stopped (code $code). Check your connection and try again."
     }

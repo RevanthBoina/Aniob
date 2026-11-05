@@ -62,6 +62,7 @@ fun AniobChatScreen(
     systemState: SystemState? = null,
     onSubmitTask: (String) -> Unit,
     onStopTask: () -> Unit,
+    onOutcomeDecision: (com.aniob.core.outcome.UserDecision) -> Unit = {},
     onPauseToggle: () -> Unit = {},
     onShowTrackerSheet: (Boolean) -> Unit,
     onFilterChanged: (String) -> Unit,
@@ -392,6 +393,17 @@ fun AniobChatScreen(
                     }
                 }
 
+                // "Is it thinking or stuck?": visible while a run is active, honest about rules-only steps.
+                if (uiState.isRunning && uiState.agentPhase.phase != com.aniob.core.narration.AgentPhase.IDLE) {
+                    item(key = "thinking_banner") {
+                        com.aniob.app.ui.chat.ThinkingBanner(
+                            snapshot = uiState.agentPhase,
+                            onStop = onStopTask,
+                            onSwitchToOnDevice = null
+                        )
+                    }
+                }
+
                 if (uiState.lastSummary != null) {
                     item(key = "task_summary_card") {
                         TaskSummaryCard(
@@ -401,6 +413,15 @@ fun AniobChatScreen(
                             onMakeSkill = { onOpenSkills() },
                             onRetry = { onSubmitTask(uiState.lastSummary.prompt) }
                         )
+                    }
+                }
+
+                // Honest closed-set result + the user's \uD83D\uDC4D / \uD83D\uDC4E.
+                uiState.lastSealedOutcome?.let { sealed ->
+                    if (!uiState.isRunning) {
+                        item(key = "outcome_feedback") {
+                            com.aniob.app.ui.chat.OutcomeFeedbackRow(sealed, onDecision = onOutcomeDecision)
+                        }
                     }
                 }
             }

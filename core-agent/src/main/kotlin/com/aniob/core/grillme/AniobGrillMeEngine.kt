@@ -1,5 +1,8 @@
 package com.aniob.core.grillme
 
+import com.aniob.core.text.AniobTextFold
+import kotlin.coroutines.cancellation.CancellationException
+
 /**
  * Grill-Me Dynamic Clarification Data Models & Engine.
  */
@@ -40,8 +43,14 @@ class AniobGrillMeEngine(
             return AniobGrillMeResult(needsClarification = false)
         }
 
-        // Use LLM client if available
+        // Use the LLM only when something suggests the request is under-specified. A clear single-goal
+        // command ("open youtube") must never pay a model round-trip before it starts.
         if (llmClient != null) {
+            val deterministic = generateFallbackQuestions(trimmed, rememberedAnswers)
+            val understood = com.aniob.core.understander.AniobPromptUnderstanding.understand(trimmed)
+            val worthAsking = deterministic.needsClarification || understood.confidence < 0.7 ||
+                understood.speechAct == com.aniob.core.understander.AniobPromptUnderstanding.SpeechAct.UNCLEAR
+            if (!worthAsking) return AniobGrillMeResult(needsClarification = false)
             return try {
                 val res = llmClient.generateClarificationQuestions(trimmed)
                 val filtered = res.questions.filter { q ->
@@ -49,8 +58,10 @@ class AniobGrillMeEngine(
                 }
                 if (filtered.isEmpty()) AniobGrillMeResult(needsClarification = false)
                 else res.copy(questions = filtered)
+            } catch (e: CancellationException) {
+                throw e // Stop must stop; swallowing it here turned a cancelled run into a "fallback questions" run
             } catch (e: Exception) {
-                generateFallbackQuestions(trimmed, rememberedAnswers)
+                deterministic
             }
         }
 
@@ -58,13 +69,15 @@ class AniobGrillMeEngine(
         return generateFallbackQuestions(trimmed, rememberedAnswers)
     }
 
+    private val SELF_CONTAINED = setOf(
+        "open settings", "turn on flashlight", "turn on the flashlight", "turn off flashlight", "turn off the flashlight",
+        "check battery", "check the battery", "open calculator", "open camera"
+    )
+    private val POLITE = setOf("please", "pls", "can", "you", "could", "would", "hey", "aniob", "now", "for", "me")
+
     private fun isSelfContainedIntent(prompt: String): Boolean {
-        val lower = prompt.lowercase()
-        return lower.startsWith("open settings") ||
-                lower.startsWith("turn on flashlight") ||
-                lower.startsWith("check battery") ||
-                lower.startsWith("open calculator") ||
-                lower.startsWith("open camera")
+        val core = AniobTextFold.tokens(prompt).filter { it !in POLITE }.joinToString(" ")
+        return core in SELF_CONTAINED
     }
 
     /**
@@ -75,13 +88,18 @@ class AniobGrillMeEngine(
         taskPrompt: String,
         rememberedAnswers: Map<String, String> = emptyMap()
     ): AniobGrillMeResult {
-        val lower = taskPrompt.lowercase().trim()
+        val lower = AniobTextFold.fold(taskPrompt)
+        val words = AniobTextFold.tokens(taskPrompt).toSet()
+        val isQuestion = words.firstOrNull() in setOf("what", "why", "how", "who", "when", "where", "which", "explain", "define")
+        val isRide = !isQuestion && words.any { it in setOf("cab", "ride", "taxi", "uber", "lyft") }
+        val isMessage = !isQuestion && words.any { it in setOf("message", "text", "send", "sms", "whatsapp") }
+        val isAlarm = !isQuestion && words.any { it in setOf("alarm", "timer") }
         val questions = mutableListOf<GrillQuestion>()
 
         // Plan-7.7: Calibrated Asking ladder (extract -> vault -> device -> default -> ask)
         if (calibratedAsking != null) {
             val relevantSlots = mutableListOf<AniobCalibratedAsking.Slot>()
-            if (lower.contains("cab") || lower.contains("ride") || lower.contains("taxi")) {
+            if (isRide) {
                 relevantSlots += listOf(
                     AniobCalibratedAsking.Slot(
                         id = "destination",
@@ -112,7 +130,7 @@ class AniobGrillMeEngine(
                         consequential = false
                     )
                 )
-            } else if (lower.contains("message") || lower.contains("text") || lower.contains("send")) {
+            } else if (isMessage) {
                 relevantSlots += listOf(
                     AniobCalibratedAsking.Slot(
                         id = "recipient",
@@ -146,7 +164,7 @@ class AniobGrillMeEngine(
                         deviceFact = AniobCalibratedAsking.DeviceFact.DEFAULT_MESSAGING_APP
                     )
                 )
-            } else if (lower.contains("alarm") || lower.contains("timer")) {
+            } else if (isAlarm) {
                 relevantSlots += listOf(
                     AniobCalibratedAsking.Slot(
                         id = "time",
@@ -187,7 +205,7 @@ class AniobGrillMeEngine(
         fun isRemembered(id: String): Boolean =
             rememberedAnswers.containsKey(id) || rememberedAnswers.containsKey("grill.$id")
 
-        if (lower.contains("cab") || lower.contains("ride") || lower.contains("taxi")) {
+        if (isRide) {
             val destMatch = Regex("\\b(?:to|destination\\s+is)\\s+([a-zA-Z0-9\\s]+?)(?:\\s+(?:via|using|by|with)|$)").find(lower)
             val hasExplicitDest = destMatch != null && destMatch.groupValues[1].trim().isNotBlank() &&
                 !destMatch.groupValues[1].trim().startsWith("a ") && !destMatch.groupValues[1].trim().startsWith("the ")
@@ -225,7 +243,7 @@ class AniobGrillMeEngine(
                     )
                 )
             }
-        } else if (lower.contains("message") || lower.contains("text") || lower.contains("send")) {
+        } else if (isMessage) {
             val toMatch = Regex("(?:message|text|send(?:\\s+a)?\\s+message\\s+to|send\\s+to)\\s+([a-zA-Z0-9_]+)").find(lower)
             val hasExplicitRecipient = toMatch != null && toMatch.groupValues[1].trim().isNotBlank() &&
                 toMatch.groupValues[1].trim() !in listOf("a", "the", "me", "my", "app")
@@ -266,7 +284,7 @@ class AniobGrillMeEngine(
                     )
                 )
             }
-        } else if (lower.contains("alarm") || lower.contains("timer")) {
+        } else if (isAlarm) {
             val timeMatch = Regex("\\b(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|in\\s+\\d+\\s+minutes?)\\b").find(lower)
             val hasExplicitTime = timeMatch != null && timeMatch.value.isNotBlank()
             val knownTime = hasExplicitTime || isRemembered("time")

@@ -147,5 +147,30 @@ if [ "$HYGIENE_FAIL" -eq 1 ]; then
 fi
 echo "Repository hygiene verified (no env files, keys, build outputs or files over 5 MB)."
 
+# 9. Audit guards: locale-proof text and honest outcomes
+echo "[Guard 9] Locale-sensitive text APIs and outcome invariants..."
+LOC_BAD=$( (grep -rEn '\.(toLowerCase|toUpperCase|capitalize|decapitalize)\(\)' app/src/main core-agent/src/main --include=*.kt 2>/dev/null || true) )
+if [ -n "$LOC_BAD" ]; then
+    echo "ERROR: locale-sensitive String API (use AniobTextFold.fold for matching, lowercase(Locale.ROOT) otherwise):"
+    echo "$LOC_BAD"
+    exit 1
+fi
+# Matching UI text must go through AniobTextFold: a bare lowercase() on node text is the U-01 pattern.
+NODE_LOWER=$( (grep -rEn '(node|it|n)\.(text|contentDescription|tooltip)\.lowercase\(\)' core-agent/src/main --include=*.kt 2>/dev/null || true) )
+if [ -n "$NODE_LOWER" ]; then
+    echo "ERROR: node text lowercased directly; use AniobTextFold.fold/compact/same:"
+    echo "$NODE_LOWER"
+    exit 1
+fi
+if ! grep -q "task_outcomes_guard_" app/src/main/java/com/aniob/app/db/OutcomeGuard.kt; then
+    echo "ERROR: SQL outcome guard missing (VERIFIED must require an evidence reference)."
+    exit 1
+fi
+if grep -rEn 'class .*Origin.*EXECUTOR|EXECUTOR\s*[,)]' core-agent/src/main/kotlin/com/aniob/core/outcome 2>/dev/null | grep -v '^\s*//' | grep -q .; then
+    echo "ERROR: an EXECUTOR evidence origin was added; the executor may emit actions, never evidence."
+    exit 1
+fi
+echo "Audit guards verified."
+
 echo "=== ALL PREFLIGHT CI GUARDS PASSED SUCCESSFULLY ==="
 exit 0

@@ -194,6 +194,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         systemState = systemState,
                         onSubmitTask = { viewModel.submitTask(it) },
                         onStopTask = { viewModel.stopCurrentTask() },
+                        onOutcomeDecision = { viewModel.onOutcomeDecision(it) },
                         onPauseToggle = { viewModel.togglePause() },
                         onShowTrackerSheet = { viewModel.setShowTrackerSheet(it) },
                         onFilterChanged = { viewModel.setTrackerFilter(it) },

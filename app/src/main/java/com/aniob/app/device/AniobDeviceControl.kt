@@ -20,6 +20,7 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import com.aniob.core.device.MediaExpectation
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -194,26 +195,90 @@ object AniobDeviceControl {
         return all.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING } ?: all.firstOrNull()
     }
 
+    private const val MEDIA_VERIFY_TIMEOUT_MS = 1_500L
+    private const val MEDIA_POLL_MS = 75L
+
+    private fun MediaOp.expectation(): MediaExpectation.Op = when (this) {
+        MediaOp.TOGGLE -> MediaExpectation.Op.TOGGLE
+        MediaOp.PLAY -> MediaExpectation.Op.PLAY
+        MediaOp.PAUSE -> MediaExpectation.Op.PAUSE
+        MediaOp.NEXT -> MediaExpectation.Op.NEXT
+        MediaOp.PREVIOUS -> MediaExpectation.Op.PREVIOUS
+        MediaOp.STOP -> MediaExpectation.Op.STOP
+    }
+
+    private fun snap(controller: MediaController): MediaExpectation.Snap {
+        val meta = controller.metadata
+        val key = meta?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)
+            ?: listOf(
+                meta?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty(),
+                meta?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
+                (meta?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L).toString()
+            ).joinToString("|")
+        val st = controller.playbackState
+        return MediaExpectation.Snap(st?.state ?: PlaybackState.STATE_NONE, key, st?.position ?: 0L)
+    }
+
+    /** Polls the session's own PlaybackState (the torch-mirror pattern). Never call from the main thread. */
+    private fun awaitMedia(controller: MediaController, op: MediaOp, before: MediaExpectation.Snap): MediaExpectation.Snap? {
+        val deadline = System.currentTimeMillis() + MEDIA_VERIFY_TIMEOUT_MS
+        var now = snap(controller)
+        while (true) {
+            if (MediaExpectation.satisfied(op.expectation(), before, now)) return now
+            if (System.currentTimeMillis() >= deadline) return null
+            try { Thread.sleep(MEDIA_POLL_MS) } catch (_: InterruptedException) { return null }
+            now = snap(controller)
+        }
+    }
+
+    /**
+     * U-02: a transport call is an ACTION, not evidence. This returns ok only when the session (or, with no
+     * readable session, the audio system) reports the change; otherwise an honest failure.
+     */
     private fun media(context: Context, op: MediaOp): DeviceControlResult {
         val controller = bestController(context)
         if (controller != null) {
+            val label = appLabel(context, controller.packageName)
+            val before = snap(controller)
             val transport = controller.transportControls
-            val playing = controller.playbackState?.state == PlaybackState.STATE_PLAYING
             when (op) {
-                MediaOp.TOGGLE -> if (playing) transport.pause() else transport.play()
+                MediaOp.TOGGLE -> if (before.state == PlaybackState.STATE_PLAYING) transport.pause() else transport.play()
                 MediaOp.PLAY -> transport.play()
                 MediaOp.PAUSE -> transport.pause()
                 MediaOp.NEXT -> transport.skipToNext()
                 MediaOp.PREVIOUS -> transport.skipToPrevious()
                 MediaOp.STOP -> transport.stop()
             }
-            return ok("${op.verb} (${appLabel(context, controller.packageName)}).")
+            val after = awaitMedia(controller, op, before)
+                ?: return fail(
+                    "I sent \"${op.name.lowercase()}\" to $label, but it still reports " +
+                        "${MediaExpectation.describe(snap(controller).state)} after ${MEDIA_VERIFY_TIMEOUT_MS / 1000.0}s, so I can't say it worked."
+                )
+            return ok("${op.verb} ($label).").copy(evidence = "media_session($label): ${MediaExpectation.describe(before.state)} -> ${MediaExpectation.describe(after.state)}")
         }
-        // No readable session: the system routes the media key to whichever player was active last.
+        // No readable session. The media key may still reach a player, but the only thing we can observe
+        // is whether audio started or stopped, and only play/pause/stop change that. Next/previous can't be observed at all.
         val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val wasActive = audio.isMusicActive
+        if (op == MediaOp.NEXT || op == MediaOp.PREVIOUS) {
+            return fail("No media session is readable, so I can't confirm a track change. Turn on notification access for Aniob in Settings.")
+        }
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, op.keyCode))
         audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, op.keyCode))
-        return ok("${op.verb}.")
+        val wantActive = when (op) {
+            MediaOp.PLAY -> true
+            MediaOp.PAUSE, MediaOp.STOP -> false
+            else -> !wasActive
+        }
+        val deadline = System.currentTimeMillis() + MEDIA_VERIFY_TIMEOUT_MS
+        while (audio.isMusicActive != wantActive && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(MEDIA_POLL_MS) } catch (_: InterruptedException) { break }
+        }
+        return if (audio.isMusicActive == wantActive) {
+            ok("${op.verb}.").copy(evidence = "audio_manager.isMusicActive: $wasActive -> ${audio.isMusicActive}")
+        } else {
+            fail("No media session responded to \"${op.name.lowercase()}\". Nothing changed.")
+        }
     }
 
     private fun mediaPlaySearch(context: Context, args: Map<String, String>): DeviceControlResult {
