@@ -35,14 +35,14 @@ Thanks for considering a contribution. Aniob is founder-led and welcomes student
 
 ## Build and tests
 
-Install JDK 17, Android SDK Platform 35, and Gradle 9.3.1. There is no Gradle wrapper. From the project root:
+Install JDK 17 and Android SDK Platform 35. The repository includes a verified Gradle Wrapper, so you do not need to install Gradle separately. From the project root:
 
 ```bash
-gradle :core-agent:test :app:testDebugUnitTest --console=plain
-gradle :app:lintDebug --console=plain
+./gradlew :core-agent:test :app:testDebugUnitTest --console=plain
+./gradlew :app:lintDebug --console=plain
 ```
 
-If your change affects app packaging, also run `gradle :app:assembleDebug --console=plain`. Debug packaging may require a locally generated `debug.keystore` (see README); never add it to Git. Run `bash scripts/ci-preflight.sh` for repository-specific checks; its model catalog URL check requires network access. Android instrumentation tests in `app/src/androidTest` require an emulator/device and are not part of the current CI test command.
+If your change affects app packaging, also run `./gradlew :app:assembleDebug --console=plain`. The first run downloads Gradle 9.3.1 and checks the configured SHA-256. Debug packaging may require a locally generated `debug.keystore` (see README); never add it to Git. Run `bash scripts/ci-preflight.sh` for repository-specific checks; its model catalog URL check requires network access. Android instrumentation tests in `app/src/androidTest` require an emulator/device and are not part of the current CI test command.
 
 When changing configs or skills, update the source files and mirrored app assets together; CI checks for drift. Keep `core-agent` free of Android imports. Do not add an unreviewed dependency or change permissions, data egress, safety gates, model terms, or release signing casually—explain the need in the PR.
 

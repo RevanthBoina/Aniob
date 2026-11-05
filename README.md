@@ -22,7 +22,7 @@ Kotlin, Android Gradle Plugin 9.1.1, Java 17, Android SDK (compile/target 35; mi
 
 - Android Studio with Android SDK Platform 35 and build tools installed.
 - JDK 17.
-- Gradle 9.3.1 installed separately. A Gradle wrapper is not currently committed.
+- JDK 17 and an Android SDK. The committed Gradle Wrapper downloads the pinned Gradle 9.3.1 distribution and verifies its SHA-256; you do not need to install Gradle separately.
 - Android phone or emulator for running the app; `minSdk` is 30.
 
 Clone the repository and enter it:
@@ -32,12 +32,12 @@ git clone https://github.com/RevanthBoina/Aniob.git
 cd Aniob
 ```
 
-Open the project in Android Studio to configure the local SDK (Android Studio creates `local.properties`, which is ignored). Or use command-line Gradle after configuring `ANDROID_HOME`/`ANDROID_SDK_ROOT` and installing Gradle 9.3.1:
+Open the project in Android Studio to configure the local SDK (Android Studio creates `local.properties`, which is ignored). Or configure `ANDROID_HOME`/`ANDROID_SDK_ROOT` and use the checked-in wrapper from the repository root:
 
 ```bash
-gradle :core-agent:test :app:testDebugUnitTest --console=plain
-gradle :app:lintDebug --console=plain
-gradle :app:assembleDebug --console=plain
+./gradlew :core-agent:test :app:testDebugUnitTest --console=plain
+./gradlew :app:lintDebug --console=plain
+./gradlew :app:assembleDebug --console=plain
 ```
 
 A debug APK build may need a local debug keystore. Generate it only for local development with:
