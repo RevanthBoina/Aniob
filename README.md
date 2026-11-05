@@ -75,9 +75,8 @@ The root Gradle build supplies plugin configuration and [`gradle/libs.versions.t
 | Status | Work |
 | --- | --- |
 | **Released** | The latest published release is [v1.0.4](https://github.com/RevanthBoina/Aniob/releases/tag/v1.0.4), which added the app-discovery and launch layer to the UI-automation flow. See the release notes for its scope. |
-| **Current priority** | Diagnose the existing JVM test-job failure before changing the toolchain. It also failed at the base revision; see [issue #27](https://github.com/RevanthBoina/Aniob/issues/27). |
+| **Current priority / known issue** | CI's JVM test step fails at the base revision. Its reported KSP 2.3.5 exception matches [upstream KSP issue #2763](https://github.com/google/ksp/issues/2763), which upstream describes as not breaking build checks, so it is not confirmed as the sole cause. Diagnose before changing the toolchain; follow [Aniob issue #27](https://github.com/RevanthBoina/Aniob/issues/27). |
 | **Planned features** | No additional feature work is currently filed or approved as a roadmap item. New proposals can be submitted with the [feature-request form](https://github.com/RevanthBoina/Aniob/issues/new?template=feature_request.yml); issues are proposals, not delivery promises. |
-| **Known issue** | CI's JVM test step is failing. Its reported KSP 2.3.5 exception matches [upstream KSP issue #2763](https://github.com/google/ksp/issues/2763), but that upstream issue is described as not breaking build checks, so it is not confirmed as the sole cause of Aniob's failing step. Follow [Aniob issue #27](https://github.com/RevanthBoina/Aniob/issues/27) for investigation. |
 
 The open issue list is the source for new tracked work: [open Aniob issues](https://github.com/RevanthBoina/Aniob/issues). Android automation is permission- and device-dependent, and the remote URL preflight needs network access.
 
