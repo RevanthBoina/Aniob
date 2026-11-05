@@ -10,7 +10,7 @@ body:
       description: A short explanation is enough. Include the problem this would solve if useful.
       placeholder: Your idea
     validations:
-      required: false
+      required: true
   - type: textarea
     id: context
     attributes:

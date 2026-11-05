@@ -1,83 +1,86 @@
 # Aniob
 
-Aniob is an Android app that lets people ask for tasks in natural language and coordinates Android UI automation with planning, safety checks, and verification. The repository is a Kotlin Android project with a separate JVM-testable agent core. Aniob is under active development; capabilities depend on the device, Android permissions, and available models/providers.
+Aniob is a **founder-led commercial Android app** for carrying out selected phone tasks from natural-language requests. It combines an Android interface and device integrations with a Kotlin/JVM agent core for routing, planning, safety checks, action execution, and verification. Automation depends on device support, Android permissions, and available models/providers; it cannot perform every task on every device.
 
-**Want to help build Aniob?** Browse [open issues](https://github.com/RevanthBoina/Aniob/issues), then follow the short [contribution guide](CONTRIBUTING.md). Student developers are welcome; no application form is required.
+**Want to help?** You can report a bug, test a flow, improve docs, refine prompts or skills, or contribute code. Start with [CONTRIBUTING.md](CONTRIBUTING.md); no application or registration form is needed.
 
-## What is implemented
+## What Aniob does
 
-- Chat-based task requests, task tracking, history, and usage/progress views.
-- Agent planning, screen observation, action routing, verification, and user-confirmation flows.
-- Android integrations for accessibility-based interaction, notifications, foreground work, overlays, shares/deep links, and selected device commands. Android requires users to enable applicable permissions/services.
-- On-device model integration and model download/import flows, plus a user-configured OpenAI-compatible cloud gateway option.
-- Configurable skills, settings, and trust/safety information.
+- Accepts task requests in a chat interface and shows execution progress, results, and history.
+- Routes supported tasks through direct intents, skills, local/on-device models, or a user-configured OpenAI-compatible cloud provider.
+- Uses Android accessibility and other explicitly enabled device capabilities for supported actions.
+- Applies user confirmations, safety checks, and verification where implemented; permissions and capability checks are part of the flow.
+- Supports model download/import, configurable skills, settings, and task metrics.
 
-These are implemented surfaces, not a guarantee that every task or Android device is supported. See [the repository audit](docs/REPOSITORY_AUDIT.md) and the product/technical notes in [`docs/`](docs/).
-
-## Technology
-
-Kotlin, Android Gradle Plugin 9.1.1, Java 17, Android SDK (compile/target 35; minimum Android API 30), Jetpack Compose/Material 3, and a pure Kotlin/JVM `core-agent` module. Persistence uses Room and DataStore; networking uses Retrofit/OkHttp; on-device inference integrates LiteRT-LM. Dependencies and model artifacts have separate upstream terms. **No project-level open-source license is currently provided.**
+These are implemented areas, not guarantees that a particular task will work. Some features require the user to enable Android services or permissions. **This repository has no project-level open-source licence**; its public visibility does not grant reuse rights.
 
 ## Get started
 
-### Requirements
+### Prerequisites
 
-- Android Studio with Android SDK Platform 35 and build tools installed.
 - JDK 17.
-- Gradle 9.3.1 installed separately. A Gradle wrapper is not currently committed.
-- Android phone or emulator for running the app; `minSdk` is 30.
+- Android SDK Platform 35; Aniob has `minSdk` 30, so a device or emulator must run Android 11/API 30 or newer to run it.
+- Gradle 9.3.1 installed separately. **No Gradle Wrapper is committed.** Android Studio is recommended for installing/configuring the SDK and opening the project.
 
-Clone the repository and enter it:
+### Set up and build
 
-```bash
-git clone https://github.com/RevanthBoina/Aniob.git
-cd Aniob
-```
+1. Clone the repository:
 
-Open the project in Android Studio to configure the local SDK (Android Studio creates `local.properties`, which is ignored). Or use command-line Gradle after configuring `ANDROID_HOME`/`ANDROID_SDK_ROOT` and installing Gradle 9.3.1:
+   ```bash
+   git clone https://github.com/RevanthBoina/Aniob.git
+   cd Aniob
+   ```
 
-```bash
-gradle :core-agent:test :app:testDebugUnitTest --console=plain
-gradle :app:lintDebug --console=plain
-gradle :app:assembleDebug --console=plain
-```
+2. Open the project in Android Studio and allow it to configure the local Android SDK, or install Gradle 9.3.1 and configure `ANDROID_HOME`/`ANDROID_SDK_ROOT` for command-line use. Keep the generated `local.properties` untracked.
+3. Run the existing JVM tests and lint tasks:
 
-A debug APK build may need a local debug keystore. Generate it only for local development with:
+   ```bash
+   gradle :core-agent:test :app:testDebugUnitTest --console=plain
+   gradle :app:lintDebug --console=plain
+   ```
 
-```bash
-keytool -genkeypair -keystore debug.keystore -storepass android \
-  -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-  -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-```
+4. To package a debug APK, create a local debug keystore if one is not already present (the CI job uses this command):
 
-Never commit signing keys, passwords, `.env`, API keys, or `local.properties`. `.env.example` is a placeholder template, not a real credential. `google-services.json` is not required for the current build; the build is configured to warn if it is absent. The optional cloud gateway setup is documented in [`docs/OMNIROUTE_SETUP.md`](docs/OMNIROUTE_SETUP.md).
+   ```bash
+   keytool -genkeypair -keystore debug.keystore -storepass android \
+     -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+     -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+   ```
 
-For project-specific checks, run `bash scripts/ci-preflight.sh`. It includes remote model URL checks and therefore needs network access. See [`AGENTS.md`](AGENTS.md) for architecture invariants and additional development notes.
+   Then assemble the debug variant:
 
-## Project structure
+   ```bash
+   gradle :app:assembleDebug --console=plain
+   ```
 
-```text
-app/                 Android application, UI, Android integrations, persistence and app tests
-core-agent/          Platform-independent Kotlin agent/domain logic and JVM tests
-configs/             Source configuration mirrored into app assets
-skill_library/       Source skill definitions mirrored into app assets
-docs/                Architecture, QA, setup, study, audit and contributor documentation
-scripts/             CI/preflight, sync and research utilities
-.github/workflows/   Existing CI and tagged-release workflows
-```
+To install and launch the debug variant, select the `app` run configuration in Android Studio, connect an API 30+ device or emulator, and choose **Run**. The debug key is only for local development. Never commit it, other signing keys, credentials, `.env`, provider API keys, downloaded model files, or `local.properties`. `google-services.json` is optional for the current build; the plugin is configured to warn when it is absent. Cloud-provider configuration is user-supplied; see [OmniRoute setup](docs/OMNIROUTE_SETUP.md).
 
-## Why contribute?
+The test and lint task selectors above are the same ones configured in [CI](.github/workflows/ci.yml). The `assembleDebug` command is the Android packaging task; this sandbox could not run Gradle locally, so see [Roadmap and known issues](#roadmap-and-known-issues) for the current CI blocker. `bash scripts/ci-preflight.sh` runs additional project checks, including remote model URL checks that require network access.
 
-Aniob offers hands-on work in Android and Kotlin, including platform integrations, a testable agent core, safety and verification logic, model-provider flows, and automated checks. It is an opportunity to learn with a real codebase, collaborate through review, strengthen practical skills, and build portfolio experience. Accepted contributions are credited in the project contributors list or release notes.
+## Architecture
 
-## Roadmap and planned work
+The Gradle build contains two modules, declared in [`settings.gradle.kts`](settings.gradle.kts):
 
-Aniob does not publish a separate dated roadmap yet. Current proposals and planned work are tracked in [open GitHub issues](https://github.com/RevanthBoina/Aniob/issues). If you do not see a task that fits, you can suggest one with the short [feature request template](.github/ISSUE_TEMPLATE/feature_request.yml). Issues are proposals, not delivery-date promises.
+| Module | Responsibility | Main dependencies / boundary |
+| --- | --- | --- |
+| `:app` | Android application: Compose UI, `AniobViewModel`, Android services/accessibility integration, provider/model adapters, persistence and device-facing workflow execution. | Depends on `:core-agent`; AndroidX/Compose, Room, DataStore, Retrofit/OkHttp, LiteRT-LM and Android security APIs. This is the platform boundary. |
+| `:core-agent` | Kotlin/JVM task, action and workflow models; routing/planning, skills, safety and verification logic. Its tests run without an Android device. | Kotlin/JVM with coroutines and Moshi; no `android.*` imports. The repository preflight checks this boundary. |
+
+The root Gradle build supplies plugin configuration and [`gradle/libs.versions.toml`](gradle/libs.versions.toml) centralizes dependency versions. `configs/` and `skill_library/` are source files mirrored into app assets; CI checks those copies. `prompts/` and `android-agent/` contain prompt/specification material, not additional Gradle modules. JVM tests live under `core-agent/src/test` and `app/src/test`; device instrumentation tests live under `app/src/androidTest` and require an emulator/device. Current CI runs the JVM test tasks and lint, not instrumentation tests.
+
+**Typical task flow:** `AniobChatScreen` submits text to `AniobViewModel.submitTask`. The core `WorkflowRouter` handles supported direct workflows or delegates to the existing automation path. `AniobExecutionRouter` selects among available direct intents, fast paths, skills, and local/cloud model providers; `StepPipeline` coordinates each proposed action with the app's safety, capability, and approval checks. The Android adapters dispatch supported actions, verification feeds the outcome back to the UI, and app state/history are updated. `docs/APP_DISCOVERY_AND_LAUNCH.md` describes the app-launch path in more detail.
+
+## Roadmap and known issues
+
+| Status | Work |
+| --- | --- |
+| **Released** | The latest published release is [v1.0.4](https://github.com/RevanthBoina/Aniob/releases/tag/v1.0.4), which added the app-discovery and launch layer to the UI-automation flow. See the release notes for its scope. |
+| **Current priority** | Diagnose the existing JVM test-job failure before changing the toolchain. It also failed at the base revision; see [issue #27](https://github.com/RevanthBoina/Aniob/issues/27). |
+| **Planned features** | No additional feature work is currently filed or approved as a roadmap item. New proposals can be submitted with the [feature-request form](https://github.com/RevanthBoina/Aniob/issues/new?template=feature_request.yml); issues are proposals, not delivery promises. |
+| **Known issue** | CI's JVM test step is failing. Its reported KSP 2.3.5 exception matches [upstream KSP issue #2763](https://github.com/google/ksp/issues/2763), but that upstream issue is described as not breaking build checks, so it is not confirmed as the sole cause of Aniob's failing step. Follow [Aniob issue #27](https://github.com/RevanthBoina/Aniob/issues/27) for investigation. |
+
+The open issue list is the source for new tracked work: [open Aniob issues](https://github.com/RevanthBoina/Aniob/issues). Android automation is permission- and device-dependent, and the remote URL preflight needs network access.
 
 ## Contributing
 
-Student developers and volunteers are welcome. Contributions use **GitHub forks and pull requests**; ordinary contributors are not direct collaborators on the founder-controlled repository. Read [CONTRIBUTING.md](CONTRIBUTING.md), pick an available issue, comment that you would like to work on it, then fork, make a focused change, and open a PR. No application form is required. A PR does not transfer copyright; commercial incorporation of accepted contributions requires the separate agreement described in [IP_POLICY.md](IP_POLICY.md).
-
-## Contact and project status
-
-Repository owner and project founder: [Revanth Boina](https://github.com/RevanthBoina). Use GitHub issues for ordinary bugs/features. For a security concern, follow [SECURITY.md](SECURITY.md) and do not post exploit details or credentials publicly. The repository is public and founder-led; no organization or repository ownership transfer is planned.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution paths, setup, review, and commercial-project terms. Regular changes come from forks and pull requests; Revanth Boina retains final review and merge control. For sensitive security reports, use [SECURITY.md](SECURITY.md), not a public issue. Aniob follows its [Code of Conduct](CODE_OF_CONDUCT.md).
