@@ -2,6 +2,8 @@
 
 Aniob is an Android app that lets people ask for tasks in natural language and coordinates Android UI automation with planning, safety checks, and verification. The repository is a Kotlin Android project with a separate JVM-testable agent core. Aniob is under active development; capabilities depend on the device, Android permissions, and available models/providers.
 
+**Want to help build Aniob?** Browse [open issues](https://github.com/RevanthBoina/Aniob/issues), then follow the short [contribution guide](CONTRIBUTING.md). Student developers are welcome; no application form is required.
+
 ## What is implemented
 
 - Chat-based task requests, task tracking, history, and usage/progress views.
@@ -63,6 +65,14 @@ docs/                Architecture, QA, setup, study, audit and contributor docum
 scripts/             CI/preflight, sync and research utilities
 .github/workflows/   Existing CI and tagged-release workflows
 ```
+
+## Why contribute?
+
+Aniob offers hands-on work in Android and Kotlin, including platform integrations, a testable agent core, safety and verification logic, model-provider flows, and automated checks. It is an opportunity to learn with a real codebase, collaborate through review, strengthen practical skills, and build portfolio experience. Accepted contributions are credited in the project contributors list or release notes.
+
+## Roadmap and planned work
+
+Aniob does not publish a separate dated roadmap yet. Current proposals and planned work are tracked in [open GitHub issues](https://github.com/RevanthBoina/Aniob/issues). If you do not see a task that fits, you can suggest one with the short [feature request template](.github/ISSUE_TEMPLATE/feature_request.yml). Issues are proposals, not delivery-date promises.
 
 ## Contributing
 
