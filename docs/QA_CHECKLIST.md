@@ -17,8 +17,8 @@ Run each task in emulator + real device, and record: `primaryProvider`, `steps`,
 ## Automated gates (CI)
 
 - `scripts/ci-preflight.sh` — billing/payment SDK zero-reference, YAML assets sync, core-agent purity, empty-catch warning.
-- `./gradlew :core-agent:test` — all JVM tests (router, watchdog, safety interceptor, intent resolver, token optimizer, exec report, app sessions).
-- `./gradlew :app:assembleDebug` — app APK builds.
+- `gradle :core-agent:test` — all JVM tests (router, watchdog, safety interceptor, intent resolver, token optimizer, exec report, app sessions).
+- `gradle :app:assembleDebug` — app APK builds (with Gradle 9.3.1 and a local debug keystore).
 
 ## Perception pins (Prompt 4)
 
