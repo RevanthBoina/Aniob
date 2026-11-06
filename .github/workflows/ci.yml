@@ -31,6 +31,15 @@ jobs:
         run: keytool -genkeypair -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
       - name: Unit tests (core-agent + app)
         run: gradle :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace
+      - name: Diagnose unit tests (temporary)
+        if: failure()
+        run: |
+          gradle :app:compileDebugUnitTestKotlin --console=plain 2>&1 | grep -E "^(e|w): " | head -60 | sed 's/^/::error::/' || true
+          find . -path "*/build/test-results/*" -name "*.xml" -print0 2>/dev/null \
+            | xargs -0 grep -l "<failure\|<error" 2>/dev/null | head -10 | while read -r f; do
+                echo "::error::FAILING_SUITE $f"
+                grep -oE 'testcase name="[^"]*"|<failure message="[^"]{0,200}' "$f" | head -8 | sed 's/^/::error::/'
+              done || true
       - name: Android lint
         run: gradle :app:lintDebug --console=plain
       - name: Publish test reports
