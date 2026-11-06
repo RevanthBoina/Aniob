@@ -34,6 +34,9 @@ class AniobExecutionRouter(
      */
     var fastPathEnabled: Boolean = true
 
+    /** BL-1: ablation-controlled skill gating (disabled in arms 1-3 to prevent contamination). */
+    var skillsEnabled: Boolean = true
+
     /**
      * Research ablation switch for the step-0 intent-shortcut lookup. Off means the ladder never
      * resolves `AniobIntentResolver` and every step goes through the model/skill rungs — the
@@ -279,45 +282,47 @@ class AniobExecutionRouter(
             }
         }
 
-        // Step 2: Tier 1.5 YAML or Semantic Skill Match
-        val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt, disabledSkills) ?: skillMatcher.match(taskPrompt, disabledSkills)
-        // UX-5: a disabled or draft skill never participates, so user routing and quality switches are real.
-        val skillUsable = skillMatch.skill != null &&
-            skillMatch.skill.status == com.aniob.core.skills.SkillStatus.ACTIVE &&
-            !skillMatch.skill.isDraft &&
-            !disabledSkills.contains(skillMatch.skill.name)
-        if (skillMatch.matched && skillUsable) {
-            val skill = skillMatch.skill!!
-            val step = skill.steps.getOrNull(stepIndex)
-            if (step != null) {
-                val action = step.toAniobAction()
-                val target = action.semanticTarget()
-                if (target is SemanticTarget.SomIndex && screenState.findNodeById(target.index) == null) {
-                    val fallbackNode = findSemanticFallbackNode(taskPrompt, screenState)
-                    if (fallbackNode != null) {
-                        return ExecutionPlanResult.SkillStepExecution(
-                            action = AniobAction.Tap(SemanticTarget.SomIndex(fallbackNode.id)),
-                            skill = skill,
-                            reason = "Skill fallback matched node ${fallbackNode.id} by semantic token overlap"
-                        )
+        // Step 2: Tier 1.5 YAML or Semantic Skill Match (BL-1)
+        if (skillsEnabled) {
+            val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt, disabledSkills) ?: skillMatcher.match(taskPrompt, disabledSkills)
+            // UX-5: a disabled or draft skill never participates, so user routing and quality switches are real.
+            val skillUsable = skillMatch.skill != null &&
+                skillMatch.skill.status == com.aniob.core.skills.SkillStatus.ACTIVE &&
+                !skillMatch.skill.isDraft &&
+                !disabledSkills.contains(skillMatch.skill.name)
+            if (skillMatch.matched && skillUsable) {
+                val skill = skillMatch.skill!!
+                val step = skill.steps.getOrNull(stepIndex)
+                if (step != null) {
+                    val action = step.toAniobAction()
+                    val target = action.semanticTarget()
+                    if (target is SemanticTarget.SomIndex && screenState.findNodeById(target.index) == null) {
+                        val fallbackNode = findSemanticFallbackNode(taskPrompt, screenState)
+                        if (fallbackNode != null) {
+                            return ExecutionPlanResult.SkillStepExecution(
+                                action = AniobAction.Tap(SemanticTarget.SomIndex(fallbackNode.id)),
+                                skill = skill,
+                                reason = "Skill fallback matched node ${fallbackNode.id} by semantic token overlap"
+                            )
+                        }
+                        if (screenState.nodes.any { it.isScrollable }) {
+                            return ExecutionPlanResult.SkillStepExecution(
+                                action = AniobAction.Swipe(
+                                    direction = com.aniob.core.domain.SwipeDirection.DOWN,
+                                    distancePx = 600,
+                                    thought = "Scroll down to reveal off-screen skill target ${target.index}"
+                                ),
+                                skill = skill,
+                                reason = "Skill target ${target.index} off-screen; scrolling to reveal"
+                            )
+                        }
                     }
-                    if (screenState.nodes.any { it.isScrollable }) {
-                        return ExecutionPlanResult.SkillStepExecution(
-                            action = AniobAction.Swipe(
-                                direction = com.aniob.core.domain.SwipeDirection.DOWN,
-                                distancePx = 600,
-                                thought = "Scroll down to reveal off-screen skill target ${target.index}"
-                            ),
-                            skill = skill,
-                            reason = "Skill target ${target.index} off-screen; scrolling to reveal"
-                        )
-                    }
+                    return ExecutionPlanResult.SkillStepExecution(
+                        action = action,
+                        skill = skill,
+                        reason = skillMatch.reason
+                    )
                 }
-                return ExecutionPlanResult.SkillStepExecution(
-                    action = action,
-                    skill = skill,
-                    reason = skillMatch.reason
-                )
             }
         }
 

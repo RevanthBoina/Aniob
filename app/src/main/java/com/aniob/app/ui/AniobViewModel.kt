@@ -134,6 +134,7 @@ class AniobViewModel(
      */
     @Volatile
     private var rememberCache: RememberCache = RememberCache()
+    private var rememberCacheLoadJob: kotlinx.coroutines.Job? = null
 
     /** Back-stack owned by the ViewModel (UX-0 §2). Survives rotation; root CHAT is re-derived. */
     private val _navBackStack = MutableStateFlow(restoreNavBackStack())
@@ -474,7 +475,7 @@ class AniobViewModel(
                 AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity)
             }
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        rememberCacheLoadJob = viewModelScope.launch(Dispatchers.IO) {
             rememberCache = app.rememberCacheFile.load()
         }
         // Warm the gateway connection (DNS + TLS + HTTP/2) while the user is still typing, so the
@@ -1023,6 +1024,7 @@ class AniobViewModel(
      * learned from a verified run, and a replayed hop is observed like any other step.
      */
     fun seedRememberPresets() {
+        if (_uiState.value.isRunning) return
         viewModelScope.launch(Dispatchers.IO) {
             val cache = app.rememberCacheFile.load()
             val isInstalled: (String) -> Boolean = { pkg ->
@@ -1051,6 +1053,7 @@ class AniobViewModel(
      */
     internal fun applyAblationMode(mode: AblationMode) {
         executionRouter.intentShortcutsEnabled = mode.intentShortcuts
+        executionRouter.skillsEnabled = mode.skillsEnabled
         executionRouter.fastPathEnabled = mode.rememberReplay && _uiState.value.fastPathEnabled
         observationPolicy.setBurstLimit(
             if (mode.actionBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
@@ -1058,7 +1061,7 @@ class AniobViewModel(
         // Static flag: the service may connect after this call, and the first capture of the run
         // must already use the condition that was selected for it.
         AniobAccessibilityService.setFastObservation(mode.fastObservation)
-        AniobAccessibilityService.instance?.setResearchFastDeltaVerify(mode.fastDeltaVerify)
+        AniobAccessibilityService.setResearchFastDeltaVerify(mode.fastDeltaVerify)
         // Remember replay is on only where the experiment says so, and only while the user's
         // FastPath switch is also on.
         executionRouter.rememberReplayEnabled = mode.rememberReplay && _uiState.value.fastPathEnabled
@@ -1093,7 +1096,8 @@ class AniobViewModel(
     private data class RememberTransition(
         val screen: AniobScreenState,
         val action: AniobAction,
-        val node: AniobNode?
+        val node: AniobNode?,
+        val nextScreen: AniobScreenState? = null
     )
 
     /**
@@ -1109,18 +1113,33 @@ class AniobViewModel(
         if (transitions.isEmpty()) return
         if (!mode.rememberReplay || !_uiState.value.fastPathEnabled) return
 
+        // Drop undone transitions (e.g. BACK key) to keep minimal path (F-1)
+        val pruned = mutableListOf<RememberTransition>()
+        for (t in transitions) {
+            if (t.action is AniobAction.PressKey && t.action.key == com.aniob.core.domain.KeyType.BACK && pruned.isNotEmpty()) {
+                pruned.removeAt(pruned.lastIndex)
+            } else {
+                pruned.add(t)
+            }
+        }
+
         var recorded = 0
-        for (transition in transitions) {
+        for (transition in pruned) {
+            if (transition.screen.nodes.any { it.isPassword || it.className.contains("Password", ignoreCase = true) }) {
+                continue
+            }
             val descriptor = RememberAction.fromAction(
                 action = transition.action,
                 node = transition.node,
                 screen = transition.screen
             ) ?: continue
+            val nextHash = transition.nextScreen?.let { FastVerify.screenIdentity(it) }.orEmpty()
             val ok = rememberCache.record(
                 goal = goal,
                 packageName = transition.screen.packageName,
                 preActionScreenHash = FastVerify.screenIdentity(transition.screen),
-                actions = listOf(descriptor)
+                actions = listOf(descriptor),
+                expectedNextHash = nextHash
             )
             if (ok) recorded++
         }
@@ -1170,6 +1189,7 @@ class AniobViewModel(
             val snap = service.captureScreenshotAsync()
             snap.bitmap?.let { bmp ->
                 try {
+                    app.researchTelemetry.recordBitmapCapture()
                     val stream = java.io.ByteArrayOutputStream()
                     bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
                     android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
@@ -2372,6 +2392,7 @@ class AniobViewModel(
         val researchMode = app.researchTelemetry.mode
         val researchPass = app.researchTelemetry.studyPass
         applyAblationMode(researchMode)
+        rememberCacheLoadJob?.join()
         app.researchTelemetry.startTask(
             task.clarifiedGoal.ifBlank { task.rawPrompt },
             researchMode,
@@ -2435,7 +2456,7 @@ class AniobViewModel(
         // Learned state (skills, FastPath trajectories) hydrates in parallel with the first
         // capture instead of in front of it. A cold cache must not delay step 0; the first task
         // after install simply plans from the model.
-        val hydration = if (_uiState.value.fastPathEnabled) {
+        val hydration = if (researchMode.skillsEnabled && _uiState.value.fastPathEnabled) {
             viewModelScope.async(Dispatchers.Default) {
                 learningPipeline.awaitHydration(HYDRATION_BUDGET_MS)
             }
@@ -2582,7 +2603,7 @@ class AniobViewModel(
         // Verified transitions of this run, persisted only if the task ends successfully.
         val rememberTransitions = mutableListOf<RememberTransition>()
         // Screen on which the last replay changed nothing; the cache is skipped there next time.
-        var stalledReplayIdentity: String? = null
+        val stalledReplayIdentities = mutableSetOf<String>()
         var finalOutcome: Outcome? = null
         var terminalReason: String = ""
         var stepResult: StepResult? = null
@@ -2609,6 +2630,9 @@ class AniobViewModel(
         // Consecutive plans that could not execute even their first member: the screen is not
         // settling, so the rest of the run plans one action at a time.
         var burstZeroProgressReplans = 0
+
+        val setupDurationMs = (System.currentTimeMillis() - startTime).coerceAtLeast(0L)
+        app.researchTelemetry.setSetupLatency(setupDurationMs)
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
@@ -2732,9 +2756,10 @@ class AniobViewModel(
                 // on that same screen: the cache would keep dispatching the same action. Re-plan
                 // once with the cache off so the model gets the step (the documented fallback).
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay &&
-                    FastVerify.screenIdentity(currentScreen) == stalledReplayIdentity
+                    FastVerify.screenIdentity(currentScreen) in stalledReplayIdentities
                 ) {
                     app.eventLogger.info("AniobViewModel", "Remember replay made no progress; falling back to the model")
+                    app.researchTelemetry.recordReplayDiverged()
                     executionRouter.rememberReplayEnabled = false
                     ladderResult = planLadder()
                     executionRouter.rememberReplayEnabled =
@@ -2752,7 +2777,7 @@ class AniobViewModel(
                     is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                         primaryProvider = "INTENT"
                         decisionReason = ladderResult.reason
-                        app.researchTelemetry.markIntentShortcutUsed()
+                        app.researchTelemetry.recordShortcutAttempt(attempted = true)
                         val shortcut = ladderResult.shortcut
                         _uiState.update { it.copy(statusMessage = "Opening with a system intent...") }
                         // The intent is fired before any model work. A partial shortcut (an alarm
@@ -2782,10 +2807,15 @@ class AniobViewModel(
                                     if (sequenceWaitMs > 0L) delay(sequenceWaitMs + 400L)
                                     null
                                 } else {
-                                    awaitIntentScreen(beforePackage, INTENT_SETTLE_MS)
+                                    awaitIntentScreen(beforePackage, INTENT_SETTLE_MS, shortcut.targetPackage)
                                 }
                                 screenBefore = landed ?: screenBefore
                                 if (shortcut.requiresObservation) {
+                                    if (landed != null) {
+                                        app.researchTelemetry.markIntentShortcutUsed()
+                                    } else {
+                                        app.researchTelemetry.recordShortcutAttempt(attempted = true, degraded = true, reason = "Screen did not land")
+                                    }
                                     currentStep++
                                     continue
                                 }
@@ -2805,6 +2835,7 @@ class AniobViewModel(
                                     verdict.isNotEmpty() && verdict.all {
                                         it.state == com.aniob.core.domain.CriterionState.PASSED
                                     } -> {
+                                        app.researchTelemetry.markIntentShortcutUsed()
                                         completedByIntent = true
                                         intentVerdict = verdict
                                         finalOutcome = Outcome.SUCCESS
@@ -2817,16 +2848,18 @@ class AniobViewModel(
                                             "AniobViewModel",
                                             "Intent ${shortcut.action} landed but the criteria are not met; continuing"
                                         )
+                                        app.researchTelemetry.recordShortcutAttempt(attempted = true, degraded = true, reason = "Criteria not met")
                                         currentStep++
                                         continue
                                     }
-                                    shortcut.completesOnDispatch && resolvedCriteria?.hasObservableCheck != true -> {
+                                    shortcut.completesOnDispatch && (deviceCommand?.completesOnDispatch == true || landed != null) && resolvedCriteria?.hasObservableCheck != true -> {
                                         // A system reflex (alarm/timer with SKIP_UI, torch, battery, dial,
                                         // URL, a settings panel that is the whole request): Android resolved
                                         // the intent or the system service accepted the call, and no
                                         // interactive screen is left to read. The dispatch IS the
                                         // verification, so the run is a verified success; recording it as
                                         // UNVERIFIED made research telemetry count a clean run as failed.
+                                        app.researchTelemetry.markIntentShortcutUsed()
                                         completedByIntent = true
                                         finalOutcome = Outcome.SUCCESS
                                         terminalReason = shortcut.label?.let { "Dispatched $it" }
@@ -2848,6 +2881,7 @@ class AniobViewModel(
                                 "AniobViewModel",
                                 "System intent ${shortcut.action} could not be dispatched; planning without shortcuts"
                             )
+                            app.researchTelemetry.recordShortcutAttempt(attempted = true, degraded = true, reason = "Dispatch failed")
                             executionRouter.intentShortcutsEnabled = false
                             continue
                         }
@@ -2859,7 +2893,7 @@ class AniobViewModel(
                     is AniobExecutionRouter.ExecutionPlanResult.AppLaunch -> {
                         primaryProvider = "APP_LAUNCH"
                         decisionReason = ladderResult.reason
-                        app.researchTelemetry.markIntentShortcutUsed()
+                        app.researchTelemetry.recordShortcutAttempt(attempted = true)
                         _uiState.update {
                             it.copy(
                                 statusMessage = "Opening ${ladderResult.appName}...",
@@ -2881,7 +2915,7 @@ class AniobViewModel(
                     is AniobExecutionRouter.ExecutionPlanResult.RememberReplay -> {
                         primaryProvider = "REMEMBER"
                         decisionReason = ladderResult.reason
-                        app.researchTelemetry.markRememberCacheHit()
+                        app.researchTelemetry.recordRememberReplay(ladderResult.actions.size)
                         _uiState.update {
                             it.copy(
                                 statusMessage = "Replaying ${ladderResult.actions.size} remembered action(s)...",
@@ -2901,7 +2935,7 @@ class AniobViewModel(
                     is AniobExecutionRouter.ExecutionPlanResult.FastPathStep -> {
                         primaryProvider = "FASTPATH"
                         decisionReason = ladderResult.reason
-                        app.researchTelemetry.markRememberCacheHit()
+                        app.researchTelemetry.recordFastpathStep()
                         _uiState.update { it.copy(statusMessage = "FastPath replay step ${currentStep + 1}...") }
                         proposal = StepPipeline.Proposal.FastPath(ladderResult.action)
                         targetNode = ladderResult.action.semanticTarget()?.let {
@@ -2911,6 +2945,7 @@ class AniobViewModel(
                     is AniobExecutionRouter.ExecutionPlanResult.SkillStepExecution -> {
                         primaryProvider = "SKILL"
                         decisionReason = ladderResult.reason
+                        app.researchTelemetry.recordSkillUsed(ladderResult.skill.name)
                         _uiState.update { it.copy(statusMessage = "Executing Skill '${ladderResult.skill.name}' step ${currentStep + 1}...") }
                         proposal = StepPipeline.Proposal.Skill(
                             action = ladderResult.action,
@@ -3174,6 +3209,7 @@ class AniobViewModel(
                                     }
                                     if (burst != null) {
                                         plannedBurst = burst
+                                        app.researchTelemetry.recordBurstPlanned(burst.actions.size)
                                         if (burst.isComplete) {
                                             AniobAction.Finish(burst.thought.ifBlank { "Burst complete" })
                                         } else {
@@ -3192,7 +3228,7 @@ class AniobViewModel(
                                                 omniroute.getNextActionRaw(
                                                     systemPrompt,
                                                     repairMsg,
-                                                    screenshotBase64
+                                                    null
                                                 ).getOrNull()
                                             }.getOrNull()
                                             if (repaired != null) {
@@ -3275,7 +3311,8 @@ class AniobViewModel(
                         }
 
                         // Watchdog check
-                        watchdog.record(currentScreen.treeHash, plannedAction)
+                        val watchdogKey = currentScreen.screenHash.ifBlank { currentScreen.treeHash }
+                        watchdog.record(watchdogKey, plannedAction)
                         val loopDetected = watchdog.isLoopDetected()
                         val loopAction = if (loopDetected) {
                             watchdog.reset()
@@ -3384,7 +3421,7 @@ class AniobViewModel(
                             val plannedMiss = act.semanticTarget() != null &&
                                 com.aniob.core.execution.AniobActionExecutor
                                     .planDispatch(act, dispatchOrigin) is DispatchCommand.NoOp
-                            var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash) else true
+                            var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash ?: dispatchOrigin.screenHash.ifBlank { dispatchOrigin.treeHash }) else true
                             actionsDispatched++
                             var screenAfter = awaitTransition(act)
                             if (!ok && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
@@ -3522,6 +3559,7 @@ class AniobViewModel(
                                 } finally {
                                     burstDispatchTreeHash = null
                                 }
+                                app.researchTelemetry.recordBurstMemberRun()
                                 app.researchTelemetry.recordStep()
                                 // Only verified members are remembered; a failed member teaches
                                 // nothing and must never seed the replay cache.
@@ -3529,7 +3567,7 @@ class AniobViewModel(
                                     step.terminalState != StepResult.TerminalState.FAIL
                                 ) {
                                     rememberTransitions.add(
-                                        RememberTransition(screen = planningScreen, action = step.action, node = target)
+                                        RememberTransition(screen = planningScreen, action = step.action, node = target, nextScreen = step.nextCtx.lastScreenState)
                                     )
                                 }
                                 step
@@ -3597,6 +3635,7 @@ class AniobViewModel(
                     burstZeroProgressReplans = if (planConsumedStep) 0 else burstZeroProgressReplans + 1
                     if (burstZeroProgressReplans >= BURST_MAX_ZERO_PROGRESS_REPLANS) {
                         burstsSuspended = true
+                        app.researchTelemetry.recordBurstSuspended()
                     }
                     delay(BURST_REPLAN_SETTLE_MS)
                     accessibility?.captureCurrentScreenState()?.let { fresh ->
@@ -3651,13 +3690,18 @@ class AniobViewModel(
                 stepResult = res
                 app.researchTelemetry.recordStep()
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay) {
-                    stalledReplayIdentity = if (
-                        FastVerify.screenIdentity(res.nextCtx.lastScreenState ?: currentScreen) ==
-                        FastVerify.screenIdentity(currentScreen)
-                    ) {
-                        FastVerify.screenIdentity(currentScreen)
+                    val postScreen = res.nextCtx.lastScreenState ?: currentScreen
+                    val isStalled = FastVerify.screenIdentity(postScreen) == FastVerify.screenIdentity(currentScreen)
+                    if (res.verification?.isSuccessful == true && !isStalled) {
+                        app.researchTelemetry.recordReplayValidated()
                     } else {
-                        null
+                        stalledReplayIdentities.add(FastVerify.screenIdentity(currentScreen))
+                        app.researchTelemetry.recordReplayDiverged()
+                    }
+                }
+                if (proposal is StepPipeline.Proposal.Model && proposal.action is AniobAction.OpenApp && primaryProvider == "APP_LAUNCH") {
+                    if (res.verification?.isSuccessful == true) {
+                        app.researchTelemetry.markIntentShortcutUsed()
                     }
                 }
                 // A plan member recorded its own transition against the screen it ran on; adding
@@ -3666,7 +3710,12 @@ class AniobViewModel(
                     (res.verification?.isSuccessful == true || res.terminalState == StepResult.TerminalState.SUCCESS)
                 ) {
                     rememberTransitions.add(
-                        RememberTransition(screen = currentScreen, action = res.action, node = targetNode)
+                        RememberTransition(
+                            screen = currentScreen,
+                            action = res.action,
+                            node = targetNode,
+                            nextScreen = res.nextCtx.lastScreenState
+                        )
                     )
                 }
                 taskContext = res.nextCtx
@@ -3830,7 +3879,7 @@ class AniobViewModel(
         val researchLine = researchRun?.let { app.researchTelemetry.hudLine(it) }
         val researchSummaryRow = researchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
 
-        val consolidatedSkill = if (isSuccess) {
+        val consolidatedSkill = if (isSuccess && researchMode.skillsEnabled) {
             hippocampusTracker.consolidateOnSuccess(
                 taskId = task.id,
                 prompt = task.clarifiedGoal,
@@ -4137,19 +4186,28 @@ class AniobViewModel(
      * Waits for the window an intent opens, up to [timeoutMs], instead of a fixed delay: a cold
      * app start easily outlives 300 ms, and planning on the launcher costs a whole round trip.
      */
-    private suspend fun awaitIntentScreen(beforePackage: String?, timeoutMs: Long): AniobScreenState? {
+    private suspend fun awaitIntentScreen(beforePackage: String?, timeoutMs: Long, expectedPackage: String? = null): AniobScreenState? {
         val deadline = System.currentTimeMillis() + timeoutMs
         val service = AniobAccessibilityService.instance
+        val chooserPackages = setOf("android", "com.android.intentresolver", "com.google.android.permissioncontroller", "com.android.permissioncontroller", "com.android.packageinstaller")
         while (System.currentTimeMillis() < deadline) {
             val screen = service?.captureCurrentScreenState()
-            if (screen != null && (beforePackage == null ||
-                    !screen.packageName.equals(beforePackage, ignoreCase = true))
-            ) {
-                return screen
+            if (screen != null) {
+                val isDifferent = beforePackage == null || !screen.packageName.equals(beforePackage, ignoreCase = true)
+                val matchesExpected = expectedPackage != null && screen.packageName.equals(expectedPackage, ignoreCase = true)
+                if (matchesExpected || (expectedPackage == null && isDifferent)) {
+                    val isChooser = screen.packageName in chooserPackages ||
+                        screen.activityName.contains("Resolver", ignoreCase = true) ||
+                        screen.activityName.contains("Chooser", ignoreCase = true)
+                    if (isChooser && expectedPackage != null && !screen.packageName.equals(expectedPackage, ignoreCase = true)) {
+                        return null
+                    }
+                    return screen
+                }
             }
             delay(120)
         }
-        return service?.captureCurrentScreenState()
+        return null
     }
 
     /** Runs one direct device command on the thread it needs (accessibility calls: main; queries: IO). */
@@ -4223,7 +4281,11 @@ class AniobViewModel(
                 AniobIntentResolver.SYSTEM_ACTION_FLASHLIGHT -> {
                     // Route through the VERIFIED device-control path: the torch state is read back
                     // after dispatch, so an unconfirmed toggle can no longer masquerade as success.
-                    runDeviceCommand(DeviceCommand.TORCH_ON, emptyMap()).ok
+                    val state = shortcut.extras["state"] ?: shortcut.extras["enabled"]
+                    val turnOff = state.equals("off", ignoreCase = true) || state.equals("false", ignoreCase = true) ||
+                        shortcut.action.contains("off", ignoreCase = true)
+                    val cmd = if (turnOff) DeviceCommand.TORCH_OFF else DeviceCommand.TORCH_ON
+                    runDeviceCommand(cmd, emptyMap()).ok
                 }
                 AniobIntentResolver.SYSTEM_ACTION_GET_DEVICE_INFO -> {
                     val state = AniobDeviceTelemetry.getRealState(app)

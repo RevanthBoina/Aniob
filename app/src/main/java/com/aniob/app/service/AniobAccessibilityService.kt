@@ -75,6 +75,18 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             fastObservationEnabled = enabled
         }
 
+        /**
+         * Research ablation switch for the event-driven capture skip (waterfall level 1) (M-3).
+         * Companion field so tasks started before service binds get the correct flag.
+         */
+        @Volatile
+        var researchFastDeltaVerify: Boolean = false
+            private set
+
+        fun setResearchFastDeltaVerify(enabled: Boolean) {
+            researchFastDeltaVerify = enabled
+        }
+
         private val XML_CONTROL_CHARS_REGEX = Regex("[^\\u0009\\u000A\\u000D\\u0020-\\uD7FF\\uE000-\\uFFFD]")
         var instance: AniobAccessibilityService? = null
             private set
@@ -127,20 +139,8 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      */
     @Volatile private var lastWindowClassName: String = ""
 
-    /**
-     * Research ablation switch for the event-driven capture skip (waterfall level 1).
-     *
-     * When false, every capture recomputes the tree hash instead of trusting the cached one, which
-     * is the "no fast accessibility delta verify" condition of BASELINE / INTENT_SHORTCUT_ONLY. Defaults to
-     * true so ordinary use keeps today's behaviour. Verification semantics are unchanged: this only
-     * removes the zero-work short-circuit.
-     */
-    @Volatile private var researchFastDeltaVerify: Boolean = true
-
-    /** Set once per task by the ViewModel from the active ablation mode. */
-    fun setResearchFastDeltaVerify(enabled: Boolean) {
-        researchFastDeltaVerify = enabled
-    }
+    /** Monotonic window-event sequence recorded at the start of the previous capture (B-6). */
+    @Volatile private var lastCapturedEventSeq: Long = -1L
 
     /**
      * Live node handles retained for the latest compact observation, keyed by prompt id.
@@ -380,26 +380,42 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         val optimizedNodes = AniobTokenOptimizer.optimize(rawNodes)
         val fusedIndex = AniobFusedIndex(optimizedNodes)
 
+        val seqNow = windowEventSequence()
+        val hasCustomSurface = rawNodes.any {
+            it.className.contains("WebView", ignoreCase = true) ||
+                it.className.contains("SurfaceView", ignoreCase = true) ||
+                it.className.contains("Canvas", ignoreCase = true)
+        }
+        val eventChanged = (lastCapturedEventSeq != -1L && seqNow != lastCapturedEventSeq) || hasCustomSurface
+        lastCapturedEventSeq = seqNow
+
         val waterfall = AniobScreenDiff.evaluateWaterfall(
-            // Forcing a change when the ablation mode disables the fast delta path makes level 1
-            // unreachable, so the hash is always recomputed.
-            hasAccessibilityContentChanged = contentChangedSinceLastStep || !researchFastDeltaVerify,
+            hasAccessibilityContentChanged = eventChanged || !researchFastDeltaVerify,
             currentNodes = optimizedNodes,
             previousScreen = lastScreenState
         )
 
-        contentChangedSinceLastStep = false
+        val structuralSignature = optimizedNodes.filter { it.isClickable || it.isEditable || it.isScrollable || it.isChecked }
+            .joinToString("|") { "${it.className}#${it.viewId}" }
+        val legacyScreenHash = com.aniob.core.diff.AniobScreenDiff.computeScreenHash64(
+            primaryPackage,
+            lastWindowClassName,
+            structuralSignature
+        )
 
         val screenState = AniobScreenState(
             packageName = primaryPackage,
-            activityName = "",
+            activityName = lastWindowClassName,
             nodes = optimizedNodes,
             fusedIndex = fusedIndex,
             perceptionTier = AniobPerceptionTier.FAST,
             treeHash = waterfall.treeHash,
             screenshotBase64 = null,
             changedRegion = waterfall.changedRegion,
-            isEventDrivenSkip = waterfall.waterfallLevelUsed == 1
+            isEventDrivenSkip = waterfall.waterfallLevelUsed == 1,
+            screenHash = legacyScreenHash,
+            observationKind = "legacy",
+            windowEventSeq = seqNow
         )
         lastScreenState = screenState
         return screenState
@@ -489,16 +505,24 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                     "hash=${observation.screenHash}"
             )
             val nodes = observation.nodes.map { it.toAniobNode() }
+            val seqNow = windowEventSequence()
+            val hasCustomSurface = nodes.any {
+                it.className.contains("WebView", ignoreCase = true) ||
+                    it.className.contains("SurfaceView", ignoreCase = true) ||
+                    it.className.contains("Canvas", ignoreCase = true)
+            } || observation.labeledInteractiveCount < 3
+            val eventChanged = (lastCapturedEventSeq != -1L && seqNow != lastCapturedEventSeq) || hasCustomSurface
+            lastCapturedEventSeq = seqNow
+
             val waterfall = AniobScreenDiff.evaluateWaterfall(
-                hasAccessibilityContentChanged = contentChangedSinceLastStep || !researchFastDeltaVerify,
+                hasAccessibilityContentChanged = eventChanged || !researchFastDeltaVerify,
                 currentNodes = nodes,
                 previousScreen = lastScreenState
             )
-            contentChangedSinceLastStep = false
 
             val screenState = AniobScreenState(
                 packageName = primaryPackage,
-                activityName = "",
+                activityName = lastWindowClassName,
                 nodes = nodes,
                 fusedIndex = AniobFusedIndex(nodes),
                 perceptionTier = AniobPerceptionTier.FAST,
@@ -506,7 +530,9 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                 screenshotBase64 = null,
                 changedRegion = waterfall.changedRegion,
                 isEventDrivenSkip = waterfall.waterfallLevelUsed == 1,
-                screenHash = observation.screenHash
+                screenHash = observation.screenHash,
+                observationKind = "compact",
+                windowEventSeq = seqNow
             )
             lastScreenState = screenState
             return screenState
@@ -605,6 +631,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         text = label,
         viewId = viewId,
         bounds = bounds,
+        contentDescription = contentDescription,
         isClickable = isClickable,
         isEditable = isEditable,
         isScrollable = isScrollable,
@@ -626,9 +653,34 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      * a recycled handle, a non-clickable label) returns false so the caller falls back to the
      * coordinate gesture.
      */
+    private fun isNodeOccluded(node: AccessibilityNodeInfo): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
+        val wins = try { windows } catch (ex: IllegalStateException) { null } catch (ex: SecurityException) { null } ?: return false
+        val nodeWindowId = node.windowId
+        val nodeRect = Rect()
+        node.getBoundsInScreen(nodeRect)
+        for (w in wins) {
+            if (w.id == nodeWindowId) break
+            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION ||
+                w.type == AccessibilityWindowInfo.TYPE_SYSTEM ||
+                w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                val winRect = Rect()
+                w.getBoundsInScreen(winRect)
+                if (Rect.intersects(winRect, nodeRect)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     private fun performNodeAction(nodeId: Int?, action: Int): Boolean {
         if (nodeId == null) return false
         val node = currentObservedNode(nodeId) ?: return false
+        if (isNodeOccluded(node)) {
+            Log.w(TAG, "performNodeAction on nodeId=$nodeId aborted: occluded by higher window (B-3)")
+            return false
+        }
         return try {
             val capable = when (action) {
                 AccessibilityNodeInfo.ACTION_CLICK -> node.isClickable
@@ -752,38 +804,67 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
     private suspend fun takeScreenshotInternal(): ScreenshotCaptureResult =
         suspendCancellableCoroutine { continuation ->
+            val bgExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
             try {
                 takeScreenshot(
                     android.view.Display.DEFAULT_DISPLAY,
-                    mainExecutor,
+                    bgExecutor,
                     object : TakeScreenshotCallback {
                         override fun onSuccess(screenshot: ScreenshotResult) {
-                            val hardwareBuffer = screenshot.hardwareBuffer
-                            val colorSpace = screenshot.colorSpace
-                            val timestamp = screenshot.timestamp
-                            val wrapped = android.graphics.Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
-                            val copy = try {
-                                wrapped?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
-                            } finally {
-                                wrapped?.recycle()
-                                hardwareBuffer.close()
-                            }
-                            if (copy != null) {
-                                if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(copy, timestamp, ScreenshotStatus.SUCCESS))
-                                else copy.recycle()
-                            } else {
+                            try {
+                                val hardwareBuffer = screenshot.hardwareBuffer
+                                val colorSpace = screenshot.colorSpace
+                                val timestamp = screenshot.timestamp
+                                val wrapped = android.graphics.Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                                val copy = try {
+                                    if (wrapped != null) {
+                                        val maxDim = maxOf(wrapped.width, wrapped.height)
+                                        if (maxDim > 1120) {
+                                            val scale = 1120f / maxDim
+                                            val targetW = (wrapped.width * scale).toInt().coerceAtLeast(1)
+                                            val targetH = (wrapped.height * scale).toInt().coerceAtLeast(1)
+                                            val scaled = android.graphics.Bitmap.createScaledBitmap(wrapped, targetW, targetH, true)
+                                            val softwareCopy = scaled.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                                            if (scaled != softwareCopy) scaled.recycle()
+                                            softwareCopy
+                                        } else {
+                                            wrapped.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                                        }
+                                    } else null
+                                } catch (t: Throwable) {
+                                    Log.e(TAG, "Screenshot copy/downscale failed (BL-2): ${t.message}")
+                                    null
+                                } finally {
+                                    wrapped?.recycle()
+                                    hardwareBuffer.close()
+                                }
+                                if (copy != null) {
+                                    if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(copy, timestamp, ScreenshotStatus.SUCCESS))
+                                    else copy.recycle()
+                                } else {
+                                    if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
+                                }
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "Screenshot callback error: ${t.message}")
                                 if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
+                            } finally {
+                                bgExecutor.shutdown()
                             }
                         }
 
                         override fun onFailure(errorCode: Int) {
                             Log.w(TAG, "takeScreenshot failed with code $errorCode")
-                            if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
+                            try {
+                                if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
+                            } finally {
+                                bgExecutor.shutdown()
+                            }
                         }
                     }
                 )
-            } catch (e: Exception) {
-                Log.w(TAG, "takeScreenshot threw exception: ${e.message}")
+            } catch (t: Throwable) {
+                Log.w(TAG, "takeScreenshot threw exception: ${t.message}")
+                bgExecutor.shutdown()
                 if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
             }
         }
@@ -827,10 +908,13 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             lastScreenState
         } ?: AniobScreenState(packageName = currentForegroundPackage().orEmpty())
 
-        if (expectedTreeHash != null &&
-            com.aniob.core.diff.AniobScreenDiff.computeTreeHash(liveScreen.nodes) != expectedTreeHash) {
-            callback(false)
-            return
+        if (expectedTreeHash != null) {
+            val target = action.semanticTarget()
+            if (target != null && com.aniob.core.execution.AniobActionExecutor.resolveTarget(action, liveScreen) == null) {
+                // Target genuinely gone from live screen -> replan (B-9)
+                callback(false)
+                return
+            }
         }
 
         val displayMetrics = resources.displayMetrics
@@ -926,23 +1010,33 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         command: DispatchCommand.SetText,
         callback: (Boolean) -> Unit
     ) {
-        val alreadyFocused = try { node.isFocused } catch (_: Exception) { false }
+        val alreadyFocused = try { node.isFocused } catch (ex: IllegalStateException) { false }
         focusField(node, command)
-        // A click that raises the keyboard re-measures the layout; typing into the same handle
-        // before that settles is the race that lost the first characters.
-        val settle = if (alreadyFocused) 0L else FOCUS_SETTLE_MS
-        val work = Runnable {
-            // The cached handle belongs to the observation pipeline and may have been refreshed
-            // away by a newer capture while this write was waiting out the settle window.
-            val fresh = try { node.refresh() } catch (_: Exception) { false }
-            if (!fresh) {
-                Log.w(TAG, "field went stale before the commit on '${command.targetDescription}'")
+
+        var attempts = 0
+        fun checkAndCommit() {
+            attempts++
+            val fresh = try { node.refresh() } catch (ex: IllegalStateException) { false }
+            val focused = try { node.isFocused } catch (ex: IllegalStateException) { false }
+            val hasIme = try {
+                windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
+            } catch (ex: IllegalStateException) { false } catch (ex: SecurityException) { false }
+
+            if (fresh && (focused || hasIme || attempts >= 5)) {
+                commitText(node, command, callback)
+            } else if (attempts < 5) {
+                mainHandler.postDelayed({ checkAndCommit() }, 100L)
+            } else {
+                Log.w(TAG, "field not ready after 500ms on '${command.targetDescription}' (B-7)")
                 callback(false)
-                return@Runnable
             }
-            commitText(node, command, callback)
         }
-        if (settle == 0L) work.run() else mainHandler.postDelayed(work, settle)
+
+        if (alreadyFocused) {
+            checkAndCommit()
+        } else {
+            mainHandler.postDelayed({ checkAndCommit() }, 100L)
+        }
     }
 
     /**
@@ -1278,21 +1372,8 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         }
 
     private fun gateOnUiQuiescence(action: AniobAction) {
-        // Read-only / non-gesture actions do not race an animation, so skip the wait for them.
-        val gesture = action is AniobAction.Tap || action is AniobAction.LongPress ||
-            action is AniobAction.Swipe || action is AniobAction.InputText
-        if (!gesture) return
-        if (com.aniob.core.policy.AniobWaitForIdle.isUiIdle()) return
-        val deadline = System.currentTimeMillis() + MAX_IDLE_WAIT_MS
-        while (System.currentTimeMillis() < deadline) {
-            if (com.aniob.core.policy.AniobWaitForIdle.isUiIdle()) return
-            try {
-                Thread.sleep(IDLE_POLL_INTERVAL_MS)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return
-            }
-        }
+        // Suspending waitForIdle runs in the ViewModel; avoid blocking Thread.sleep in the service (BL-5).
+        return
     }
 
     private fun dispatchLongPress(x: Float, y: Float, durationMs: Long, callback: (Boolean) -> Unit) {

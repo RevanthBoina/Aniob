@@ -190,7 +190,7 @@ class ResearchTelemetryTest {
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastDeltaVerify)
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastObservation)
         assertFalse(AblationMode.BURST_AND_FAST_OBSERVE.rememberReplay)
-        assertEquals("Burst and fast observe (+ pruned accessibility tree + action bursts + event-driven verify)", AblationMode.BURST_AND_FAST_OBSERVE.paperLabel)
+        assertEquals("Burst and fast observe (+ compact tree folding + action bursts + event-driven verify)", AblationMode.BURST_AND_FAST_OBSERVE.paperLabel)
 
         assertTrue(AblationMode.FULL_HUMAN_SPEED.intentShortcuts)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.actionBursts)

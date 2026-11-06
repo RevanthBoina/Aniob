@@ -21,7 +21,13 @@ data class AniobScreenState(
      * `packageName:activityName:structuralSignature.hashCode()` for the *visible interactive*
      * structure of this screen. Empty on captures that did not run the compact pipeline.
      */
-    val screenHash: String = ""
+    val screenHash: String = "",
+    /** Explicit kind of pipeline that generated this observation ("compact", "legacy", "mock"). */
+    val observationKind: String = "",
+    /** Monotonic window-event sequence counter at the time of this capture. */
+    val windowEventSeq: Long = 0L,
+    /** Whether an active input-method (IME/keyboard) window is visible. */
+    val hasImeWindow: Boolean = false
 ) {
     fun findNodeById(id: Int): AniobNode? = fusedIndex.findById(id) ?: nodes.find { it.id == id }
 
