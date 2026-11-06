@@ -14,7 +14,7 @@ FORBIDDEN_TERMS=(
 
 FOUND=0
 for term in "${FORBIDDEN_TERMS[@]}"; do
-    if grep -rn "$term" app/ src/ 2>/dev/null; then
+    if grep -rn --exclude-dir=build "$term" app/src/ core-agent/src/ 2>/dev/null; then
         echo "ERROR: Forbidden billing/ad reference '$term' found in codebase!"
         FOUND=1
     fi

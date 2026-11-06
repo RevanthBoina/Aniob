@@ -35,7 +35,7 @@ class AniobAuthMiscTest {
 
     @Test fun `authorize url includes resource and parameters`() {
         val url = AniobAuthorizeUrlBuilder.build(AniobAuthFixtures.config, "challenge123", "state123")
-        assertTrue(url.contains("resource=https%3A%2F%2Fapi.openai.com%2Fv1"))
+        assertTrue(url.contains("resource=" + AniobAuthorizeUrlBuilder.percentEncode(AniobAuthFixtures.config.inferenceBaseUrl)))
         assertTrue(url.contains("client_id=test_client"))
         assertTrue(url.contains("code_challenge=challenge123"))
         assertTrue(url.contains("state=state123"))

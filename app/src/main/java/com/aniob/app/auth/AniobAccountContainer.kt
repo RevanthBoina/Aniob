@@ -39,11 +39,11 @@ class AniobAccountContainer(private val app: Application) {
 
         val c = AniobAuthConfig(
             clientId = clientId,
-            authorizeUrl = unset(BuildConfig.ACCOUNT_AUTH_AUTHORIZE_URL).ifBlank { "https://auth.openai.com/api/accounts/authorize" },
-            tokenUrl = unset(BuildConfig.ACCOUNT_AUTH_TOKEN_URL).ifBlank { "https://auth.openai.com/api/accounts/oauth/token" },
+            authorizeUrl = unset(BuildConfig.ACCOUNT_AUTH_AUTHORIZE_URL).ifBlank { "https://auth.openai.com/oauth/authorize" },
+            tokenUrl = unset(BuildConfig.ACCOUNT_AUTH_TOKEN_URL).ifBlank { "https://auth.openai.com/oauth/token" },
             redirectUri = unset(BuildConfig.ACCOUNT_AUTH_REDIRECT_URI).ifBlank { "http://127.0.0.1:1455/auth/callback" },
             scopes = unset(BuildConfig.ACCOUNT_AUTH_SCOPES).ifBlank { "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" },
-            inferenceBaseUrl = unset(BuildConfig.ACCOUNT_AUTH_INFERENCE_URL).ifBlank { "https://api.openai.com/v1" },
+            inferenceBaseUrl = unset(BuildConfig.ACCOUNT_AUTH_INFERENCE_URL).ifBlank { "https://chatgpt.com/backend-api/codex" },
             extraAuthorizeParams = extraParams,
             originator = unset(BuildConfig.ACCOUNT_AUTH_ORIGINATOR).ifBlank { "aniob" },
             betaHeader = unset(BuildConfig.ACCOUNT_AUTH_BETA_HEADER)

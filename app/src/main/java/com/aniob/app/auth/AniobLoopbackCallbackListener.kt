@@ -1,5 +1,6 @@
 package com.aniob.app.auth
 
+import com.aniob.core.auth.AniobAuthCallbackParser
 import com.aniob.core.auth.AniobCallbackListener
 import com.aniob.core.auth.AniobPortInUseException
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +24,7 @@ import java.net.SocketTimeoutException
  * - rejects a `Host` header that is not the loopback address (a DNS-rebinding guard);
  * - any other path gets a 404 and the wait continues, so a favicon request cannot end the flow.
  *
- * It lives only while a sign-in is running; there is no foreground service.
+ * It lives only while a sign-in is running, managed in the foreground by AniobSignInService.
  */
 class AniobLoopbackCallbackListener(
     private val port: Int,
@@ -55,7 +56,7 @@ class AniobLoopbackCallbackListener(
         }
     }
 
-    override suspend fun awaitCallback(callbackPath: String, timeoutMs: Long): String? =
+    override suspend fun awaitCallback(callbackPath: String, timeoutMs: Long, expectedState: String?): String? =
         withContext(Dispatchers.IO) {
             val socket = server ?: return@withContext null
             val deadline = now() + timeoutMs
@@ -68,14 +69,14 @@ class AniobLoopbackCallbackListener(
                 } catch (e: IOException) {
                     return@withContext null // closed from another thread (cancel)
                 }
-                val target = client.use { handle(it, callbackPath) }
+                val target = client.use { handle(it, callbackPath, expectedState) }
                 if (target != null) return@withContext target
             }
             null
         }
 
-    /** Returns the request target when it is the callback, else null (and the wait goes on). */
-    private fun handle(client: Socket, callbackPath: String): String? {
+    /** Returns the request target when it is the callback with matching state, else null (and the wait goes on). */
+    private fun handle(client: Socket, callbackPath: String, expectedState: String? = null): String? {
         try {
             client.soTimeout = READ_TIMEOUT_MS
             val reader = client.getInputStream().bufferedReader(Charsets.ISO_8859_1)
@@ -86,7 +87,7 @@ class AniobLoopbackCallbackListener(
                 val line = reader.readLine() ?: break
                 read += line.length
                 if (line.isEmpty() || read > MAX_HEADER_BYTES) break
-                if (line.startsWith("host:", ignoreCase = true)) host = line.substringAfter(':').trim().lowercase()
+                if (line.startsWith("host:", ignoreCase = true)) host = line.substringAfter(':').trim().lowercase(java.util.Locale.ROOT)
             }
             val parts = requestLine.split(' ')
             val method = parts.getOrNull(0)
@@ -99,6 +100,14 @@ class AniobLoopbackCallbackListener(
             }
             if (target.substringBefore('?') != callbackPath) {
                 respond(client, 404, "Not found"); return null
+            }
+            if (!expectedState.isNullOrEmpty()) {
+                val query = target.substringAfter('?', "")
+                val queryParams = AniobAuthCallbackParser.parseQuery(query)
+                val state = queryParams["state"]
+                if (state == null || !AniobAuthCallbackParser.constantTimeEquals(state, expectedState)) {
+                    respond(client, 400, "Bad request"); return null
+                }
             }
             respond(client, 200, SUCCESS_PAGE, html = true)
             return target

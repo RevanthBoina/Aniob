@@ -30,9 +30,9 @@ jobs:
       - name: Generate debug signing key
         run: keytool -genkeypair -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
       - name: Unit tests (core-agent + app)
-        run: gradle :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace
+        run: ./gradlew :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace
       - name: Android lint
-        run: gradle :app:lintDebug --console=plain
+        run: ./gradlew :app:lintDebug --console=plain
       - name: Publish test reports
         if: always()
         uses: actions/upload-artifact@v4

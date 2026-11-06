@@ -1,6 +1,0 @@
-{
-  "name": "Aniob",
-  "description": "Android Natural Language UI Automation Agent with Grill-Me, AutoRouter, ScreenDiff, and FastPath execution.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

@@ -91,4 +91,14 @@ class AniobLoopbackCallbackListenerTest {
             try { second.bind(); fail("expected the port to be busy") } catch (e: AniobPortInUseException) { /* expected */ }
         } finally { first.close() }
     }
+
+    @Test fun `a stray request with mismatched state gets a 400 and the wait continues`() = runBlocking<Unit> {
+        val l = AniobLoopbackCallbackListener(0); l.bind()
+        try {
+            val waiting = async(kotlinx.coroutines.Dispatchers.IO) { l.awaitCallback("/auth/callback", 10_000, "expected-state") }
+            assertEquals(400, get(l.boundPort, "/auth/callback?code=abc&state=wrong-state").first)
+            assertEquals(200, get(l.boundPort, "/auth/callback?code=valid-code&state=expected-state").first)
+            assertEquals("/auth/callback?code=valid-code&state=expected-state", waiting.await())
+        } finally { l.close() }
+    }
 }

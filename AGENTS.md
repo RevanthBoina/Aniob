@@ -4,15 +4,14 @@ Persistent, repo-specific knowledge for agents working in this repository.
 
 ## Build & test
 
-Gradle wrapper is not present; use an installed Gradle. This environment uses:
+The repository includes the Gradle 9.3.1 Wrapper (`./gradlew`), with the distribution SHA-256 pinned in `gradle/wrapper/gradle-wrapper.properties`. JDK 17 and an Android SDK are still required. Typical commands:
 
 ```bash
 export JAVA_HOME=/opt/jdk17
 export ANDROID_HOME=$HOME/android-sdk
-export PATH=/tmp/setup/gradle-dist/gradle-9.3.1/bin:$PATH
 
-gradle :core-agent:test :app:testDebugUnitTest --console=plain
-gradle :app:assembleDebug --console=plain
+./gradlew :core-agent:test :app:testDebugUnitTest --console=plain
+./gradlew :app:assembleDebug --console=plain
 ```
 
 - `:core-agent` is pure Kotlin/JVM. Guarded by CI preflight: **zero `android.*` imports**. Keep it

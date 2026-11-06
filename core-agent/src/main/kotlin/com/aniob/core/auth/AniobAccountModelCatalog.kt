@@ -18,7 +18,7 @@ class AniobAccountModelCatalog(val models: List<AniobAccountModel>, val defaultM
 
     companion object {
         private val MODEL_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$")
-        const val FALLBACK_MODEL = "gpt-5"
+        const val FALLBACK_MODEL = "gpt-4o"
 
         fun validate(id: String): String? =
             if (MODEL_ID.matches(id.trim())) null

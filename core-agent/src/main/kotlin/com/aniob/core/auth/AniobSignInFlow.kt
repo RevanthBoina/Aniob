@@ -18,10 +18,10 @@ interface AniobCallbackListener : Closeable {
     fun bind()
 
     /**
-     * Waits for the **first** request whose path is [callbackPath], answers it with a static page,
-     * closes, and returns the request target (`/path?query`). Null on timeout.
+     * Waits for the callback request whose path is [callbackPath] matching [expectedState] (if supplied),
+     * answers it with a static page, closes, and returns the request target (`/path?query`). Null on timeout.
      */
-    suspend fun awaitCallback(callbackPath: String, timeoutMs: Long): String?
+    suspend fun awaitCallback(callbackPath: String, timeoutMs: Long, expectedState: String? = null): String?
 }
 
 fun interface AniobBrowserLauncher {
@@ -90,13 +90,25 @@ class AniobSignInFlow(
                 val url = AniobAuthorizeUrlBuilder.build(config, challenge, pending.state)
                 if (!browser.open(url)) return fail(AniobAuthError.BrowserUnavailable)
             }
-            val target = listener.awaitCallback(config.redirectPath, remaining)
-                ?: return fail(AniobAuthError.CallbackTimeout)
+            while (true) {
+                val remainingTime = config.maxSignInMs - (clock.now() - pending.startedAtMs)
+                if (remainingTime <= 0L) {
+                    pendingStore.clear()
+                    return fail(AniobAuthError.CallbackTimeout)
+                }
+                val target = listener.awaitCallback(config.redirectPath, remainingTime, pending.state)
+                    ?: return fail(AniobAuthError.CallbackTimeout)
 
-            return when (val parsed = AniobAuthCallbackParser.parse(target, config.redirectPath, pending.state)) {
-                is AniobCallbackResult.Code -> repository.completeSignIn(parsed.code, pending.verifier)
-                is AniobCallbackResult.Failure -> fail(parsed.error)
-                AniobCallbackResult.Ignored -> fail(AniobAuthError.Unparseable)
+                when (val parsed = AniobAuthCallbackParser.parse(target, config.redirectPath, pending.state)) {
+                    is AniobCallbackResult.Code -> return repository.completeSignIn(parsed.code, pending.verifier)
+                    is AniobCallbackResult.Failure -> {
+                        if (parsed.error is AniobAuthError.StateMismatch) {
+                            continue
+                        }
+                        return fail(parsed.error)
+                    }
+                    AniobCallbackResult.Ignored -> continue
+                }
             }
         } catch (e: CancellationException) {
             withContext(NonCancellable) { repository.markFailed(AniobAuthError.UserCancelled) }

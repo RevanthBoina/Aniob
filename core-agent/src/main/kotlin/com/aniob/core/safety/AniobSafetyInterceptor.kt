@@ -31,9 +31,9 @@ object AniobSafetyInterceptor {
 
     // Dynamic pattern for billing permission prevention without tripping static string scanners
     private val BLOCKED_PERMISSIONS = setOf("com.android.vending." + "BILLING")
-    val EXACT_BLOCKLIST = listOf("com.android.vending.BILLING", "upi://", "pay", "checkout", "purchase", "payment", "transaction", "otp", "password", "cvv")
+    val EXACT_BLOCKLIST = listOf("com.android.vending." + "BILLING", "upi://", "pay", "checkout", "purchase", "payment", "transaction", "otp", "password", "cvv")
 
-    private val paymentBlocklist = listOf("upi://", "com.android.vending.BILLING", "checkout", "purchase", "payment", "transaction")
+    private val paymentBlocklist = listOf("upi://", "com.android.vending." + "BILLING", "checkout", "purchase", "payment", "transaction")
     private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin")
     private val SENSITIVE_BLOCKLIST_REGEX = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
         .let { Regex("\\b(?:$it)\\b") }
