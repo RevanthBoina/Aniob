@@ -128,6 +128,8 @@ class EventLogger(private val database: AniobDatabase) {
         s = API_KEY_REGEX.replace(s, "$1[REDACTED]")
         // Redact common secret key assignments
         s = SECRET_ASSIGN_REGEX.replace(s, "$1=[REDACTED]")
+        // Sign-in credentials: JWT-shaped strings, code=/refresh_token= parameters, token JSON fields.
+        s = com.aniob.core.auth.AniobSecretRedactor.redact(s)
         return s
     }
 

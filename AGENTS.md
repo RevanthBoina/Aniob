@@ -97,3 +97,11 @@ core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing cha
 - No new broad `catch (e: Exception)`: the preflight ratchet counts them. Catch the specific exception.
 - See `docs/DEVICE_CAPABILITIES.md`.
 
+## Sign in with an account (ChatGPT)
+
+* `AniobAuthRepository` (`core-agent/auth`) is the **only owner of tokens and sign-in state**. Nothing else reads `AniobTokenStore`; a request gets a short-lived `AniobAccessGrant` from `obtainAccess()`. Do not add a second reader, and never log, persist in plaintext or show an access token, refresh token, id token, authorization code or PKCE verifier (preflight guard 9 and `AniobSecretRedactor` enforce it).
+* The router consumes the account only through `AniobAccountModelClient` (`app/auth`), which implements the same `AniobCloudLlmProvider` / `AniobActionStepProvider` interfaces as the gateway client. The choice is explicit (`AniobCloudSourceSelector`): an account choice that is not signed in is *unavailable*, never silently swapped to the gateway, and `cloud-only` is never downgraded.
+* `AniobActionStepProvider` is the one cloud-step interface; `AniobOmniRouteProvider` implements it. The step loop must not name a concrete provider.
+* All protocol logic (PKCE, URL, callback parse, JWT claims, token client, refresh policy, SSE parser, error mapping) is pure JVM in `core-agent/auth`. Android code (Keystore store, loopback socket, Custom Tab, UI) stays in `app/auth` behind those ports.
+* The feature is off unless `ACCOUNT_AUTH_CLIENT_ID` is set to something other than `UNSET` (an empty `.env` value breaks the secrets plugin's BuildConfig output). See `docs/ACCOUNT_SIGN_IN.md`.
+

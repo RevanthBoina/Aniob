@@ -163,6 +163,15 @@
         </service>
 
         <service
+            android:name=".auth.AniobSignInService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains local loopback OAuth callback listener during browser sign-in" />
+        </service>
+
+        <service
             android:name=".service.AniobNotificationListenerService"
             android:label="Aniob Notification Monitor"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
@@ -185,3 +194,4 @@
     </application>
 
 </manifest>
+

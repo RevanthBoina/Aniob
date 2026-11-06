@@ -6,6 +6,7 @@ import com.aniob.core.domain.KeyType
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import com.aniob.app.network.AniobHttpClientSingleton
+import com.aniob.core.external.AniobActionStepProvider
 import com.aniob.core.external.AniobCloudLlmProvider
 import com.aniob.core.external.AniobGatewayClassifier
 import com.aniob.core.external.AniobGatewayException
@@ -70,7 +71,7 @@ class AniobOmniRouteProvider(
     private val health: AniobGatewayHealth = AniobGatewayHealth.shared,
     /** U-03: called with the wait (ms) just before an in-step 429 backoff, so the UI can say so honestly. */
     private val onRateLimited: (waitMs: Long) -> Unit = {}
-) : AniobCloudLlmProvider {
+) : AniobCloudLlmProvider, AniobActionStepProvider {
     override val name: String = "OMNIROUTE_CLOUD"
     override val isConfigured: Boolean get() = apiKey.isNotBlank() || isLocalGateway(baseUrl)
 
@@ -300,12 +301,12 @@ class AniobOmniRouteProvider(
      * [streamingSupported] and every later step uses the plain call, so an incompatible gateway
      * costs one rejected round-trip per session rather than one per action.
      */
-    suspend fun getNextActionRawStreaming(
+    override suspend fun getNextActionRawStreaming(
         systemPrompt: String,
         userPrompt: String,
-        screenshotBase64: String? = null,
-        maxTokens: Int = 512,
-        onFirstToken: () -> Unit = {}
+        screenshotBase64: String?,
+        maxTokens: Int,
+        onFirstToken: () -> Unit
     ): Result<String> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank() && !isLocalGateway(baseUrl)) {
             return@withContext Result.failure(IllegalStateException("Omniroute API key is not configured"))
@@ -495,12 +496,12 @@ class AniobOmniRouteProvider(
      * `AniobStructuredOutput.parseOrRepair` so cloud output shares the one action vocabulary and
      * benefits from the single repair retry.
      */
-    suspend fun getNextActionRaw(
+    override suspend fun getNextActionRaw(
         systemPrompt: String,
         userPrompt: String,
-        screenshotBase64: String? = null,
+        screenshotBase64: String?,
         /** Output budget for this call; burst replies are capped so decode latency stays low. */
-        maxTokens: Int = 512
+        maxTokens: Int
     ): Result<String> = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         try {

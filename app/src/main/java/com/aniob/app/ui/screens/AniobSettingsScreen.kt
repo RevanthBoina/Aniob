@@ -261,6 +261,9 @@ fun AniobSettingsScreen(
                 }
             }
 
+            // Sign in with an account (hidden unless this build is configured for it).
+            AniobAccountSignInCard()
+
             // Cloud AI (self-hosted OmniRoute gateway) setup.
             val cloudTest = uiState.cloudTest
             val addressError = if (baseUrlInput.isBlank()) null

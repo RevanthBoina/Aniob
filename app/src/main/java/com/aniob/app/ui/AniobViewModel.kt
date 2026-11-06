@@ -404,8 +404,9 @@ class AniobViewModel(
     /** Human-readable active brain summary for the top-bar chip. */
     fun getActiveBrainLabel(): String {
         val installed = getInstalledModelName()
-        val hasCloud = _uiState.value.omnirouteApiKey.isNotBlank()
-        val cloudModel = _uiState.value.omnirouteModel.ifBlank { "auto" }
+        val useAccount = cloudSource() == com.aniob.core.auth.AniobCloudSource.ACCOUNT
+        val hasCloud = if (useAccount) app.accountAuth.isSignedIn else _uiState.value.omnirouteApiKey.isNotBlank()
+        val cloudModel = if (useAccount) app.accountAuth.model else _uiState.value.omnirouteModel.ifBlank { "auto" }
         val mode = _uiState.value.autoRouterMode.lowercase()
         return when {
             mode == "cloud-only" -> if (hasCloud) "Cloud ($cloudModel)" else "Add Cloud Key"
@@ -468,8 +469,45 @@ class AniobViewModel(
      * A stored key and a valid address, or a keyless gateway on this device / the local network
      * (OmniRoute's default `REQUIRE_API_KEY=false` setup).
      */
-    private fun isCloudConfigured(): Boolean =
-        AniobProviderConfig.isConfigured(_uiState.value.omnirouteApiKey, _uiState.value.omnirouteBaseUrl)
+    private fun isCloudConfigured(): Boolean = cloudSelection() is com.aniob.core.auth.AniobCloudSelection.Use
+
+    /** The cloud the user picked in Settings; the gateway unless they chose their account. */
+    private fun cloudSource(): com.aniob.core.auth.AniobCloudSource =
+        com.aniob.core.auth.AniobCloudSource.fromPref(
+            app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE).getString("cloud_source", null)
+        )
+
+    /**
+     * One decision for "is there a usable cloud, and which". An account choice that is not signed in
+     * is *unavailable*; it never silently swaps to the gateway (a different key and destination).
+     * Whether the step may then drop on-device is still decided by the existing routing, and
+     * `cloud-only` is never downgraded.
+     */
+    private fun cloudSelection(): com.aniob.core.auth.AniobCloudSelection =
+        com.aniob.core.auth.AniobCloudSourceSelector.select(
+            preference = cloudSource(),
+            authState = app.accountAuth.state,
+            accountFeatureAvailable = app.accountAuth.featureAvailable,
+            omniRouteConfigured = AniobProviderConfig.isConfigured(
+                _uiState.value.omnirouteApiKey, _uiState.value.omnirouteBaseUrl
+            )
+        )
+
+    /** Q&A provider for the chosen cloud source. */
+    private fun getCloudProvider(sessionId: String? = null): com.aniob.core.external.AniobCloudLlmProvider =
+        if (cloudSource() == com.aniob.core.auth.AniobCloudSource.ACCOUNT) {
+            app.accountAuth.newClient(sessionId) { app.researchTelemetry.recordLlmCall() }
+        } else {
+            getOmniRouteProvider(sessionId)
+        }
+
+    /** UI-step provider for the chosen cloud source. */
+    private fun getActionStepProvider(sessionId: String? = null): com.aniob.core.external.AniobActionStepProvider =
+        if (cloudSource() == com.aniob.core.auth.AniobCloudSource.ACCOUNT) {
+            app.accountAuth.newClient(sessionId) { app.researchTelemetry.recordLlmCall() }
+        } else {
+            getOmniRouteProvider(sessionId)
+        }
 
     init {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
@@ -1205,6 +1243,8 @@ class AniobViewModel(
      */
     private suspend fun prewarmGateway() {
         if (!isCloudConfigured()) return
+        // Only the gateway has a prewarm; opening a connection to the account service is not free.
+        if (cloudSource() != com.aniob.core.auth.AniobCloudSource.OMNIROUTE) return
         runCatching { getOmniRouteProvider().prewarm() }
     }
 
@@ -2124,7 +2164,7 @@ class AniobViewModel(
                 // Do not initialize native memory for an explicitly cloud-only request.
                 if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
-                    cloudProvider = if (isCloudConfigured()) getOmniRouteProvider(sessionId = taskId) else null,
+                    cloudProvider = if (isCloudConfigured()) getCloudProvider(sessionId = taskId) else null,
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
@@ -3134,7 +3174,7 @@ class AniobViewModel(
                         }
 
                         suspend fun runOmniRouteStep(allowLocalFallback: Boolean = true): AniobAction {
-                            val omniroute = getOmniRouteProvider(sessionId = task.id)
+                            val omniroute = getActionStepProvider(sessionId = task.id)
                             val promptAsksForVisualInspection = (localFailCount > 0) || task.rawPrompt.contains(
                                 Regex("(?i)look|see|inspect|read|image|photo|visual")
                             )

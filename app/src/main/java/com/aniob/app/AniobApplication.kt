@@ -60,6 +60,11 @@ class AniobApplication : Application(), ComponentCallbacks2 {
         )
     }
 
+    /** "Sign in with an account" cloud source. Lazy: costs nothing unless configured and used. */
+    val accountAuth: com.aniob.app.auth.AniobAccountContainer by lazy {
+        com.aniob.app.auth.AniobAccountContainer(this)
+    }
+
     /**
      * Paper metrics (latency, LLM calls, success rate) and the active ablation mode.
      * One instance per process: the per-task counters live here, and the CSVs are shared by the

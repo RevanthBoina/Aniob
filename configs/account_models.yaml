@@ -1,0 +1,13 @@
+# Models offered for "Sign in with an account". A convenience list, not a gate: the Settings card also
+# accepts any model name the user types. Read by AniobAccountModelCatalog from the APK assets
+# (aniob_config/account_models.yaml). Keep configs/, android-agent/configs/ and the assets copy
+# identical: scripts/config-assets-sync-check.sh enforces it.
+# These ids are examples taken from public write-ups and were NOT verified against a live account.
+default: gpt-5.4
+models:
+  - id: gpt-5.5
+    label: "GPT-5.5"
+  - id: gpt-5.4
+    label: "GPT-5.4"
+  - id: gpt-5.4-mini
+    label: "GPT-5.4 mini (faster)"
