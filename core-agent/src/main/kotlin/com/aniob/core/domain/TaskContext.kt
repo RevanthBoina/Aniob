@@ -77,7 +77,8 @@ data class TaskContext(
         activeSubgoal: String? = null,
         lastAction: String? = null,
         lastResult: String? = null,
-        burstMode: Boolean = false
+        burstMode: Boolean = false,
+        carriedPlanHint: String? = null
     ): ExecutorRequest {
         // A compact capture already pruned, merged and ordered its nodes; re-running the
         // optimizer would re-index them for no benefit and could break the prompt ids.
@@ -104,7 +105,8 @@ data class TaskContext(
             lastAction = lastAction,
             lastResult = lastResult ?: condensedHistory.lastOrNull(),
             consecutiveFailures = consecutiveFailures,
-            burstMode = burstMode
+            burstMode = burstMode,
+            carriedPlanHint = carriedPlanHint
         )
     }
 

@@ -45,6 +45,24 @@ core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing cha
 - Fuzzy matching is single-token only and typos are Levenshtein-based; see
   `docs/APP_DISCOVERY_AND_LAUNCH.md` before "improving" the matcher.
 
+## Bundled action plans (more than one action per turn)
+
+See `docs/ACTION_PLANS.md` for the contract; the invariants that must not be "simplified" away:
+
+- A plan is **reduced to the screen it can be grounded on** (`BurstPlanScope`), never rejected for
+  naming elements of the screen it opens, and never executed past the first action that does not
+  resolve. A refused plan returns `null` so the single-action parser and its repair retry still run;
+  it must not be replaced by a fixed `Wait`.
+- `ActionBurstRunner` re-captures the screen and re-grounds the next member **after every action**.
+  A member that no longer fits the screen closes the plan and continues from the live screen; it
+  never fails the task and never fires blind.
+- `is_complete` must not survive truncation: a plan with a deferred tail is not a finished task.
+- Only an editable node may receive `input`, and a target-less `input` needs a single editable field
+  plus the user's own words. Element ids are re-assigned on every capture, so a guessed id can name
+  a different widget on the current screen.
+- Every member runs through `StepPipeline.executeStep` — no safety, gating or verification shortcut,
+  and only verified members are written to the Remember cache.
+
 ## Architecture invariants
 
 - **Never fabricate an action.** A local SLM step must originate from real model output

@@ -183,26 +183,45 @@ Set "submit": true when the text is a query or a phone number and the field must
     }
 
     /**
-     * Parses the burst reply used by the multi-action conditions:
+     * Parses the bundled plan a model is asked for in the multi-action conditions:
      * ```
      * {"thought":"open wifi then tap scan","is_complete":false,
      *  "actions":[{"type":"tap","id":2},{"type":"input","id":4,"text":"home"},{"type":"back"}]}
      * ```
      *
-     * `type` is `tap`, `input`, `scroll` or `back`; `id` is the sequential element id from the
-     * observation (not a pixel, not a resource id). Returns null when nothing usable is present so
-     * the caller can fall back to the single-action parser instead of failing the step.
+     * The reply is the model's, not the schema's, so the parser accepts the spellings real models
+     * produce for the same plan instead of throwing the whole step away:
+     *
+     * - `id` as a number **or** a quoted number (`"id":"2"`), and `index` / `node_id` as aliases;
+     * - `target:{"kind":"som_index","value":2}` — the canonical single-action targeting shape;
+     * - every canonical tool name, not just the documented five: `long_press`, `open_app`, `wait`,
+     *   `system_key`, `device_control`, `finish`, `fail` — a plan may legitimately start by opening
+     *   an app or issuing a device command;
+     * - leading prose or a markdown fence around the object (the streaming reader already returns a
+     *   bare object, but a non-streaming gateway may not).
+     *
+     * Element ids are the sequential ids of the observation, never pixels. The list is capped at
+     * [ActionBurst.MAX_ACTIONS]: a longer reply is refused as a whole, because silently truncating
+     * it would execute a plan whose earlier actions were written assuming a later one runs.
+     *
+     * Returns null when the payload is not a bundled plan at all, so the caller falls back to the
+     * single-action parser and its repair path instead of failing the step.
+     *
+     * This performs no grounding: which of these actions this screen can execute is decided by
+     * [com.aniob.core.perception.BurstPlanScope], which sees the live observation.
      */
     fun parseActionBurstOrNull(json: String): ActionBurst? {
-        val array = arrayAfter(json, "actions") ?: return null
-        val thought = str(json, "thought").orEmpty().take(120)
-        val isComplete = bool(json, "is_complete") ?: false
+        val body = boundedObject(json)
+        val array = arrayAfter(body, "actions") ?: return null
+        val thought = str(body, "thought").orEmpty().take(120)
+        val isComplete = bool(body, "is_complete") ?: bool(body, "isComplete") ?: false
 
-        val actions = ArrayList<AniobAction>(ActionBurst.MAX_ACTIONS)
-        for (element in splitObjects(array)) {
-            if (actions.size >= ActionBurst.MAX_ACTIONS) return null
-            val action = burstAction(element, thought) ?: return null
-            actions.add(action)
+        val elements = splitObjects(array)
+        if (elements.size > ActionBurst.MAX_ACTIONS) return null
+
+        val actions = ArrayList<AniobAction>(elements.size)
+        for (element in elements) {
+            actions.add(burstAction(element, thought) ?: return null)
         }
         if (actions.isEmpty()) {
             return if (isComplete) {
@@ -214,18 +233,44 @@ Set "submit": true when the text is a query or a phone number and the field must
         return ActionBurst(thought, isComplete, actions)
     }
 
-    /** Maps one burst element (`{"type":"tap","id":2,...}`) onto a canonical action. */
+    /**
+     * The reply with any leading prose and markdown fence removed.
+     *
+     * A streaming reply is already bounded to its first complete object, but a gateway that answers
+     * in one JSON body may wrap the object in ```json fences or a sentence. Scanning from the first
+     * `{` keeps both shapes parseable; the input is returned unchanged when it holds no brace.
+     */
+    private fun boundedObject(raw: String): String {
+        val start = raw.indexOf('{')
+        if (start < 0) return raw
+        return com.aniob.core.speed.JsonPrefix.firstCompleteObject(raw.substring(start)) ?: raw.substring(start)
+    }
+
+    /**
+     * Maps one planned element (`{"type":"tap","id":2,...}`) onto a canonical action.
+     *
+     * The element is named by the observation's sequential id; a quoted number, an `index` /
+     * `node_id` field and the canonical `target:{kind,value}` object are all accepted spellings of
+     * the same thing. A `type` outside the accepted plan vocabulary returns null, which makes the
+     * whole plan fall back to the single-action path rather than executing a partly-guessed plan.
+     */
     private fun burstAction(element: String, thought: String): AniobAction? {
-        val type = str(element, "type")?.trim()?.lowercase() ?: return null
-        val target = int(element, "id")?.let { SemanticTarget.SomIndex(it) }
+        val type = (str(element, "type") ?: str(element, "tool") ?: str(element, "action"))
+            ?.trim()?.lowercase()?.replace('-', '_') ?: return null
+        val target = burstTarget(element)
         return when (type) {
             "tap", "click" -> target?.let { AniobAction.Tap(it, thought) }
+            "long_press", "longpress" -> target?.let {
+                AniobAction.LongPress(it, durationMs = (int(element, "duration_ms") ?: 1000).toLong(), thought = thought)
+            }
             "input", "type", "input_text" -> {
                 val text = str(element, "text").orEmpty()
-                if (target != null && text.isNotBlank()) {
+                if (text.isNotBlank()) {
+                    // No target on an unnamed field is decided by BurstPlanScope, which can see
+                    // whether this screen has exactly one editable element to type into.
                     AniobAction.InputText(
-                        target,
-                        text,
+                        target = target ?: SemanticTarget.SomIndex(ActionBurst.UNNAMED_TARGET),
+                        text = text,
                         clearFirst = bool(element, "clear_first") ?: false,
                         submit = bool(element, "submit") ?: false,
                         thought = thought
@@ -246,10 +291,56 @@ Set "submit": true when the text is a query or a phone number and the field must
                 }
                 AniobAction.Swipe(direction = direction, thought = thought)
             }
-            "back", "system_key", "press_back" -> AniobAction.PressKey(KeyType.BACK, thought)
-            "wait" -> AniobAction.Wait(durationMs = (int(element, "duration_ms") ?: 800).toLong(), thought = thought)
+            "back", "press_back" -> AniobAction.PressKey(KeyType.BACK, thought)
+            "home", "press_home", "recents" -> AniobAction.PressKey(
+                key = if (type.startsWith("home") || type == "press_home") KeyType.HOME else KeyType.RECENTS,
+                thought = thought
+            )
+            "system_key", "press_key" -> AniobAction.PressKey(
+                key = str(element, "key")?.let(::keyType) ?: KeyType.BACK,
+                thought = thought
+            )
+            "open_app" -> AniobAction.OpenApp(
+                packageName = str(element, "package_name") ?: str(element, "package") ?: return null,
+                thought = thought
+            )
+            "wait" -> AniobAction.Wait(durationMs = (int(element, "duration_ms") ?: 800).toLong(), thought = thought).clamped()
+            "device_control", "device", "reflex" -> {
+                val command = DeviceCommand.fromWire(str(element, "command") ?: str(element, "name"))
+                    ?: return null
+                AniobAction.DeviceControl(command, commandArgs(element), thought)
+            }
+            "finish" -> AniobAction.Finish(str(element, "summary") ?: thought.ifBlank { "Task completed" }, thought)
+            "fail" -> AniobAction.Fail(str(element, "reason") ?: "Model reported failure", thought)
             else -> null
         }
+    }
+
+    /**
+     * Accepted target spellings of one planned element, in priority order: the canonical
+     * `target:{...}` object, then a sequential id under any of the names models use for it.
+     */
+    private fun burstTarget(element: String): SemanticTarget? {
+        parseTarget(element)?.let { return it }
+        val id = int(element, "id")
+            ?: str(element, "id")?.trim()?.toIntOrNull()
+            ?: int(element, "index")
+            ?: str(element, "index")?.trim()?.toIntOrNull()
+            ?: int(element, "node_id")
+        return id?.let { SemanticTarget.SomIndex(it) }
+    }
+
+    /** A device command's arguments, either nested under `args` or flattened onto the element. */
+    private fun commandArgs(element: String): Map<String, String> {
+        val args = LinkedHashMap<String, String>()
+        ARGS_BLOCK_REGEX.find(element)?.groupValues?.get(1)?.let { block ->
+            ARG_PAIR_REGEX.findAll(block).forEach { m ->
+                val value = m.groups[2]?.value?.let(::unescapeJsonString)
+                    ?: m.groups[3]?.value ?: m.groups[4]?.value ?: return@forEach
+                args[m.groupValues[1].lowercase()] = value
+            }
+        }
+        return args
     }
 
     /** Substring between the brackets after `"field": [`, honouring strings and nesting. */

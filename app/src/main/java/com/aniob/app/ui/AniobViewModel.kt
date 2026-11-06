@@ -2691,6 +2691,12 @@ class AniobViewModel(
         // results re-indexing, animated lists), so the rest of the run plans one action at a time
         // from a fresh observation instead of trusting a multi-action plan again.
         var burstsSuspended = false
+        // The part of the last plan that named elements the current screen did not show yet.
+        // Rendered into the next planning request as context, cleared as soon as it is used.
+        var deferredPlanHint: String? = null
+        // Consecutive plans that could not execute even their first member: the screen is not
+        // settling, so the rest of the run plans one action at a time.
+        var burstZeroProgressReplans = 0
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
@@ -3056,9 +3062,13 @@ class AniobViewModel(
                             activeSubgoal = taskProgress?.summary,
                             lastAction = taskContext.trajectory.lastOrNull()?.describeAction(),
                             lastResult = taskContext.condensedHistory.lastOrNull(),
-                            burstMode = burstEnabled
+                            burstMode = burstEnabled,
+                            carriedPlanHint = carriedPlan
                         )
                         val executorPrompt = executorRequest.toPromptString()
+                        // A planning call spends the carried plan: it is context for exactly one
+                        // request, and a second copy would describe a screen the model has left.
+                        deferredPlanHint = null
                         val configuredPrompt = configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call."
                         // The model is told, every run, that it is wired into this phone, which direct
                         // commands exist, and which of them are switched off right now. A small
@@ -3068,16 +3078,22 @@ class AniobViewModel(
                             base + "\n\n" + com.aniob.core.capability.AniobCapabilityManifest.render(capabilityState, compact)
                         val baseSystemPrompt = withCapabilities(configuredPrompt, compact = localCanDrive)
                         val systemPrompt = if (burstEnabled) {
-                            // The bundled prompt insists on one action per reply; the burst
-                            // contract is appended so it overrides that line instead of fighting it.
+                            // The bundled prompt insists on one action per reply; the plan contract
+                            // is appended so it overrides that line instead of fighting it.
                             baseSystemPrompt +
-                                "\n\nBURST MODE: ignore the single-action rule above. Reply with ONE compact JSON " +
-                                "object and nothing else:\n" +
+                                "\n\nMULTI-ACTION PLANNING: ignore the single-action rule above. Reply with ONE " +
+                                "compact JSON object and nothing else:\n" +
                                 "{\"thought\": \"brief 10-word plan\", \"is_complete\": false, " +
-                                "\"actions\": [{\"type\": \"tap|input|scroll|back\", \"id\": 2, \"text\": \"optional input\"}]}\n" +
-                                "1-3 actions, only targets already visible, no pixel coordinates, under 60 tokens.\n" +
+                                "\"actions\": [{\"type\": \"tap|input|long_press|scroll|back|open_app|wait|device_control\", " +
+                                "\"id\": 2, \"text\": \"only for input\", \"submit\": true}]}\n" +
+                                "Plan the next 1-3 sequential actions of the task, in order. The FIRST one must name an " +
+                                "element that is on the screen you were given; the ones after it may belong to the " +
+                                "screen it opens. Actions whose elements are not visible yet are held back and " +
+                                "replayed later, so plan the whole next stretch of the task instead of stopping at " +
+                                "the first tap. For a field that is the only text box on screen you may omit \"id\". " +
+                                "No pixel coordinates. Under 80 tokens.\n" +
                                 "Exception: a chore that needs no screen (media, volume, flashlight, calls, codes, files, " +
-                                "alarms...) is NOT a burst; reply with the single DEVICE_CONTROL JSON object instead."
+                                "alarms...) is NOT a plan; reply with the single DEVICE_CONTROL JSON object instead."
                         } else if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
                             baseSystemPrompt
                         } else {
@@ -3173,7 +3189,10 @@ class AniobViewModel(
                             return structured.action
                         }
 
-                        suspend fun runOmniRouteStep(allowLocalFallback: Boolean = true): AniobAction {
+                        suspend fun runOmniRouteStep(
+                            allowLocalFallback: Boolean = true,
+                            carriedPlan: String? = null
+                        ): AniobAction {
                             val omniroute = getActionStepProvider(sessionId = task.id)
                             val promptAsksForVisualInspection = (localFailCount > 0) || task.rawPrompt.contains(
                                 Regex("(?i)look|see|inspect|read|image|photo|visual")
@@ -3227,7 +3246,11 @@ class AniobViewModel(
                                     totalTokens += (text.length / 4).coerceAtLeast(1)
                                     // Burst reply: several actions for the screen we just observed.
                                     val burst = if (burstEnabled) {
-                                        AniobStructuredOutput.parseBurstOrRepair(text, currentScreen)
+                                        AniobStructuredOutput.parseBurstOrRepair(
+                                            raw = text,
+                                            screenState = currentScreen,
+                                            goal = task.clarifiedGoal
+                                        )
                                     } else {
                                         null
                                     }
@@ -3326,7 +3349,10 @@ class AniobViewModel(
                         } else if (decision.target == RouteTarget.LOCAL_SLM) {
                             AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && isOmniRouteReady()) {
-                            runOmniRouteStep()
+                            // The prompt is assembled inside the step function; hand it the plan it
+                            // has to continue before the call, not after it.
+                            val carriedPlan = deferredPlanHint
+                            runOmniRouteStep(carriedPlan = carriedPlan)
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD) {
                             AniobAction.Fail("Cloud AI is not set up — add your OmniRoute key and gateway address in Settings")
                         } else {
@@ -3513,111 +3539,150 @@ class AniobViewModel(
                 }
 
                 // ---------------------------------------------------------------------------
-                // Act: run the burst head before the step pipeline sees the last action.
-                // Each action is re-grounded on a fresh observation, and the burst stops as soon
-                // as the screen navigates away or a target disappears.
+                // Act: run the bundled plan one member at a time (ActionBurstRunner).
+                // The screen is re-read and the next member re-grounded after every action, and a
+                // member that no longer fits the screen closes the plan instead of failing the task.
                 // ---------------------------------------------------------------------------
                 var burstAbort: String? = null
-                // A burst whose target vanished is not a failed task: the plan was made for a screen
+                // A plan whose target vanished is not a failed task: it was written for a screen
                 // that has since moved (Files/Search re-index and hide nodes after the first tap).
-                // The rest of the burst is dropped and the next step is planned from a fresh screen.
+                // The rest of the plan is dropped and the next step is planned from a fresh screen.
                 var burstReplan: String? = null
-                var lastHeadCtx: com.aniob.core.domain.TaskContext? = null
-                if (plannedBurst != null && plannedBurst!!.head.isNotEmpty()) {
+                // True once a plan member ran: this step's verification is then the plan's, and
+                // running the pipeline again would repeat an action that already happened.
+                var planConsumedStep = false
+                var lastPlanResult: StepResult? = null
+                // Suspend-free "never prompt": the runner must not park the user mid-plan.
+                val noConfirmLambda: suspend (String) -> Boolean = { false }
+                if (plannedBurst != null) {
                     val burst = plannedBurst!!
-                    for ((offset, burstAction) in burst.head.withIndex()) {
-                        if (taskGeneration != activeGeneration || !_uiState.value.isRunning) {
-                            burstAbort = "run ended"
-                            break
-                        }
-                        // Capture for every action: ids are re-assigned on every observation.
-                        val liveScreen = accessibility?.captureCurrentScreenState()
-                        if (liveScreen == null) {
-                            burstAbort = "fresh screen capture unavailable"
-                            break
-                        }
-                        val verdict = com.aniob.core.perception.BurstTargetGuard
-                            .check(burstAction, currentScreen, liveScreen)
-                        if (verdict.shouldReplan) {
-                            burstReplan = verdict.reason
-                            break
-                        }
-                        val target = com.aniob.core.perception.BurstTargetGuard
-                            .findTarget(burstAction, currentScreen, liveScreen)
-                        val dispatchable = if (target != null) {
-                            com.aniob.core.perception.BurstTargetGuard.retarget(burstAction, target)
-                        } else {
-                            burstAction
-                        }
-                        dispatchOrigin = liveScreen
-                        // Every head action must pass the same safety, physical and verification
-                        // pipeline as the tail. A burst never prompts mid-flight: stop and replan.
-                        burstDispatchTreeHash = com.aniob.core.diff.AniobScreenDiff.computeTreeHash(liveScreen.nodes)
-                        val blockedBefore = taskBlockedFingerprints.size
-                        val headResult = stepPipe.executeStep(
+                    // Everything the model planned for screens this one does not show yet. It is
+                    // context for the next planning pass, never an instruction to act blind.
+                    com.aniob.core.perception.BurstPlanScope.renderDeferredHint(burst.deferred)
+                        ?.let { deferredPlanHint = it }
+                    val plan = com.aniob.core.domain.ActionBurst(
+                        thought = burst.thought,
+                        isComplete = burst.isComplete,
+                        actions = burst.head + listOfNotNull(burst.tail),
+                        deferred = burst.deferred
+                    )
+                    if (plan.actions.isNotEmpty()) {
+                        var membersRun = 0
+                        // One runner for a model plan and for a remembered replay: every member goes
+                        // through the same safety, dispatch and verification pipeline, and the screen
+                        // is re-read (and the member re-grounded) after every action.
+                        val burstRunner = com.aniob.core.execution.ActionBurstRunner(
+                            capture = {
+                                accessibility?.captureCurrentScreenState()?.also {
+                                    screenReads++; screenCaptureCount++
+                                    app.researchTelemetry.recordScreenCapture()
+                                }
+                            },
+                            executeMember = { member, memberCtx, planningScreen, target ->
+                                membersRun++
+                                val isLast = membersRun == plan.actions.size
+                                val dispatchable = target?.let {
+                                    com.aniob.core.perception.BurstTargetGuard.retarget(member, it)
+                                } ?: member
+                                dispatchOrigin = planningScreen
+                                // A member is dispatched against the tree it was re-grounded on, so a
+                                // screen that re-indexes between the check and the tap cannot make
+                                // the tap land on a different widget.
+                                burstDispatchTreeHash =
+                                    com.aniob.core.diff.AniobScreenDiff.computeTreeHash(planningScreen.nodes)
+                                val step = try {
+                                    stepPipe.executeStep(
+                                        ctx = memberCtx,
+                                        planningScreen = planningScreen,
+                                        proposal = StepPipeline.Proposal.Model(dispatchable, primaryProvider),
+                                        capture = { planningScreen },
+                                        dispatch = dispatchLambda,
+                                        // The last member keeps the real confirmation gate, exactly as
+                                        // a single-action step would. An earlier member never prompts:
+                                        // a plan stops and re-plans instead of holding the user in the
+                                        // middle of a half-executed sequence.
+                                        confirm = if (isLast) confirmLambda else noConfirmLambda,
+                                        targetNode = target
+                                    )
+                                } finally {
+                                    burstDispatchTreeHash = null
+                                }
+                                app.researchTelemetry.recordStep()
+                                // Only verified members are remembered; a failed member teaches
+                                // nothing and must never seed the replay cache.
+                                if (step.verification?.isSuccessful == true &&
+                                    step.terminalState != StepResult.TerminalState.FAIL
+                                ) {
+                                    rememberTransitions.add(
+                                        RememberTransition(screen = planningScreen, action = step.action, node = target)
+                                    )
+                                }
+                                step
+                            }
+                        )
+                        val run = burstRunner.run(
+                            plan = plan,
+                            origin = currentScreen,
                             ctx = taskContext,
-                            planningScreen = liveScreen,
-                            proposal = StepPipeline.Proposal.Model(dispatchable, primaryProvider),
-                            capture = { liveScreen },
-                            dispatch = dispatchLambda,
-                            confirm = { false },
-                            targetNode = target
+                            shouldContinue = {
+                                taskGeneration == activeGeneration && _uiState.value.isRunning
+                            }
                         )
-                        burstDispatchTreeHash = null
-                        app.researchTelemetry.recordStep()
-                        lastHeadCtx = headResult.nextCtx
-                        if (headResult.terminalState != StepResult.TerminalState.CONTINUE ||
-                            headResult.verification?.isSuccessful != true) {
-                            val blockedBySafety = taskBlockedFingerprints.size > blockedBefore ||
-                                (headResult.terminalState == StepResult.TerminalState.FAIL &&
-                                    liveScreen.treeHash in taskBlockedFingerprints)
-                            val why = "action ${offset + 1} was blocked or not verified"
-                            // A safety block is final. Anything else (the tap did not change the
-                            // screen yet, the node moved before dispatch) is a plan that no longer
-                            // fits the screen: re-plan from what is there now.
-                            if (blockedBySafety) burstAbort = why else burstReplan = why
-                            break
-                        }
-                        rememberTransitions.add(
-                            RememberTransition(screen = liveScreen, action = headResult.action, node = headResult.resolvedNode)
-                        )
-                    }
-                }
+                        taskContext = run.ctx
+                        currentScreen = run.screen
+                        lastPlanResult = run.lastResult
+                        // Only a plan that ended for its own reasons speaks for this step. A plan
+                        // closed early still owes the loop one action on the screen it revealed, and
+                        // that action gets its own step record.
+                        planConsumedStep = run.ran.isNotEmpty() &&
+                            (run.stop == com.aniob.core.execution.ActionBurstRunner.Stop.NONE ||
+                                run.stop == com.aniob.core.execution.ActionBurstRunner.Stop.BLOCKED ||
+                                run.stop == com.aniob.core.execution.ActionBurstRunner.Stop.ABORTED)
+                        when (run.stop) {
+                            com.aniob.core.execution.ActionBurstRunner.Stop.NONE -> Unit
 
-                // The last planned action still goes through the pipeline so Verify runs on it. It
-                // is re-grounded against the post-burst screen first; if it is gone, the burst is
-                // closed with a provisional finish and the step goes straight to verification.
-                if (plannedBurst != null && burstAbort == null && burstReplan == null && plannedBurst!!.tail != null) {
-                    val tail = plannedBurst!!.tail!!
-                    // With no head there is nothing to re-observe: the tail was planned on
-                    // `currentScreen`, and re-reading would only re-index the same window.
-                    val liveScreen = if (plannedBurst!!.head.isEmpty()) {
-                        currentScreen
-                    } else {
-                        accessibility?.captureCurrentScreenState() ?: currentScreen
-                    }
-                    val verdict = com.aniob.core.perception.BurstTargetGuard.check(tail, currentScreen, liveScreen)
-                    if (verdict.shouldReplan) {
-                        burstReplan = verdict.reason
-                    } else {
-                        val target = com.aniob.core.perception.BurstTargetGuard.findTarget(tail, currentScreen, liveScreen)
-                        if (target != null) {
+                            com.aniob.core.execution.ActionBurstRunner.Stop.TARGET_GONE,
+                            com.aniob.core.execution.ActionBurstRunner.Stop.NAVIGATED,
+                            com.aniob.core.execution.ActionBurstRunner.Stop.NO_CAPTURE -> {
+                                // What really happened is kept; the rest of the plan is closed and
+                                // the loop continues from the screen the plan revealed. This is the
+                                // normal end of a plan that spans screens, not an error.
+                                app.eventLogger.info("AniobViewModel", "Plan closed early: ${run.detail}")
+                                burstReplan = run.detail
+                            }
+
+                            com.aniob.core.execution.ActionBurstRunner.Stop.BLOCKED,
+                            com.aniob.core.execution.ActionBurstRunner.Stop.ABORTED -> {
+                                burstAbort = run.detail
+                            }
+                        }
+                        if (run.completed && run.lastResult?.terminalState == StepResult.TerminalState.CONTINUE) {
+                            // Every member ran and none of them was a Finish: the plan says the goal
+                            // is met, so carry a provisional finish into verification rather than
+                            // asking the model for another action on a screen it already finished.
                             proposal = StepPipeline.Proposal.Model(
-                                com.aniob.core.perception.BurstTargetGuard.retarget(tail, target),
+                                AniobAction.Finish(burst.thought.ifBlank { "Planned actions completed" }),
                                 primaryProvider
                             )
+                            targetNode = null
+                            planConsumedStep = false
                         }
-                        currentScreen = liveScreen
                     }
+                    plannedBurst = null
                 }
-                if (plannedBurst != null && burstAbort == null && burstReplan != null) {
+                if (burstAbort == null && burstReplan != null) {
                     app.eventLogger.info(
                         "AniobViewModel",
-                        "Burst target invalidated ($burstReplan); dropping the rest and re-planning one action from a fresh screen"
+                        "Plan target invalidated ($burstReplan); dropping the rest and planning from a fresh screen"
                     )
-                    burstsSuspended = true
-                    // The head actions that did run are part of this task's history.
-                    lastHeadCtx?.let { taskContext = it }
+                    // A plan that spans screens ends this way by design, so batching stays on. Only
+                    // repeated plans that cannot even start mean the screen is thrashing, and then
+                    // the rest of the run plans one action at a time. Anything that did run before
+                    // the plan went stale resets the counter.
+                    burstZeroProgressReplans = if (planConsumedStep) 0 else burstZeroProgressReplans + 1
+                    if (burstZeroProgressReplans >= BURST_MAX_ZERO_PROGRESS_REPLANS) {
+                        burstsSuspended = true
+                    }
                     delay(BURST_REPLAN_SETTLE_MS)
                     accessibility?.captureCurrentScreenState()?.let { fresh ->
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
@@ -3627,27 +3692,47 @@ class AniobViewModel(
                     currentStep++
                     continue
                 }
-                if (plannedBurst != null && burstAbort != null) {
-                    app.eventLogger.warn("AniobViewModel", "Burst stopped: $burstAbort")
-                    val userReason = "I stopped before finishing because an action could not be safely completed or verified. Check the screen before trying again; earlier changes were not undone."
+                if (burstAbort != null) {
+                    app.eventLogger.warn("AniobViewModel", "Plan stopped: $burstAbort")
+                    val userReason = if (burstAbort.contains("stopped")) {
+                        "I stopped before finishing. Actions that already ran were not undone."
+                    } else {
+                        "I stopped before finishing because an action could not be safely completed or verified. Check the screen before trying again; earlier changes were not undone."
+                    }
                     _uiState.update { it.copy(statusMessage = userReason) }
                     proposal = StepPipeline.Proposal.Model(
                         AniobAction.Fail(userReason),
                         primaryProvider
                     )
                     targetNode = null
+                    planConsumedStep = false
                 }
 
+                // A plan that ran to its end already produced this step's verified result. Running
+                // the remaining action now would repeat work that really happened, so the plan's own
+                // last result is the step result.
                 dispatchOrigin = currentScreen
-                val res = stepPipe.executeStep(
-                    ctx = taskContext,
-                    planningScreen = currentScreen,
-                    proposal = proposal,
-                    capture = captureLambda,
-                    dispatch = dispatchLambda,
-                    confirm = confirmLambda,
-                    targetNode = targetNode
-                )
+                val res = if (planConsumedStep) {
+                    lastPlanResult ?: stepPipe.executeStep(
+                        ctx = taskContext,
+                        planningScreen = currentScreen,
+                        proposal = proposal,
+                        capture = captureLambda,
+                        dispatch = dispatchLambda,
+                        confirm = confirmLambda,
+                        targetNode = targetNode
+                    )
+                } else {
+                    stepPipe.executeStep(
+                        ctx = taskContext,
+                        planningScreen = currentScreen,
+                        proposal = proposal,
+                        capture = captureLambda,
+                        dispatch = dispatchLambda,
+                        confirm = confirmLambda,
+                        targetNode = targetNode
+                    )
+                }
                 stepResult = res
                 app.researchTelemetry.recordStep()
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay) {
@@ -3660,7 +3745,11 @@ class AniobViewModel(
                         null
                     }
                 }
-                if (res.verification?.isSuccessful == true || res.terminalState == StepResult.TerminalState.SUCCESS) {
+                // A plan member recorded its own transition against the screen it ran on; adding
+                // the same action again here would key it to the screen it produced.
+                if (!planConsumedStep &&
+                    (res.verification?.isSuccessful == true || res.terminalState == StepResult.TerminalState.SUCCESS)
+                ) {
                     rememberTransitions.add(
                         RememberTransition(screen = currentScreen, action = res.action, node = targetNode)
                     )
@@ -4377,11 +4466,20 @@ class AniobViewModel(
         /** How often a paused task re-checks the resume flag (UX-3 stop/pause responsiveness). */
         const val PAUSE_POLL_MS = 100L
 
-        /** Output budget for a burst reply (the schema asks for < 60 tokens). */
-        const val BURST_MAX_OUTPUT_TOKENS = 96
+        /**
+         * Output budget for a bundled plan (the schema asks for < 80 tokens).
+         *
+         * Three actions plus a thought do not fit in the 96 tokens a one-action cap allowed: the
+         * reply was cut mid-array, the plan failed to parse, and the step fell back to a single
+         * action — the batching was paid for and never used.
+         */
+        const val BURST_MAX_OUTPUT_TOKENS = 160
 
-        /** Lets a dynamic screen finish animating before the post-burst re-observation. */
+        /** Lets a dynamic screen finish animating before the post-plan re-observation. */
         const val BURST_REPLAN_SETTLE_MS = 250L
+
+        /** Plans that cannot execute even one member before the run stops batching. */
+        const val BURST_MAX_ZERO_PROGRESS_REPLANS = 2
 
         /**
          * Budget for hydrating learned state before step 0 yields to the model. Hydration keeps

@@ -24,14 +24,14 @@ import org.junit.Test
 class ActionBurstTest {
 
     @Test
-    fun `malformed or ungrounded burst becomes a bounded wait`() {
+    fun `an ungrounded or malformed plan is refused so the step can repair`() {
+        // Refusing (null) hands the same reply to the single-action parser and its repair retry,
+        // which can still recover the step. The previous contract replaced it with a fixed Wait,
+        // which turned a recoverable reply into a guaranteed lost round trip.
         val malformed = """{"actions":[{"type":"tap","id":1},{"type":"bogus"}]}"""
         val missing = """{"actions":[{"type":"tap","id":999}]}"""
         for (raw in listOf(malformed, missing)) {
-            val result = com.aniob.core.providers.AniobStructuredOutput.parseBurstOrRepair(raw, screen)
-            assertNotNull(result)
-            assertEquals(1, result!!.actions.size)
-            assertTrue(result.actions.single() is AniobAction.Wait)
+            assertNull(com.aniob.core.providers.AniobStructuredOutput.parseBurstOrRepair(raw, screen))
         }
     }
 
@@ -150,9 +150,11 @@ class ActionBurstTest {
 
         assertTrue(prompt.contains("\"actions\""))
         assertTrue(prompt.contains("\"is_complete\""))
-        assertTrue(prompt.contains("tap|input|scroll|back"))
+        assertTrue(prompt.contains("tap|input|long_press|scroll|back|open_app|wait|device_control"))
         assertTrue(prompt.contains("1 to 3"))
-        assertTrue(prompt.contains("under 60 tokens"))
+        assertTrue(prompt.contains("under 80 tokens"))
+        // The model is told which half of its plan runs now and which half is held back.
+        assertTrue(prompt.contains("held back"))
         assertFalse(prompt.contains("\"tool\": \"TAP\""))
     }
 
