@@ -3,10 +3,9 @@ package com.aniob.core.providers
 import com.aniob.core.config.AniobDecodeConfig
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.ActionBurst
-import com.aniob.core.domain.SemanticTarget
-import com.squareup.moshi.Moshi
 import com.aniob.core.domain.AniobActionSchema
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.perception.BurstPlanScope
 
 /**
  * The one structured-output boundary for every provider (finding #3).
@@ -22,27 +21,35 @@ import com.aniob.core.domain.AniobScreenState
  * The fallback for executor-role output is a bounded `Wait`, not a fabricated tap: a model that
  * cannot emit the vocabulary must not move the UI. Callers can distinguish a repaired parse from
  * a fallback via [StructuredParse.usedFallback].
+ *
+ * The bundled-plan path ([parseBurstOrRepair]) is deliberately *not* fail-closed the way a single
+ * action is. A plan is usually correct and merely spans more than one screen; the part of it that
+ * this screen can ground is returned and the rest is deferred. Only a reply the parser cannot read
+ * at all, or one whose first action names an element that is not on the screen, is refused — and
+ * even then it is refused as `null` so the caller's single-action path stays available, instead of
+ * being replaced by a `Wait` that used to cost a whole extra round trip per step.
  */
 object AniobStructuredOutput {
 
-    /** Returns null for a non-burst response; malformed bursts fail closed as one Wait. */
-    fun parseBurstOrRepair(raw: String, screenState: AniobScreenState): ActionBurst? {
-        val obj = runCatching { Moshi.Builder().build().adapter(Any::class.java).fromJson(raw) as? Map<*, *> }.getOrNull()
-        if (obj == null) {
-            return if (Regex("\"actions\"\\s*:").containsMatchIn(raw))
-                ActionBurst("Invalid burst", false, listOf(AniobAction.Wait(durationMs = 1000))) else null
-        }
-        if (!obj.containsKey("actions")) return null
-        val entries = obj["actions"] as? List<*>
-        val parsed = AniobActionSchema.parseActionBurstOrNull(raw)
-        val valid = entries != null && entries.size <= ActionBurst.MAX_ACTIONS &&
-            entries.all { it is Map<*, *> } && parsed != null && parsed.actions.size == entries.size &&
-            parsed.actions.all { action ->
-                val target = action.semanticTarget()
-                target == null || (target is SemanticTarget.SomIndex &&
-                    screenState.findNodeById(target.index)?.let { it.isVisibleToUser && it.isEnabled } == true)
-            }
-        return if (valid) parsed else ActionBurst("Invalid burst", false, listOf(AniobAction.Wait(durationMs = 1000)))
+    /**
+     * Parses a bundled plan and reduces it to the actions the observed screen can execute.
+     *
+     * @param goal the user's request, used to decide whether typing into an unnamed field is
+     *   trustworthy (an injected screen must not be able to push arbitrary text into the UI).
+     * @return null when the reply is not a bundled plan, or when nothing in it can be grounded on
+     *   [screenState]; a non-null result always has at least one executable action, or is an
+     *   explicit `is_complete` with no actions left to run.
+     */
+    fun parseBurstOrRepair(raw: String, screenState: AniobScreenState, goal: String = ""): ActionBurst? {
+        if (!PLAN_ARRAY.containsMatchIn(raw)) return null
+        val parsed = AniobActionSchema.parseActionBurstOrNull(raw) ?: return null
+
+        // Completion claimed with an empty action list: nothing to ground, nothing to execute.
+        if (parsed.planned.isEmpty()) return parsed.takeIf { it.isComplete }
+
+        val scoped = BurstPlanScope.scope(parsed, screenState, goal)
+        if (!scoped.groundedOnScreen) return null
+        return scoped.actionable
     }
 
     /** Outcome of the parse-or-repair boundary. */
@@ -95,12 +102,27 @@ object AniobStructuredOutput {
     /** Builds the repair prompt so suspend-aware callers can fetch the retry themselves. */
     fun repairPrompt(raw: String): String = repairPrompt(raw, describeError(raw))
 
+    /** Builds the repair prompt for a bundled plan that could not be grounded. */
+    fun burstRepairPrompt(raw: String, reason: String): String = buildString {
+        appendLine("Your previous reply was a multi-action plan, not a single action, and its first")
+        appendLine("action does not name an element that exists on the screen.")
+        appendLine("ERROR: $reason")
+        appendLine("Return ONE JSON object for the NEXT action only:")
+        appendLine(AniobActionSchema.ACTION_JSON_SCHEMA)
+        appendLine("PREVIOUS OUTPUT:")
+        appendLine(raw.take(600))
+        append("Use only ids present in the element list. Do not include prose or coordinates.")
+    }
+
     private fun describeError(raw: String): String {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return "empty response"
         // A refusal ("I can't operate your phone") gets a correction, not a schema lecture.
         if (com.aniob.core.capability.AniobRefusalGuard.isRefusal(trimmed)) {
             return "refused the task. " + com.aniob.core.capability.AniobCapabilityManifest.REFUSAL_CORRECTION
+        }
+        if (PLAN_ARRAY.containsMatchIn(trimmed)) {
+            return "returned a multi-action plan where one action was required"
         }
         val coordField = COORDINATE_HINTS.firstOrNull { Regex("\"$it\"\\s*:").containsMatchIn(trimmed) }
         if (coordField != null) return "coordinate field '$coordField' is not part of the vocabulary"
@@ -139,4 +161,9 @@ object AniobStructuredOutput {
     }
 
     private val COORDINATE_HINTS = listOf("x", "y", "startx", "endx", "bounds", "target_node_id")
+
+    private val PLAN_ARRAY = Regex("\"(?:actions|steps|plan)\"\\s*:\\s*\\[")
+
+    /** True when [raw] claims to be a bundled plan; used to pick the plan repair wording. */
+    fun looksLikePlan(raw: String): Boolean = PLAN_ARRAY.containsMatchIn(raw)
 }

@@ -73,6 +73,29 @@ if ! grep -q "actionKey" core-agent/src/main/kotlin/com/aniob/core/verifier/Anio
     SMOKE_FAIL=1
 fi
 
+# 5d-2. Bundled plan (multi-action) contract: the runner is what keeps a plan that crosses a
+# screen boundary from firing blind, and the parser must keep accepting the plan shape it ships.
+BURST_FILES="core-agent/src/main/kotlin/com/aniob/core/perception/BurstPlanScope.kt \
+core-agent/src/main/kotlin/com/aniob/core/execution/ActionBurstRunner.kt"
+for f in $BURST_FILES; do
+    if [ ! -f "$f" ]; then
+        echo "ERROR: bundled-plan file missing: $f"
+        SMOKE_FAIL=1
+    fi
+done
+if ! grep -q "parseBurstOrRepair" app/src/main/java/com/aniob/app/ui/AniobViewModel.kt 2>/dev/null; then
+    echo "ERROR: the step loop no longer reads a bundled plan."
+    SMOKE_FAIL=1
+fi
+if ! grep -q "ActionBurstRunner" app/src/main/java/com/aniob/app/ui/AniobViewModel.kt 2>/dev/null; then
+    echo "ERROR: the step loop executes a bundled plan without the re-observing runner."
+    SMOKE_FAIL=1
+fi
+if ! grep -q "carriedPlanHint" core-agent/src/main/kotlin/com/aniob/core/domain/ExecutorRequest.kt 2>/dev/null; then
+    echo "ERROR: the held-back part of a plan is no longer carried into the next planning step."
+    SMOKE_FAIL=1
+fi
+
 # 5e. Package receiver reflex
 if [ ! -f app/src/main/java/com/aniob/app/receiver/AniobPackageReceiver.kt ]; then
     echo "ERROR: AniobPackageReceiver reflex missing."
