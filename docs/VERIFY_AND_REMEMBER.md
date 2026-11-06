@@ -56,7 +56,10 @@ A verified trajectory is replayed with **no model call**.
 - **Fallback:** a miss, a vanished/disabled/ambiguous target, or a replay that leaves the screen
   unchanged returns to the normal ladder. A stalled replay is not retried on that screen for the
   rest of the run, so the cache can never spin on the same action. Replayed actions are
-  re-grounded on the live screen (`BurstTargetGuard`) before dispatch.
+  re-grounded on the live screen (`BurstTargetGuard`) before dispatch, and a replayed sequence runs
+  through the same runner as a model plan (`ActionBurstRunner`, see
+  [ACTION_PLANS.md](ACTION_PLANS.md)): every hop is verified before the next one is dispatched, and
+  only verified hops are recorded.
 
 ## Tests
 
