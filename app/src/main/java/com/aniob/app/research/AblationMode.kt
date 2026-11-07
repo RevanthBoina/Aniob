@@ -38,7 +38,8 @@ enum class AblationMode(
     val intentShortcuts: Boolean,
     val actionBursts: Boolean,
     val fastDeltaVerify: Boolean,
-    val rememberReplay: Boolean
+    val rememberReplay: Boolean,
+    val skillsEnabled: Boolean
 ) {
     BASELINE(
         id = "BASELINE",
@@ -48,7 +49,8 @@ enum class AblationMode(
         intentShortcuts = false,
         actionBursts = false,
         fastDeltaVerify = false,
-        rememberReplay = false
+        rememberReplay = false,
+        skillsEnabled = false
     ),
     INTENT_SHORTCUT_ONLY(
         id = "INTENT_SHORTCUT_ONLY",
@@ -58,17 +60,19 @@ enum class AblationMode(
         intentShortcuts = true,
         actionBursts = false,
         fastDeltaVerify = false,
-        rememberReplay = false
+        rememberReplay = false,
+        skillsEnabled = false
     ),
     BURST_AND_FAST_OBSERVE(
         id = "BURST_AND_FAST_OBSERVE",
         label = "Burst + fast capture",
         description = "Shortcuts, multi-action bursts and the event-driven capture skip.",
-        paperLabel = "Burst and fast observe (+ pruned accessibility tree + action bursts + event-driven verify)",
+        paperLabel = "Burst and fast observe (+ compact tree folding + action bursts + event-driven verify)",
         intentShortcuts = true,
         actionBursts = true,
         fastDeltaVerify = true,
-        rememberReplay = false
+        rememberReplay = false,
+        skillsEnabled = false
     ),
     FULL_HUMAN_SPEED(
         id = "FULL_HUMAN_SPEED",
@@ -78,7 +82,8 @@ enum class AblationMode(
         intentShortcuts = true,
         actionBursts = true,
         fastDeltaVerify = true,
-        rememberReplay = true
+        rememberReplay = true,
+        skillsEnabled = true
     );
 
     /**

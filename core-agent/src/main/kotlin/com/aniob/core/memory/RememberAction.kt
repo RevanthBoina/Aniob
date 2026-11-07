@@ -66,11 +66,17 @@ data class RememberAction(
 
         /** Snapshot of a dispatched action; unsupported actions return null and are never cached. */
         fun fromAction(action: AniobAction, node: AniobNode?, screen: AniobScreenState): RememberAction? {
+            if (node?.isPassword == true) return null
+            if (action is AniobAction.InputText && (action.text.length in 4..8 && action.text.all { it.isDigit() })) {
+                return null
+            }
             val target = action.semanticTarget()
             val viewId = node?.viewId.orEmpty().ifBlank { (target as? SemanticTarget.ResourceId)?.id.orEmpty() }
-            val text = node?.text.orEmpty().ifBlank { (target as? SemanticTarget.Text)?.text.orEmpty() }
-            val desc = node?.contentDescription.orEmpty()
-                .ifBlank { (target as? SemanticTarget.ContentDesc)?.desc.orEmpty() }
+            val rawText = node?.text.orEmpty().ifBlank { (target as? SemanticTarget.Text)?.text.orEmpty() }
+            val text = if (action is AniobAction.InputText) "" else com.aniob.core.perception.BurstTargetGuard.normalizeLabel(rawText)
+            val desc = com.aniob.core.perception.BurstTargetGuard.normalizeLabel(
+                node?.contentDescription.orEmpty().ifBlank { (target as? SemanticTarget.ContentDesc)?.desc.orEmpty() }
+            )
             val center = node?.let { normalizedCenter(it, screen) }
 
             val descriptor = when (action) {

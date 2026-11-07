@@ -31,12 +31,12 @@ These are implemented areas, not guarantees that a particular task will work. So
    cd Aniob
    ```
 
-2. Open the project in Android Studio and allow it to configure the local Android SDK, or install Gradle 9.3.1 and configure `ANDROID_HOME`/`ANDROID_SDK_ROOT` for command-line use. Keep the generated `local.properties` untracked.
+2. Open the project in Android Studio and allow it to configure the local Android SDK, or install Java 17 and configure `JAVA_HOME` and `ANDROID_HOME`/`ANDROID_SDK_ROOT` for command-line use. The checked-in Gradle 9.3.1 wrapper downloads and verifies the build toolchain. Keep the generated `local.properties` untracked.
 3. Run the existing JVM tests and lint tasks:
 
    ```bash
-   gradle :core-agent:test :app:testDebugUnitTest --console=plain
-   gradle :app:lintDebug --console=plain
+   ./gradlew :core-agent:test :app:testDebugUnitTest --console=plain
+   ./gradlew :app:lintDebug --console=plain
    ```
 
 4. To package a debug APK, create a local debug keystore if one is not already present (the CI job uses this command):
@@ -50,7 +50,7 @@ These are implemented areas, not guarantees that a particular task will work. So
    Then assemble the debug variant:
 
    ```bash
-   gradle :app:assembleDebug --console=plain
+   ./gradlew :app:assembleDebug --console=plain
    ```
 
 To install and launch the debug variant, select the `app` run configuration in Android Studio, connect an API 30+ device or emulator, and choose **Run**. The debug key is only for local development. Never commit it, other signing keys, credentials, `.env`, provider API keys, downloaded model files, or `local.properties`. `google-services.json` is optional for the current build; the plugin is configured to warn when it is absent. Cloud-provider configuration is user-supplied; see [OmniRoute setup](docs/OMNIROUTE_SETUP.md).

@@ -21,8 +21,6 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
       - name: Preflight guards
         run: |
           chmod +x scripts/*.sh
@@ -32,7 +30,7 @@ jobs:
       - name: Unit tests (core-agent + app)
         run: |
           set -o pipefail
-          if gradle :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"; then
+          if ./gradlew :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"; then
             exit 0
           fi
           # Surface actionable failures through the Checks API as well as downloadable logs.
@@ -43,7 +41,11 @@ jobs:
               message = message[:3000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
               print(f'::error title=Unit test diagnostics::{message}')
           lines = open(sys.argv[1], encoding='utf-8', errors='replace').read().splitlines()
-          diagnostics = [line for line in lines if re.search(r'^e:| FAILED|^> |^Execution failed|^Caused by:', line)]
+          compiler = [line for line in lines if re.search(r'^e:|^ERROR:|error:', line)]
+          failures = [line for line in lines if re.search(r' FAILED|^> (?!Task)|^Execution failed|^Caused by:', line)]
+          diagnostics = compiler + failures
+          if not diagnostics:
+              annotate('\n'.join(lines[-40:]))
           for line in diagnostics[:20]:
               annotate(line)
           for path in sorted(glob.glob('**/build/test-results/test*/TEST-*.xml', recursive=True)):
@@ -54,7 +56,7 @@ jobs:
           PY
           exit 1
       - name: Android lint
-        run: gradle :app:lintDebug --console=plain
+        run: ./gradlew :app:lintDebug --console=plain
       - name: Publish test reports
         if: always()
         uses: actions/upload-artifact@v4

@@ -17,6 +17,7 @@ data class CompactNode(
     val className: String,
     val viewId: String,
     val bounds: AniobRect,
+    val contentDescription: String = "",
     val isClickable: Boolean = false,
     val isCheckable: Boolean = false,
     val isChecked: Boolean = false,
@@ -157,6 +158,7 @@ object ObserveTreeCompactor {
                 className = snapshot.className,
                 viewId = snapshot.viewId,
                 bounds = snapshot.bounds,
+                contentDescription = snapshot.contentDescription,
                 isClickable = snapshot.isClickable,
                 isCheckable = snapshot.isCheckable,
                 isChecked = snapshot.isChecked,
@@ -187,9 +189,9 @@ object ObserveTreeCompactor {
         )
     }
 
-    /** `packageName + ":" + activityName + ":" + structuralSignature.hashCode()`. */
+    /** 64-bit FNV-1a deterministic screen hash (F-2). */
     fun screenHash(packageName: String, activityName: String, structuralSignature: String): String =
-        "$packageName:$activityName:${structuralSignature.hashCode()}"
+        com.aniob.core.diff.AniobScreenDiff.computeScreenHash64(packageName, activityName, structuralSignature)
 
     /**
      * The signature is built from class names and view ids only: text changes repaint the screen

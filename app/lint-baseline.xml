@@ -24,28 +24,6 @@
     </issue>
 
     <issue
-        id="MissingSuperCall"
-        message="Overriding method should call `super.onConfigurationChanged`"
-        errorLine1="    override fun onConfigurationChanged(newConfig: Configuration) = Unit"
-        errorLine2="                 ~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/java/com/aniob/app/AniobApplication.kt"
-            line="115"
-            column="18"/>
-    </issue>
-
-    <issue
-        id="MissingSuperCall"
-        message="Overriding method should call `super.onLowMemory`"
-        errorLine1="    override fun onLowMemory() {"
-        errorLine2="                 ~~~~~~~~~~~">
-        <location
-            file="src/main/java/com/aniob/app/AniobApplication.kt"
-            line="116"
-            column="18"/>
-    </issue>
-
-    <issue
         id="DefaultLocale"
         message="Implicitly using the default locale is a common source of bugs: Use `String.format(Locale, ...)` instead"
         errorLine1="            val reqGb = String.format(&quot;%.2f&quot;, requiredBytes / (1024.0 * 1024 * 1024))"

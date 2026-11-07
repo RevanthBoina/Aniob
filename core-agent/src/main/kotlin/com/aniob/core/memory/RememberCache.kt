@@ -32,7 +32,11 @@ class RememberCache(
         val screenHash: String,
         val actions: List<RememberAction>,
         val updatedAtMs: Long,
-        val hits: Int = 0
+        val hits: Int = 0,
+        val expectedNextHash: String = "",
+        val mustContainText: String = "",
+        val failures: Int = 0,
+        val successCount: Int = 1
     ) {
         val key: String get() = keyOf(goalKey, packageName, screenHash)
     }
@@ -55,7 +59,9 @@ class RememberCache(
         goal: String,
         packageName: String,
         preActionScreenHash: String,
-        actions: List<RememberAction>
+        actions: List<RememberAction>,
+        expectedNextHash: String = "",
+        mustContainText: String = ""
     ): Boolean {
         val parsed = RememberTemplate.parse(goal)
         val normalized = RememberTemplate.keyOf(goal)
@@ -67,6 +73,7 @@ class RememberCache(
 
         val key = keyOf(normalized, packageName, preActionScreenHash)
         val previous = entries[key]
+        val newSuccessCount = (previous?.successCount ?: 0) + 1
         entries[key] = Entry(
             goalKey = normalized,
             packageName = packageName,
@@ -75,10 +82,37 @@ class RememberCache(
             // be replayed for another time/number/name without re-learning the screens.
             actions = usable.map { it.parameterised(parsed) },
             updatedAtMs = clock(),
-            hits = previous?.hits ?: 0
+            hits = previous?.hits ?: 0,
+            expectedNextHash = expectedNextHash,
+            mustContainText = mustContainText,
+            failures = 0,
+            successCount = newSuccessCount
         )
         evictIfNeeded()
         return true
+    }
+
+    /**
+     * Records post-verification success for an entry, incrementing hits only when verified (F-1, F-4).
+     */
+    @Synchronized
+    fun recordSuccess(key: String) {
+        val entry = entries[key] ?: return
+        entries[key] = entry.copy(hits = entry.hits + 1, updatedAtMs = clock(), failures = 0)
+    }
+
+    /**
+     * Records replay divergence/failure, demoting or evicting on 2 consecutive misses (F-4).
+     */
+    @Synchronized
+    fun recordFailure(key: String) {
+        val entry = entries[key] ?: return
+        val newFailures = entry.failures + 1
+        if (newFailures >= 2) {
+            entries.remove(key)
+        } else {
+            entries[key] = entry.copy(failures = newFailures, updatedAtMs = clock())
+        }
     }
 
     /**
@@ -89,24 +123,23 @@ class RememberCache(
     fun lookup(goal: String, screen: AniobScreenState): List<AniobAction>? {
         if (entries.isEmpty()) return null
         val parsed = RememberTemplate.parse(goal)
-        val normalized = RememberTemplate.keyOf(goal)
-        if (normalized.isBlank()) return null
-        val hash = screenKey(screen.screenHash.ifBlank { screen.treeHash })
-        if (hash.isBlank()) return null
-        val entry = entries[keyOf(normalized, screen.packageName, hash)]
-            // A preset (see [RememberPresets]) applies to whichever screen the app opens on. Every
-            // action still has to resolve uniquely on the live screen, so the wildcard only saves
-            // the planning, never the observation.
-            ?: entries[keyOf(normalized, screen.packageName, WILDCARD_SCREEN)]
-            ?: return null
+        val entry = entryFor(goal, screen) ?: return null
         if (entry.actions.isEmpty()) return null
 
         // The trace is stored with {PARAM_n} for the values that came from the prompt; a goal that
         // cannot fill one of them is a different task and must miss rather than tap a stale value.
         val actions = entry.actions.map { it.injected(parsed.params) ?: return null }
-        val resolved = actions.map { replayOf(it, screen) ?: return null }
-        entries[entry.key] = entry.copy(hits = entry.hits + 1, updatedAtMs = clock())
-        return resolved
+        return actions.map { replayOf(it, screen) ?: return null }
+    }
+
+    /** Metadata for the exact transition selected by lookup, including wildcard presets. */
+    @Synchronized
+    fun entryFor(goal: String, screen: AniobScreenState): Entry? {
+        val goalKey = RememberTemplate.keyOf(goal)
+        val hash = screenKey(screen.screenHash.ifBlank { screen.treeHash })
+        if (goalKey.isBlank() || hash.isBlank()) return null
+        return entries[keyOf(goalKey, screen.packageName, hash)]
+            ?: entries[keyOf(goalKey, screen.packageName, WILDCARD_SCREEN)]
     }
 
     /** True when an entry exists for the key regardless of whether its targets resolve. */
@@ -216,12 +249,18 @@ class RememberCache(
                 return pickUnique(screen.nodes.filter { it.viewId == descriptor.viewId })
             }
             if (descriptor.text.isNotBlank()) {
-                return pickUnique(screen.nodes.filter { it.text.equals(descriptor.text, ignoreCase = true) })
+                val normTarget = com.aniob.core.perception.BurstTargetGuard.normalizeLabel(descriptor.text)
+                return pickUnique(screen.nodes.filter {
+                    it.text.equals(descriptor.text, ignoreCase = true) ||
+                        (normTarget.isNotBlank() && com.aniob.core.perception.BurstTargetGuard.normalizeLabel(it.text).equals(normTarget, ignoreCase = true))
+                })
             }
             if (descriptor.contentDescription.isNotBlank()) {
+                val normTarget = com.aniob.core.perception.BurstTargetGuard.normalizeLabel(descriptor.contentDescription)
                 return pickUnique(
                     screen.nodes.filter {
-                        it.contentDescription.equals(descriptor.contentDescription, ignoreCase = true)
+                        it.contentDescription.equals(descriptor.contentDescription, ignoreCase = true) ||
+                            (normTarget.isNotBlank() && com.aniob.core.perception.BurstTargetGuard.normalizeLabel(it.contentDescription).equals(normTarget, ignoreCase = true))
                     }
                 )
             }

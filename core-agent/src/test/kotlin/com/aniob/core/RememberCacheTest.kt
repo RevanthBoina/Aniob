@@ -259,7 +259,7 @@ class RememberCacheTest {
         )
 
         val json = cache.toJson()
-        assertTrue(json.startsWith("{\"version\":1"))
+        assertTrue(json.startsWith("{\"version\":2"))
         assertTrue(json.contains("\"goal\":\"pizza-search\""))
 
         val restored = RememberCache.fromJson(json)

@@ -69,7 +69,14 @@ data class TaskContext(
             retrievedDocs.forEach { appendLine("- $it") }
         }
         appendLine("PROGRESS (condensed):")
-        if (condensedHistory.isEmpty()) appendLine("- (no steps yet)") else condensedHistory.forEach { appendLine("- $it") }
+        if (condensedHistory.isEmpty()) {
+            appendLine("- (no steps yet)")
+        } else if (condensedHistory.size <= 8) {
+            condensedHistory.forEach { appendLine("- $it") }
+        } else {
+            appendLine("- [... ${condensedHistory.size - 8} earlier steps omitted ...]")
+            condensedHistory.takeLast(8).forEach { appendLine("- $it") }
+        }
     }
 
     fun buildExecutorRequest(
@@ -81,8 +88,8 @@ data class TaskContext(
         carriedPlanHint: String? = null
     ): ExecutorRequest {
         // A compact capture already pruned, merged and ordered its nodes; re-running the
-        // optimizer would re-index them for no benefit and could break the prompt ids.
-        val alreadyCompact = screen.nodes.any { it.markup.isNotBlank() }
+        // optimizer would re-index them for no benefit and could break the prompt ids (BL-4).
+        val alreadyCompact = screen.observationKind == "compact" || screen.nodes.any { it.markup.isNotBlank() }
         val optimizedNodes = if (alreadyCompact) {
             screen.nodes
         } else {

@@ -33,7 +33,7 @@ class AniobJwksIdTokenVerifier(
     private val lock = Mutex()
     private var keys: List<Map<String, Any?>> = emptyList()
     private var fetchedAt = Long.MIN_VALUE
-    private var lastAttemptAt: Long? = null
+    private var lastSuccessfulFetchAt: Long? = null
 
     override suspend fun verify(token: String, clientId: String, nonce: String): Boolean {
         if (token.length > 64 * 1024 || nonce.isBlank() || clientId.isBlank()) return false
@@ -67,6 +67,7 @@ class AniobJwksIdTokenVerifier(
             is List<*> -> audience.filterIsInstance<String>()
             else -> return false
         }
+        // OIDC Core §3.1.3.7: issuer is an exact, case-sensitive identifier, not a normalized URL.
         return claims["iss"] == issuer && clientId in audiences &&
             (audiences.size <= 1 || claims["azp"] == clientId) &&
             AniobAuthJson.long(claims["exp"])?.let { it > now } == true &&
@@ -86,14 +87,14 @@ class AniobJwksIdTokenVerifier(
             cached()?.let { return@withLock it }
         }
         // Unknown-key refresh is bounded too: random kid values must not flood the issuer.
-        if (lastAttemptAt?.let { clock.now() - it < 30_000L } == true) return@withLock null
-        lastAttemptAt = clock.now()
+        if (lastSuccessfulFetchAt?.let { clock.now() - it < 30_000L } == true) return@withLock null
         val reply = try { transport.get(issuer.trimEnd('/') + "/.well-known/jwks.json") }
         catch (e: IOException) { return@withLock null }
         if (reply.status != 200 || reply.body.length > 1024 * 1024) return@withLock null
         val root = AniobAuthJson.parseObject(reply.body) ?: return@withLock null
         keys = (root["keys"] as? List<*>)?.mapNotNull(AniobAuthJson::obj)?.take(100) ?: return@withLock null
         fetchedAt = clock.now()
+        lastSuccessfulFetchAt = fetchedAt
         cached()
     }
 

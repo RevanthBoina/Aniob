@@ -12,60 +12,58 @@ import com.aniob.core.domain.SemanticTarget
  * action `i > 0` is dispatched, the caller re-reads the window and asks this object two questions:
  * did the app navigate away, and is the planned target still there?
  *
- * Targets are re-identified by `viewId`, then text, then description, then bounds — the same
- * identity ladder the spec names — because element ids are re-assigned on every observation and a
- * stale id would silently point at a different widget.
+ * Targets are re-identified by stable identity. Ambiguity or lost identity asks for a replan;
+ * proximity alone must never select a different recipient, amount or control.
  */
 object BurstTargetGuard {
 
-    /** True when the burst left the package it was planned in. */
+    /** True when the burst navigated or drifted unexpectedly. */
     fun screenNavigated(origin: AniobScreenState, current: AniobScreenState): Boolean {
         if (origin.packageName.isBlank() || current.packageName.isBlank()) return false
-        return origin.packageName != current.packageName
+        if (origin.packageName != current.packageName) return true
+        if (origin.activityName.isNotBlank() && current.activityName.isNotBlank() && origin.activityName != current.activityName) {
+            return true
+        }
+        return false
     }
 
-    /**
-     * The live node the action should hit, or null when it is gone.
-     *
-     * Returns null for actions that carry no element target *and* for targets the origin screen
-     * never contained: an unverifiable action must not be dispatched blind.
-     */
+    /** Only whitespace is cosmetic. Digits, counters and suffixes may identify a recipient. */
+    fun normalizeLabel(text: String): String = text.replace(Regex("\\s+"), " ").trim()
+
     fun findTarget(action: AniobAction, origin: AniobScreenState, current: AniobScreenState): AniobNode? {
         val target = action.semanticTarget() ?: return null
         val planned = when (target) {
             is SemanticTarget.SomIndex -> origin.findNodeById(target.index)
-            is SemanticTarget.ResourceId -> origin.nodes.firstOrNull { it.viewId == target.id }
-            is SemanticTarget.Text -> origin.nodes.firstOrNull {
-                it.text.equals(target.text, ignoreCase = !target.exact)
+            is SemanticTarget.ResourceId -> origin.nodes.singleOrNull { it.viewId == target.id }
+            is SemanticTarget.Text -> origin.nodes.singleOrNull {
+                normalizeLabel(it.text).equals(normalizeLabel(target.text), ignoreCase = !target.exact)
             }
-            is SemanticTarget.ContentDesc -> origin.nodes.firstOrNull {
-                it.contentDescription.equals(target.desc, ignoreCase = !target.exact)
+            is SemanticTarget.ContentDesc -> origin.nodes.singleOrNull {
+                normalizeLabel(it.contentDescription).equals(normalizeLabel(target.desc), ignoreCase = !target.exact)
+            }
+            is SemanticTarget.BoundingBox -> origin.nodes.singleOrNull {
+                it.bounds.left == target.left && it.bounds.top == target.top &&
+                    it.bounds.right == target.right && it.bounds.bottom == target.bottom
             }
             else -> null
         } ?: return null
         return match(current.nodes, planned)
     }
 
-    /** Same element on a new observation, matched most-specific first. */
-    fun match(nodes: List<AniobNode>, planned: AniobNode): AniobNode? {
-        // Do not fall back to a recycled SoM index or to the first ambiguous match.
-        val candidates = nodes.filter { node ->
-            node.isVisibleToUser && node.className == planned.className && when {
-                planned.viewId.isNotBlank() -> node.viewId == planned.viewId
-                planned.text.isNotBlank() -> node.text == planned.text
-                planned.contentDescription.isNotBlank() -> node.contentDescription == planned.contentDescription
-                else -> false
-            }
+    /** Never fall back to proximity when a named widget disappears or has duplicate identities. */
+    fun match(nodes: List<AniobNode>, planned: AniobNode): AniobNode? = nodes.filter { node ->
+        node.isVisibleToUser && node.className == planned.className && when {
+            planned.viewId.isNotBlank() -> node.viewId == planned.viewId &&
+                (planned.text.isBlank() || normalizeLabel(node.text) == normalizeLabel(planned.text)) &&
+                (planned.contentDescription.isBlank() || normalizeLabel(node.contentDescription) == normalizeLabel(planned.contentDescription))
+            planned.text.isNotBlank() -> normalizeLabel(node.text) == normalizeLabel(planned.text)
+            planned.contentDescription.isNotBlank() -> normalizeLabel(node.contentDescription) == normalizeLabel(planned.contentDescription)
+            else -> node.viewId.isBlank() && node.text.isBlank() && node.contentDescription.isBlank() && node.bounds == planned.bounds
         }
-        return candidates.singleOrNull()
-    }
+    }.singleOrNull()
 
     /**
      * Rewrites [action] to name [node] by identity instead of by the id of a past observation.
-     *
-     * Element ids are re-assigned on every capture, so a burst planned on one screen must re-target
-     * before it lands on the next one; a stable `viewId`, text or the node's bounds survive that
-     * re-index, a raw index does not.
      */
     fun retarget(action: AniobAction, node: AniobNode): AniobAction {
         val target = when {
@@ -88,27 +86,24 @@ object BurstTargetGuard {
     }
 
     /**
-     * Whether the burst can continue with [action]. [reason] explains an abort in the log and in
-     * the step record; it is empty when the action may run.
+     * Whether the burst can continue with [action].
      */
-    data class Verdict(val allowed: Boolean, val reason: String = "") {
-        /**
-         * True when the burst cannot continue but the **task** can: a hidden, re-indexed or
-         * disabled target, or a screen that moved on, only means the plan was made for a screen
-         * that no longer exists. The right answer is to drop the rest of the burst, observe the
-         * screen as it is now and plan one action from it — never to fail the whole task.
-         */
+    data class Verdict(
+        val allowed: Boolean,
+        val reason: String = "",
+        val matchedNode: AniobNode? = null
+    ) {
         val shouldReplan: Boolean get() = !allowed
     }
 
     fun check(action: AniobAction, origin: AniobScreenState, current: AniobScreenState): Verdict {
         if (screenNavigated(origin, current)) {
-            return Verdict(false, "screen navigated to ${current.packageName}")
+            return Verdict(false, "screen navigated to ${current.packageName}", null)
         }
-        val target = action.semanticTarget() ?: return Verdict(true)
+        val target = action.semanticTarget() ?: return Verdict(true, "", null)
         val node = findTarget(action, origin, current)
-            ?: return Verdict(false, "target ${target.describe()} is no longer on screen")
-        if (!node.isEnabled) return Verdict(false, "target ${target.describe()} is disabled")
-        return Verdict(true)
+            ?: return Verdict(false, "target ${target.describe()} is no longer on screen", null)
+        if (!node.isEnabled) return Verdict(false, "target ${target.describe()} is disabled", null)
+        return Verdict(true, "", node)
     }
 }

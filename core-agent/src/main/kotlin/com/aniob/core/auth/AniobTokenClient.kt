@@ -112,7 +112,9 @@ class AniobTokenClient(
         }
         val scopes = if (json.containsKey("scope")) {
             (json["scope"] as? String).orEmpty().split(' ').filter { it.isNotBlank() }.toSet()
-        } else previous?.scopes.orEmpty()
+        } else previous?.scopes ?: config.scopes.split(' ').filter { it.isNotBlank() }.toSet()
+        // RFC 6749 §5.1: omission means unchanged scope, not an empty grant. An explicit
+        // empty/narrowed scope is still authoritative and must never use the fallback.
         if (config.requiredScope !in scopes) return AniobTokenResult.Failure(AniobAuthError.PlanHasNoAccess)
         val idClaims = if (previous == null) AniobJwtClaimsReader.read(idToken) else null
         val now = clock.now()

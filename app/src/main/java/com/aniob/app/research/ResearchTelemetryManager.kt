@@ -53,7 +53,21 @@ class ResearchTelemetryManager(
         var screenshots: Int = 0,
         var promptTokens: Int = 0,
         var intentShortcutUsed: Boolean = false,
-        var rememberCacheHit: Boolean = false
+        var rememberCacheHit: Boolean = false,
+        var treeReads: Int = 0,
+        var bitmaps: Int = 0,
+        var burstsPlanned: Int = 0,
+        var burstMembersRun: Int = 0,
+        var burstsSuspended: Boolean = false,
+        var shortcutAttempted: Boolean = false,
+        var shortcutDegraded: Boolean = false,
+        var shortcutFailReason: String = "",
+        var skillId: String = "",
+        var rememberReplayActions: Int = 0,
+        var fastpathSteps: Int = 0,
+        var replayValidated: Boolean = false,
+        var replayDiverged: Boolean = false,
+        var setupLatencyMs: Long = 0L
     )
 
     private val appContext = context.applicationContext
@@ -138,9 +152,91 @@ class ResearchTelemetryManager(
         synchronized(lock) { active?.let { it.steps++ } }
     }
 
-    /** Increments the screenshot capture counter. Call once per bitmap capture. */
+    /** Increments the tree read counter (M-1). */
+    fun recordTreeRead() {
+        synchronized(lock) {
+            active?.let {
+                it.treeReads++
+                it.screenshots++
+            }
+        }
+    }
+
+    /** Increments the screenshot bitmap capture counter (M-1). */
+    fun recordBitmapCapture() {
+        synchronized(lock) {
+            active?.let {
+                it.bitmaps++
+            }
+        }
+    }
+
+    /** Increments the screenshot capture counter. Kept for backwards compatibility. */
     fun recordScreenCapture() {
-        synchronized(lock) { active?.let { it.screenshots++ } }
+        recordTreeRead()
+    }
+
+    fun recordBurst(planned: Int, run: Int, suspended: Boolean) {
+        synchronized(lock) {
+            active?.let {
+                it.burstsPlanned += planned
+                it.burstMembersRun += run
+                if (suspended) it.burstsSuspended = true
+            }
+        }
+    }
+
+    fun recordBurstPlanned() {
+        synchronized(lock) { active?.let { it.burstsPlanned++ } }
+    }
+
+    fun recordBurstMemberRun() {
+        synchronized(lock) { active?.let { it.burstMembersRun++ } }
+    }
+
+    fun recordBurstSuspended() {
+        synchronized(lock) { active?.let { it.burstsSuspended = true } }
+    }
+
+    fun recordShortcutAttempt(attempted: Boolean, degraded: Boolean = false, reason: String = "") {
+        synchronized(lock) {
+            active?.let {
+                it.shortcutAttempted = attempted
+                if (degraded) it.shortcutDegraded = true
+                if (reason.isNotBlank()) it.shortcutFailReason = reason
+            }
+        }
+    }
+
+    fun recordSkillUsed(name: String) {
+        synchronized(lock) { active?.let { it.skillId = name } }
+    }
+
+    fun recordRememberReplay(actionCount: Int, validated: Boolean = false, diverged: Boolean = false) {
+        synchronized(lock) {
+            active?.let {
+                it.rememberCacheHit = true
+                it.rememberReplayActions += actionCount
+                if (validated) it.replayValidated = true
+                if (diverged) it.replayDiverged = true
+            }
+        }
+    }
+
+    fun recordReplayValidated() {
+        synchronized(lock) { active?.let { it.replayValidated = true } }
+    }
+
+    fun recordReplayDiverged() {
+        synchronized(lock) { active?.let { it.replayDiverged = true } }
+    }
+
+    fun recordFastpathStep() {
+        synchronized(lock) { active?.let { it.fastpathSteps++ } }
+    }
+
+    fun setSetupLatency(ms: Long) {
+        synchronized(lock) { active?.let { it.setupLatencyMs = ms } }
     }
 
     /** Adds prompt tokens to the current task. Call at each cloud/local generation site. */
@@ -186,7 +282,21 @@ class ResearchTelemetryManager(
                 rememberCacheHit = current.rememberCacheHit,
                 screenshots = current.screenshots,
                 promptTokens = current.promptTokens,
-                studyPass = current.pass
+                studyPass = current.pass,
+                treeReads = current.treeReads,
+                bitmaps = current.bitmaps,
+                burstsPlanned = current.burstsPlanned,
+                burstMembersRun = current.burstMembersRun,
+                burstsSuspended = current.burstsSuspended,
+                shortcutAttempted = current.shortcutAttempted,
+                shortcutDegraded = current.shortcutDegraded,
+                shortcutFailReason = current.shortcutFailReason,
+                skillId = current.skillId,
+                rememberReplayActions = current.rememberReplayActions,
+                fastpathSteps = current.fastpathSteps,
+                replayValidated = current.replayValidated,
+                replayDiverged = current.replayDiverged,
+                setupLatencyMs = current.setupLatencyMs
             )
             store.append(run)
             store.rewriteSummary()

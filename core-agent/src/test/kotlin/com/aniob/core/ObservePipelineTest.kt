@@ -257,7 +257,7 @@ class ObservePipelineTest {
         val expectedSignature = "android.widget.LinearLayout#com.example:id/save"
         assertEquals(expectedSignature, observation.structuralSignature)
         assertEquals(
-            "com.example:MainActivity:${expectedSignature.hashCode()}",
+            ObserveTreeCompactor.screenHash("com.example", "MainActivity", expectedSignature),
             observation.screenHash
         )
     }

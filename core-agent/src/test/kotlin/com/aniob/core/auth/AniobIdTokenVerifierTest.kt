@@ -84,6 +84,40 @@ class AniobIdTokenVerifierTest {
         assertFalse(verifier.verify(jwt(), "client", "nonce"))
     }
 
+    @Test fun `transport failure permits immediate retry but successful fetch still throttles unknown keys`() = runTest {
+        var calls = 0
+        val verifier = AniobJwksIdTokenVerifier(issuer, {
+            if (++calls == 1) throw java.io.IOException("transient")
+            AniobHttpReply(200, "application/json", jwks())
+        }, clock)
+        assertFalse(verifier.verify(jwt(), "client", "nonce"))
+        assertTrue(verifier.verify(jwt(), "client", "nonce"))
+        repeat(5) { assertFalse(verifier.verify(jwt(kid = "random-$it"), "client", "nonce")) }
+        assertEquals(2, calls)
+    }
+
+    @Test fun `unavailable and malformed JWKS responses do not poison the retry clock`() = runTest {
+        for (reply in listOf(AniobHttpReply(503, "text/plain", "unavailable"), AniobHttpReply(200, "application/json", "{}"))) {
+            var calls = 0
+            val verifier = AniobJwksIdTokenVerifier(issuer, {
+                if (++calls == 1) reply else AniobHttpReply(200, "application/json", jwks())
+            }, clock)
+            assertFalse(verifier.verify(jwt(), "client", "nonce"))
+            assertTrue(verifier.verify(jwt(), "client", "nonce"))
+            assertEquals(2, calls)
+        }
+    }
+
+    @Test fun `issuer trailing slash is part of its exact identifier`() = runTest {
+        val slashClaims = claims().apply { put("iss", "$issuer/") }
+        assertFalse(verifier().verify(jwt(slashClaims), "client", "nonce"))
+        val slashVerifier = AniobJwksIdTokenVerifier("$issuer/", {
+            AniobHttpReply(200, "application/json", jwks())
+        }, clock)
+        assertTrue(slashVerifier.verify(jwt(slashClaims), "client", "nonce"))
+        assertFalse(slashVerifier.verify(jwt(), "client", "nonce"))
+    }
+
     companion object {
         // Generated in memory; never persisted or used outside unit tests.
         private val pair by lazy { KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair() }
