@@ -31,7 +31,7 @@ These are implemented areas, not guarantees that a particular task will work. So
    cd Aniob
    ```
 
-2. Open the project in Android Studio and allow it to configure the local Android SDK, or install Gradle 9.3.1 and configure `ANDROID_HOME`/`ANDROID_SDK_ROOT` for command-line use. Keep the generated `local.properties` untracked.
+2. Open the project in Android Studio and allow it to configure the local Android SDK, or install Java 17 and configure `JAVA_HOME` and `ANDROID_HOME`/`ANDROID_SDK_ROOT` for command-line use. The checked-in Gradle 9.3.1 wrapper downloads and verifies the build toolchain. Keep the generated `local.properties` untracked.
 3. Run the existing JVM tests and lint tasks:
 
    ```bash

@@ -18,8 +18,8 @@ data class AniobScreenState(
     val changedRegion: AniobRect? = null,
     val isEventDrivenSkip: Boolean = false,
     /**
-     * `packageName:activityName:structuralSignature.hashCode()` for the *visible interactive*
-     * structure of this screen. Empty on captures that did not run the compact pipeline.
+     * 64-bit FNV-1a identity of package, activity and visible interactive structure.
+     * Present on both compact and legacy captures; empty on observations without that identity.
      */
     val screenHash: String = "",
     /** Explicit kind of pipeline that generated this observation ("compact", "legacy", "mock"). */

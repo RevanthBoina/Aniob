@@ -26,7 +26,7 @@ internal class AniobCallbackHeaderReader(
                 beforeRead(wait.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1))
                 available = input.read(buffer, 0, minOf(buffer.size, remaining))
                 position = 0
-                if (available <= 0) return null
+                if (available <= 0 || now() >= deadline) return null
             }
             val c = buffer[position++].toInt() and 0xff
             remaining--
