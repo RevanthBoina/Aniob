@@ -299,7 +299,7 @@ class AniobExecutionRouterTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    fun `app launch turns "open app and do x" into a zero-model first action`() {
+    fun `app launch turns 'open app and do x' into a zero-model first action`() {
         val router = AniobExecutionRouter(planningAgent = null)
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { goal ->

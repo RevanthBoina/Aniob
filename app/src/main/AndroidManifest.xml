@@ -4,6 +4,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Google Play Policy Justification for SYSTEM_ALERT_WINDOW:
+         Required for displaying the floating agent overlay HUD, user confirmation dialogs, and real-time execution ticker over third-party applications during autonomous UI automation. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -11,10 +13,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
-    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-        tools:ignore="ProtectedPermissions" />
 
     <!-- Direct device commands (DeviceCommand catalogue). All are optional at runtime: a command whose
          permission is missing reports the exact setting to enable instead of failing silently. -->
@@ -22,14 +21,17 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Lists Aniob under Settings > Do Not Disturb access so dnd_on / dnd_off can be granted. -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
-    <!-- call (ACTION_CALL) and contact-name lookup for call / whatsapp / sms. -->
+    <!-- Google Play Policy Justification for CALL_PHONE:
+         Required for executing direct hands-free NL voice calling commands (DeviceCommand.CALL / Intent.ACTION_CALL) requested by the user without manual dialer interaction. -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- location_share: last known location only, never tracked. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <!-- file_find / file_open over MediaStore. Media types need the READ_MEDIA_* grants; PDFs and
-         downloads need "All files access", which Android only offers through its own settings page. -->
+         downloads need "All files access", which Android only offers through its own settings page.
+         Google Play Policy Justification for MANAGE_EXTERNAL_STORAGE:
+         Core agent functionality requires full-device document access for finding and opening arbitrary files (PDFs, downloads, office docs) via the file_find and file_open device commands where MediaStore is insufficient. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -57,7 +59,7 @@
 
     <application
         android:name=".AniobApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"

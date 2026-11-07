@@ -29,9 +29,29 @@ jobs:
           chmod +x scripts/*.sh
           bash scripts/ci-preflight.sh
 
-      - name: Generate Keystore
+      - name: Verify release signing credentials
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PATH: ${{ secrets.KEYSTORE_PATH }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          keytool -genkeypair -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+            echo "KEYSTORE_PATH=release.keystore" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=$STORE_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${KEY_PASSWORD:-$STORE_PASSWORD}" >> $GITHUB_ENV
+          elif [ -n "$KEYSTORE_PATH" ] && [ -f "$KEYSTORE_PATH" ]; then
+            echo "KEYSTORE_PATH=$KEYSTORE_PATH" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=$STORE_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${KEY_PASSWORD:-$STORE_PASSWORD}" >> $GITHUB_ENV
+          else
+            echo "ERROR: Real release signing secrets (KEYSTORE_BASE64 or KEYSTORE_PATH, STORE_PASSWORD, KEY_ALIAS) are missing. Refusing to sign release APK with public debug key."
+            exit 1
+          fi
 
       - name: Build Android Release APK
         run: |

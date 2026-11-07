@@ -311,7 +311,7 @@ class StepPipeline(
         // VERIFY
         val verification = if (proposal is Proposal.DirectIntent) {
             val summary = (effectiveAction as? AniobAction.Finish)?.summary ?: effectiveAction.describeAction()
-            if (ctx.successCriteria != null && ctx.successCriteria.hasObservableCheck) {
+            if (ctx.successCriteria?.hasObservableCheck == true) {
                 DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
             } else {
                 DeterministicVerifier.VerificationResult(

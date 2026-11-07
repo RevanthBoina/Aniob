@@ -202,7 +202,7 @@ class AniobExecutionRouter(
             // becomes an infinite loop. `shouldDispatchShortcut` bounds both cases to one dispatch
             // per task. Only an app *launch* is excluded here: it has a package and no parameters,
             // and the branch below handles it as an observed OpenApp.
-            if (carriesParameters && intentShortcut != null &&
+            if (carriesParameters &&
                 (intentShortcut.requiresObservation || firstStep) &&
                 shouldDispatchShortcut(taskSignature, intentShortcut)
             ) {
