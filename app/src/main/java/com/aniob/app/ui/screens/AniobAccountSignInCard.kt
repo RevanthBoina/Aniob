@@ -58,11 +58,18 @@ fun AniobAccountSignInCard(modifier: Modifier = Modifier, viewModel: AniobAccoun
                 fontWeight = FontWeight.SemiBold
             )
             Text(stringResource(R.string.account_chatgpt), style = MaterialTheme.typography.titleSmall)
+            if (settings.revocationUnconfirmed) Text(stringResource(R.string.account_revoke_unconfirmed))
             when (val s = screen) {
-                AniobAccountScreenState.Intro -> Intro(onContinue = viewModel::startSignIn)
+                AniobAccountScreenState.Intro -> {
+                    Intro(onContinue = viewModel::startSignIn)
+                    DeleteProvider(viewModel)
+                }
                 AniobAccountScreenState.Waiting -> Waiting(onCancel = viewModel::cancelSignIn)
                 is AniobAccountScreenState.Connected -> Connected(s, settings, viewModel)
-                is AniobAccountScreenState.Problem -> Problem(s, onRetry = viewModel::startSignIn)
+                is AniobAccountScreenState.Problem -> {
+                    Problem(s, onRetry = viewModel::startSignIn)
+                    DeleteProvider(viewModel)
+                }
             }
         }
     }
@@ -179,12 +186,24 @@ private fun Connected(
     OutlinedButton(onClick = vm::signOut, modifier = Modifier.fillMaxWidth().testTag("account_sign_out")) {
         Text(stringResource(R.string.account_sign_out))
     }
-    TextButton(onClick = vm::signOutEverywhere, modifier = Modifier.fillMaxWidth()) {
-        Text(stringResource(R.string.account_sign_out_everywhere))
-    }
-    TextButton(onClick = vm::deleteProvider, modifier = Modifier.fillMaxWidth().testTag("account_delete")) {
+    DeleteProvider(vm)
+}
+
+@Composable
+private fun DeleteProvider(vm: AniobAccountViewModel) {
+    var confirm by remember { mutableStateOf(false) }
+    TextButton(onClick = { confirm = true }, modifier = Modifier.fillMaxWidth().testTag("account_delete")) {
         Text(stringResource(R.string.account_delete), color = MaterialTheme.colorScheme.error)
     }
+    if (confirm) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { confirm = false },
+        title = { Text(stringResource(R.string.account_delete)) },
+        text = { Text(stringResource(R.string.account_delete_description)) },
+        confirmButton = { TextButton(onClick = { confirm = false; vm.deleteProvider() }) {
+            Text(stringResource(R.string.account_delete))
+        } },
+        dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(android.R.string.cancel)) } }
+    )
 }
 
 private fun testText(result: AniobAccountTestResult): Int = when (result) {
@@ -198,6 +217,9 @@ private fun testText(result: AniobAccountTestResult): Int = when (result) {
 
 /** Maps a typed error's message key (see `AniobAuthError`) to its string resource. */
 internal fun errorText(key: String): Int = when (key) {
+    "account_error_identity" -> R.string.account_error_identity
+    "account_error_client" -> R.string.account_error_client
+    "account_error_refresh_config" -> R.string.account_error_refresh_config
     "account_error_cancelled" -> R.string.account_error_cancelled
     "account_error_state_mismatch" -> R.string.account_error_state_mismatch
     "account_error_timeout" -> R.string.account_error_timeout

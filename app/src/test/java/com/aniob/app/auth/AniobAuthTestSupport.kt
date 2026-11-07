@@ -58,7 +58,7 @@ fun testConfig(inferenceBase: String = "https://models.example.test/api") = Anio
     authorizeUrl = "https://auth.example.test/oauth/authorize",
     tokenUrl = "https://auth.example.test/oauth/token",
     redirectUri = "http://127.0.0.1:1455/auth/callback",
-    scopes = "openid profile email offline_access",
+    scopes = "openid profile email offline_access chatgpt.tokens.use.direct",
     inferenceBaseUrl = inferenceBase,
     originator = "aniob-test",
     betaHeader = "responses=test"

@@ -21,14 +21,14 @@ class AniobAuthRepositoryTest {
     private val clock = FakeClock()
 
     private fun repo(store: FakeStore, transport: FakeTransport) =
-        AniobAuthRepository(store, AniobTokenClient(AniobAuthFixtures.config, transport, clock), clock)
+        AniobAuthRepository(store, AniobTokenClient(AniobAuthFixtures.config, transport, clock, AniobAuthFixtures.verifier), clock)
 
     @Test fun `sign in exchanges the code with a form body and stores the account`() = runTest {
         val store = FakeStore()
         val transport = FakeTransport { _, _, _ -> json(200, tokenBody("acc-new", "ref-new")) }
         val repository = repo(store, transport)
 
-        assertNull(repository.completeSignIn("the-code", "the-verifier"))
+        assertNull(repository.completeSignIn("the-code", "the-verifier", "nonce"))
 
         val (url, type, body) = transport.calls.single()
         assertEquals("https://auth.example.test/oauth/token", url)
@@ -51,7 +51,7 @@ class AniobAuthRepositoryTest {
     @Test fun `a rejected code is a typed error and stores nothing`() = runTest {
         val store = FakeStore()
         val repository = repo(store, FakeTransport { _, _, _ -> json(400, """{"error":"invalid_grant"}""") })
-        val error = repository.completeSignIn("c", "v")
+        val error = repository.completeSignIn("c", "v", "nonce")
         assertEquals(AniobAuthError.CodeExchangeRejected(400, "invalid_grant"), error)
         assertNull(store.tokens)
         assertTrue(repository.state.value is AniobAuthState.Failed)
@@ -65,14 +65,14 @@ class AniobAuthRepositoryTest {
         assertTrue(transport.calls.isEmpty())
     }
 
-    @Test fun `near expiry refreshes with a JSON body and persists the rotated token before use`() = runTest {
+    @Test fun `near expiry refreshes with a form body and persists the rotated token before use`() = runTest {
         val store = FakeStore(tokens(expiresAt = clock.t + 60_000L)) // < 5 min left
         val transport = FakeTransport { _, _, _ -> json(200, tokenBody("acc-2", "ref-2")) }
         val result = repo(store, transport).obtainAccess()
 
         val (_, type, body) = transport.calls.single()
-        assertEquals("application/json", type)
-        val sent = AniobAuthJson.parseObject(body)!!
+        assertEquals("application/x-www-form-urlencoded", type)
+        val sent = AniobAuthCallbackParser.parseQuery(body)
         assertEquals("refresh_token", sent["grant_type"])
         assertEquals("ref-1", sent["refresh_token"])
         assertEquals("test_client", sent["client_id"])
@@ -93,7 +93,7 @@ class AniobAuthRepositoryTest {
                 return json(200, tokenBody("acc-2", "ref-2"))
             }
         }
-        val repository = AniobAuthRepository(store, AniobTokenClient(AniobAuthFixtures.config, transport, clock), clock)
+        val repository = AniobAuthRepository(store, AniobTokenClient(AniobAuthFixtures.config, transport, clock, AniobAuthFixtures.verifier), clock)
         val results = (1..8).map { async { repository.obtainAccess() } }.awaitAll()
         assertEquals(1, transport.calls)
         assertTrue(results.all { (it as AniobAccessResult.Granted).grant.accessToken == "acc-2" })
@@ -156,7 +156,7 @@ class AniobAuthRepositoryTest {
 
     @Test fun `initialize restores a session and sign out clears only this device`() = runTest {
         val store = FakeStore(tokens(expiresAt = clock.t + 3_600_000L))
-        val repository = repo(store, FakeTransport { _, _, _ -> error("no") })
+        val repository = repo(store, FakeTransport { _, _, _ -> json(200, "{}") })
         repository.initialize()
         assertTrue(repository.state.value is AniobAuthState.SignedIn)
         repository.signOut()

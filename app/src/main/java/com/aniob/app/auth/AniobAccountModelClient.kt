@@ -163,7 +163,10 @@ class AniobAccountModelClient(
 
     private fun grantOrThrow(result: AniobAccessResult): AniobAccessGrant = when (result) {
         is AniobAccessResult.Granted -> result.grant
-        is AniobAccessResult.Unavailable -> when (result.error) {
+        is AniobAccessResult.Unavailable -> when (val error = result.error) {
+            is AniobAuthError.RefreshConfiguration -> throw AniobAccountHttp.failure(
+                GatewayFailureKind.CLIENT_ERROR, error.httpStatus, endpoint,
+                "connection configuration was rejected; local session retained")
             is AniobAuthError.Network -> throw AniobAccountHttp.failure(GatewayFailureKind.UNREACHABLE, null, endpoint, "could not refresh the session")
             else -> throw AniobAccountHttp.signInNeeded()
         }

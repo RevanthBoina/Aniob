@@ -27,7 +27,7 @@ class AniobAuthMiscTest {
         assertFalse(ok.copy(inferenceBaseUrl = "http://models.example.test").isUsable)
         assertFalse(ok.copy(redirectUri = "http://0.0.0.0:1455/auth/callback").isUsable)
         assertFalse(ok.copy(redirectUri = "http://example.com/cb").isUsable)
-        assertTrue(ok.copy(redirectUri = "http://localhost:1455/auth/callback").isUsable)
+        assertFalse(ok.copy(redirectUri = "http://localhost:1455/auth/callback").isUsable)
         assertEquals(1455, ok.redirectPort)
         assertEquals("/auth/callback", ok.redirectPath)
         assertFalse(ok.toString().contains("test_client"))

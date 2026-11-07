@@ -25,7 +25,9 @@ data class AniobAuthTokens(
     val accountId: String? = null,
     val planType: String? = null,
     /** For display only, and shown masked. Never a trust decision. */
-    val email: String? = null
+    val email: String? = null,
+    val clientId: String = "",
+    val scopes: Set<String> = emptySet()
 ) {
     override fun toString(): String = "AniobAuthTokens(<redacted>)"
 }
@@ -57,10 +59,14 @@ sealed class AniobAuthError(val messageKey: String) {
     data object BrowserUnavailable : AniobAuthError("account_error_no_browser")
     data object PlanHasNoAccess : AniobAuthError("account_error_no_access")
     data object Unparseable : AniobAuthError("account_error_unreadable")
+    data object InvalidIdentity : AniobAuthError("account_error_identity")
+    data object ClientMismatch : AniobAuthError("account_error_client")
     data object NotConfigured : AniobAuthError("account_error_not_configured")
 
     data class CodeExchangeRejected(val httpStatus: Int, val oauthErrorCode: String?) :
         AniobAuthError("account_error_exchange_rejected")
+
+    data class RefreshConfiguration(val httpStatus: Int) : AniobAuthError("account_error_refresh_config")
 
     data class AuthorizationRejected(val oauthErrorCode: String?) :
         AniobAuthError("account_error_authorization_rejected")
@@ -106,7 +112,10 @@ data class AniobAuthConfig(
     /** Value of the `OpenAI-Beta` header; empty means do not send it. */
     val betaHeader: String = "",
     /** The `client_id` is sensitive-ish and is never printed. */
-    val maxSignInMs: Long = 10 * 60 * 1000L
+    val maxSignInMs: Long = 10 * 60 * 1000L,
+    val issuer: String = "https://auth.openai.com",
+    val resource: String = "https://api.openai.com/v1",
+    val requiredScope: String = "chatgpt.tokens.use.direct"
 ) {
     override fun toString(): String = "AniobAuthConfig(<redacted>)"
 
@@ -116,10 +125,12 @@ data class AniobAuthConfig(
     /** Reasons this configuration cannot be used; empty when it is usable. */
     fun problems(): List<String> {
         val out = mutableListOf<String>()
-        if (clientId.isBlank()) out += "client id is missing"
+        if (clientId.isBlank() || clientId in setOf("UNSET", "NONE")) out += "client id is missing"
         if (!isHttps(authorizeUrl)) out += "authorize address must be https"
         if (!isHttps(tokenUrl)) out += "token address must be https"
         if (!isHttps(inferenceBaseUrl)) out += "model address must be https"
+        if (!isHttps(issuer) || !isHttps(resource)) out += "issuer and resource must be https"
+        if (requiredScope !in scopes.split(' ')) out += "required plan scope missing"
         if (scopes.isBlank()) out += "scopes are missing"
         if (!isLoopbackHttp(redirectUri)) out += "redirect must be an http loopback address"
         return out
@@ -128,7 +139,7 @@ data class AniobAuthConfig(
     val isUsable: Boolean get() = problems().isEmpty()
 
     companion object {
-        private val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost", "[::1]", "::1")
+        private val LOOPBACK_HOSTS = setOf("127.0.0.1")
 
         private fun parse(value: String): URI? = try {
             URI(value.trim())
@@ -138,13 +149,17 @@ data class AniobAuthConfig(
 
         fun isHttps(value: String): Boolean {
             val uri = parse(value) ?: return false
-            return uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
+            return uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank() &&
+                uri.userInfo == null && uri.fragment == null && uri.rawQuery == null &&
+                (uri.port == -1 || uri.port in 1..65535)
         }
 
         fun isLoopbackHttp(value: String): Boolean {
             val uri = parse(value) ?: return false
             val host = uri.host?.lowercase() ?: return false
-            return uri.scheme.equals("http", ignoreCase = true) && host in LOOPBACK_HOSTS
+            return uri.scheme.equals("http", ignoreCase = true) && host in LOOPBACK_HOSTS &&
+                uri.port in 1..65535 && uri.path == "/auth/callback" &&
+                uri.userInfo == null && uri.rawQuery == null && uri.fragment == null
         }
 
         /** `a=b&c=d` (as written in a properties file) to an ordered map. Blank keys are dropped. */
@@ -157,4 +172,19 @@ data class AniobAuthConfig(
             return out
         }
     }
+}
+
+/** Registration is retained on logout, forgotten on provider deletion. No bearer credentials. */
+interface AniobRegistrationStore {
+    suspend fun load(): String?
+    suspend fun save(clientId: String)
+    suspend fun clear()
+}
+
+/** Used by isolated tests/nonpersistent hosts; Android supplies an encrypted implementation. */
+class AniobMemoryRegistrationStore : AniobRegistrationStore {
+    private var id: String? = null
+    override suspend fun load() = id
+    override suspend fun save(clientId: String) { id = clientId }
+    override suspend fun clear() { id = null }
 }

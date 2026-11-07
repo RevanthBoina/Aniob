@@ -32,7 +32,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Suspends until the response headers arrive; cancelling the coroutine cancels the call. */
@@ -40,13 +39,16 @@ internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutin
     cont.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) = cont.resumeWithException(e)
-        override fun onResponse(call: Call, response: Response) = cont.resume(response)
+        override fun onResponse(call: Call, response: Response) =
+            cont.resume(response, onCancellation = { _, value, _ -> value.close() })
     })
 }
 
 /** Token-endpoint transport over the app's shared OkHttp client (its pool, timeouts and TLS). */
 class AniobOkHttpTokenTransport(
-    private val client: OkHttpClient = AniobHttpClientSingleton.client
+    private val client: OkHttpClient = AniobHttpClientSingleton.client.newBuilder()
+        .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .followRedirects(false).followSslRedirects(false).build()
 ) : AniobTokenTransport {
     override suspend fun post(url: String, contentType: String, body: String): AniobHttpReply {
         val request = Request.Builder()
@@ -68,6 +70,19 @@ class AniobOkHttpTokenTransport(
     }
 }
 
+/** Bounded issuer-key fetch, with no request/response logging. */
+class AniobOkHttpJwksTransport : com.aniob.core.auth.AniobJwksTransport {
+    private val client = AniobHttpClientSingleton.client.newBuilder()
+        .callTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .followRedirects(false).followSslRedirects(false).build()
+    override suspend fun get(url: String): AniobHttpReply {
+        val response = client.newCall(Request.Builder().url(url).header("Accept", "application/json").build()).awaitResponse()
+        return withContext(Dispatchers.IO) { response.use {
+            AniobHttpReply(it.code, it.header("Content-Type"), it.peekBody(1024 * 1024 + 1L).string())
+        } }
+    }
+}
+
 /** Opens the authorize URL in a Custom Tab (the user's browser), never in an embedded web view. */
 class AniobCustomTabBrowserLauncher(private val context: Context) : AniobBrowserLauncher {
     override fun open(url: String): Boolean {
@@ -83,8 +98,8 @@ class AniobCustomTabBrowserLauncher(private val context: Context) : AniobBrowser
 }
 
 /**
- * Starts, cancels and resumes the sign-in. Single flight: starting while one is running cancels
- * the first and waits for it to release the port before binding again.
+ * Process-owned, single-flight browser work. Repeated start/resume attaches to the active attempt;
+ * logout blocks new starts and joins cancellation before clearing credentials.
  */
 class AniobSignInCoordinator(
     private val context: Context,
@@ -100,6 +115,8 @@ class AniobSignInCoordinator(
     private val flow = AniobSignInFlow(config, repository, listenerFactory, browser, pendingStore, clock)
     private val lock = Any()
     private var job: Job? = null
+    private var clearing = false
+    private val clearMutex = kotlinx.coroutines.sync.Mutex()
 
     init {
         AniobSignInService.onCancelRequested = { cancel() }
@@ -110,20 +127,44 @@ class AniobSignInCoordinator(
     /** Called when the account screen opens: continue a sign-in the system interrupted. */
     fun resumeIfPending() = launch(resume = true)
 
+    suspend fun signOut(forgetRegistration: Boolean = false): Boolean = withContext(kotlinx.coroutines.NonCancellable) {
+        clearMutex.lock()
+        try {
+            val previous = synchronized(lock) {
+                clearing = true
+                job.also { it?.cancel(); job = null }
+            }
+            previous?.join()
+            repository.signOut(forgetRegistration).also { pendingStore.clear() }
+        } finally {
+            synchronized(lock) { clearing = false }
+            try { AniobSignInService.stop(context) } finally { clearMutex.unlock() }
+        }
+    }
+
     fun cancel() {
         synchronized(lock) { job?.cancel() }
         AniobSignInService.stop(context)
     }
 
     private fun launch(resume: Boolean) = synchronized(lock) {
+        if (clearing || job?.isActive == true) return@synchronized
         val previous = job
         job = scope.launch {
             previous?.cancelAndJoin()
-            val pending = if (resume) pendingStore.load() ?: return@launch else null
-            AniobSignInService.start(context)
             try {
+                val pending = if (resume) pendingStore.load() ?: return@launch else null
+                AniobSignInService.start(context)
                 val error: AniobAuthError? = flow.run(resume = pending)
                 if (error == null) onSignedIn()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                repository.markFailed(AniobAuthError.Network(e))
+            } catch (e: IllegalStateException) {
+                repository.markFailed(AniobAuthError.NotConfigured)
+            } catch (e: SecurityException) {
+                repository.markFailed(AniobAuthError.NotConfigured)
             } finally {
                 AniobSignInService.stop(context)
             }

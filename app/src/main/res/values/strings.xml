@@ -56,7 +56,7 @@
     <string name="account_connected">Connected</string>
     <string name="account_signed_in_as">Signed in as %1$s</string>
     <string name="account_plan">Plan: %1$s</string>
-    <string name="account_use_as_cloud">Use this account as Aniob\'s cloud</string>
+    <string name="account_use_as_cloud">Use this account for cloud tasks</string>
     <string name="account_model">Model</string>
     <string name="account_model_other">Other model name</string>
     <string name="account_model_invalid">Use letters, numbers, dots, dashes and underscores.</string>
@@ -74,7 +74,7 @@
     <string name="account_test_offline">Could not reach the service. Check your connection.</string>
     <string name="account_test_rejected">The service rejected the request. Try another model.</string>
     <string name="account_sign_out">Sign out</string>
-    <string name="account_sign_out_everywhere">Sign out everywhere on this device</string>
+    <string name="account_sign_out_everywhere">Sign out on this phone</string>
     <string name="account_delete">Delete this connection</string>
     <string name="account_try_again">Try again</string>
     <string name="account_workspace_hint">Choose the account and workspace you meant to use, then try again. This does not bypass any limits your administrator set for the workspace.</string>
@@ -91,4 +91,9 @@
     <string name="account_error_session_ended">Your sign-in has ended. Sign in again to keep using this account.</string>
     <string name="account_error_workspace_denied">This account or workspace is not allowed to use Aniob.</string>
     <string name="account_error_network">Could not reach the sign-in service. Check your connection and try again.</string>
+    <string name="account_error_identity">The account identity could not be verified. Sign-in was not saved. Try again.</string>
+    <string name="account_error_client">The account registration did not match. Reset this connection to choose another account or workspace.</string>
+    <string name="account_error_refresh_config">The service rejected the connection configuration. Your local session was retained.</string>
+    <string name="account_revoke_unconfirmed">Signed out on this phone. Server-side revocation could not be confirmed.</string>
+    <string name="account_delete_description">Remove this phone’s account connection, registration and model preferences? Conversations are kept. You can connect a different account afterward.</string>
 </resources>

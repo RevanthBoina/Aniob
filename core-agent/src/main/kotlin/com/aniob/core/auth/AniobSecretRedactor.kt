@@ -11,10 +11,10 @@ object AniobSecretRedactor {
     private val JWT_PREFIXED = Regex("\\beyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*")
     private val JWT_GENERIC = Regex("\\b[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\b")
     private val QUERY_PARAM = Regex(
-        "(?i)\\b(code|state|refresh_token|access_token|id_token|code_verifier|client_secret)=[^&\\s\"',;]+"
+        "(?i)\\b(code|state|refresh_token|access_token|id_token|code_verifier|client_secret|nonce|id_token_hint)=[^&\\s\"',;]+"
     )
     private val JSON_FIELD = Regex(
-        "(?i)(\"(?:refresh_token|access_token|id_token|code_verifier)\"\\s*:\\s*\")[^\"]*(\")"
+        "(?i)(\"(?:refresh_token|access_token|id_token|code_verifier|nonce|id_token_hint)\"\\s*:\\s*\")[^\"]*(\")"
     )
 
     fun redact(text: String): String {

@@ -18,7 +18,8 @@ class AniobEncryptedStoresTest {
 
     private val tokens = AniobAuthTokens(
         accessToken = "ACCESS-VALUE", refreshToken = "REFRESH-VALUE", idToken = "ID-VALUE",
-        expiresAtEpochMs = 123L, accountId = "acct", planType = "plus", email = "a@b.io"
+        expiresAtEpochMs = 123L, accountId = "acct", planType = "plus", email = "a@b.io",
+        clientId = "test_client", scopes = setOf("chatgpt.tokens.use.direct")
     )
 
     @Test fun `save load clear round trip, ciphertext on disk has no plaintext`() = runBlocking<Unit> {
@@ -65,7 +66,7 @@ class AniobEncryptedStoresTest {
     @Test fun `pending record round trips and expires after ten minutes`() = runBlocking<Unit> {
         val clock = MutableClock()
         val store = AniobKeystorePendingStore(tmp.newFolder(), AniobSoftwareCipher(), clock)
-        store.save(AniobPendingSignIn("v", "s", clock.t))
+        store.save(AniobPendingSignIn("v", "s", clock.t, "nonce", "test_client"))
         assertNotNull(store.load())
         clock.t += 9 * 60_000L; assertTrue(store.load() != null)
         clock.t += 2 * 60_000L; assertNull(store.load())

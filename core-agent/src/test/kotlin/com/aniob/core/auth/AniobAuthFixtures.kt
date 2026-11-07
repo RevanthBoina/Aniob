@@ -8,10 +8,12 @@ internal object AniobAuthFixtures {
         authorizeUrl = "https://auth.example.test/oauth/authorize",
         tokenUrl = "https://auth.example.test/oauth/token",
         redirectUri = "http://127.0.0.1:1455/auth/callback",
-        scopes = "openid profile email offline_access",
+        scopes = "openid profile email offline_access chatgpt.tokens.use.direct",
         inferenceBaseUrl = "https://models.example.test/api",
         extraAuthorizeParams = linkedMapOf("originator" to "aniob", "state" to "must-not-override")
     )
+
+    val verifier = AniobIdTokenVerifier { _, _, _ -> true } // Only transport/repository unit tests; crypto tested separately.
 
     private val enc = Base64.getUrlEncoder().withoutPadding()
 
@@ -50,10 +52,10 @@ internal object AniobAuthFixtures {
     fun json(status: Int, body: String) = AniobHttpReply(status, "application/json", body)
 
     fun tokenBody(access: String, refresh: String, expiresIn: Long = 3600) =
-        """{"access_token":"$access","refresh_token":"$refresh","id_token":"${idToken()}","expires_in":$expiresIn}"""
+        """{"access_token":"$access","refresh_token":"$refresh","id_token":"${idToken()}","expires_in":$expiresIn,"scope":"openid chatgpt.tokens.use.direct"}"""
 
     fun tokens(access: String = "acc-1", refresh: String = "ref-1", expiresAt: Long) = AniobAuthTokens(
         accessToken = access, refreshToken = refresh, expiresAtEpochMs = expiresAt,
-        accountId = "acct-123", email = "jane.doe@example.com", planType = "plus"
+        accountId = "acct-123", email = "jane.doe@example.com", planType = "plus", clientId = "test_client", scopes = setOf("chatgpt.tokens.use.direct")
     )
 }
