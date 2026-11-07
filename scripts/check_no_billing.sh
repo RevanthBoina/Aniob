@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 echo "=== Aniob Compliance Check: Verifying No BILLING or Payment SDKs ==="
 
-# Check for forbidden permissions in all manifests
+# Check handwritten source/manifest and dependency roots, never build intermediates.
 FORBIDDEN_TERMS=(
     "com.android.vending.BILLING"
     "com.google.android.gms.wallet"
@@ -14,9 +14,21 @@ FORBIDDEN_TERMS=(
 
 FOUND=0
 for term in "${FORBIDDEN_TERMS[@]}"; do
-    if grep -rn "$term" app/ src/ 2>/dev/null; then
-        echo "ERROR: Forbidden billing/ad reference '$term' found in codebase!"
-        FOUND=1
+    if matches=$(grep -rHF -- "$term" app/src/ core-agent/src/ app/build.gradle.kts core-agent/build.gradle.kts gradle/libs.versions.toml); then
+        # Exact declaration only: preserve the runtime safety denylist without allowing SDK use.
+        allowed='core-agent/src/main/kotlin/com/aniob/core/safety/AniobSafetyInterceptor.kt:    private const val DENIED_BILLING_PERMISSION = "com.android.vending.BILLING"'
+        matches=$(printf '%s\n' "$matches" | grep -vFx -- "$allowed" || true)
+        if [ -n "$matches" ]; then
+            printf '%s\n' "$matches"
+            echo "ERROR: Forbidden billing/ad reference '$term' found in codebase!"
+            FOUND=1
+        fi
+    else
+        status=$?
+        if [ "$status" -ne 1 ]; then
+            echo "ERROR: Could not inspect all billing guard inputs."
+            exit "$status"
+        fi
     fi
 done
 

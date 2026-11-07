@@ -16,6 +16,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import com.aniob.app.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.system.SystemState
@@ -43,6 +45,8 @@ fun AniobSetupConciergeScreen(
     onNavigateToSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val accountAvailable = (context.applicationContext as com.aniob.app.AniobApplication).accountAuth.featureAvailable
+    val (connectionBody, phoneNote) = setupConnectionCopyIds(accountAvailable)
     var demoPlaying by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -135,18 +139,18 @@ fun AniobSetupConciergeScreen(
 
             SetupCard(
                 index = 2,
-                title = "Choose a model connection",
-                body = "Sign in with ChatGPT, use an on-device model, or configure a gateway. Phone permissions are separate.",
+                title = stringResource(R.string.setup_model_connection_title),
+                body = stringResource(connectionBody),
                 done = systemState.modelReady || cloudReady,
-                actionLabel = "Connections",
+                actionLabel = stringResource(R.string.setup_connections_action),
                 onAction = onNavigateToSettings,
                 testTag = "setup_brain"
             )
-            AniobAccountSignInCard()
+            if (accountAvailable) AniobAccountSignInCard()
             OutlinedButton(onClick = onNavigateToModels, modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)) {
-                Text("Choose an on-device model")
+                Text(stringResource(R.string.setup_local_model_action))
             }
-            Text("Phone control is optional for chat. ChatGPT sign-in does not require debugging or device pairing.")
+            Text(stringResource(phoneNote))
 
             SetupCard(
                 index = 3,
@@ -317,4 +321,11 @@ private fun SimulatedDemo(onDone: () -> Unit) {
             Text(captions[captionIndex], style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
         }
     }
+}
+
+/** Share resource selection between the screen and feature-off regression tests. */
+internal fun setupConnectionCopyIds(accountAvailable: Boolean): Pair<Int, Int> = if (accountAvailable) {
+    R.string.setup_model_connection_account_body to R.string.setup_phone_account_note
+} else {
+    R.string.setup_model_connection_body to R.string.setup_phone_note
 }

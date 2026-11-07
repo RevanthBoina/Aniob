@@ -51,6 +51,24 @@ class ResearchTelemetryTest {
         assertEquals(run.copy(goal = parsed.goal), parsed)
     }
 
+    @Test fun ablationModesDoNotLeakLearnedSkillsIntoControlConditions() {
+        for (mode in AblationMode.entries) {
+            assertEquals(mode == AblationMode.FULL_HUMAN_SPEED, mode.skillsEnabled)
+        }
+    }
+
+    @Test fun extendedMeasurementsRoundTripWithoutConflatingPlansMembersAndBitmaps() {
+        val run = ResearchRun(1L, AblationMode.FULL_HUMAN_SPEED, "goal", 1.0, 2, 0, 3, true, "", false, true,
+            treeReads = 4, bitmaps = 1, burstsPlanned = 1, burstMembersRun = 3, burstsSuspended = true,
+            shortcutAttempted = true, shortcutDegraded = true, shortcutFailReason = "not landed",
+            skillId = "skill", rememberReplayActions = 2, fastpathSteps = 1,
+            replayValidated = true, replayDiverged = true, setupLatencyMs = 125L)
+        assertEquals(run, ResearchRun.fromCsvRow(run.toCsvRow()))
+        val cells = CsvCodec.split(run.toCsvRow()).toMutableList()
+        cells[15] = "not-a-measurement"
+        assertNull(ResearchRun.fromCsvRow(cells.joinToString(",")))
+    }
+
     @Test
     fun legacyTwelveColumnRowsParseWithDefaults() {
         val legacyRow = "1700000000000,BASELINE,Open Settings,10.500,2,0,3,true,,false,false,false"
@@ -190,7 +208,7 @@ class ResearchTelemetryTest {
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastDeltaVerify)
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastObservation)
         assertFalse(AblationMode.BURST_AND_FAST_OBSERVE.rememberReplay)
-        assertEquals("Burst and fast observe (+ pruned accessibility tree + action bursts + event-driven verify)", AblationMode.BURST_AND_FAST_OBSERVE.paperLabel)
+        assertEquals("Burst and fast observe (+ compact tree folding + action bursts + event-driven verify)", AblationMode.BURST_AND_FAST_OBSERVE.paperLabel)
 
         assertTrue(AblationMode.FULL_HUMAN_SPEED.intentShortcuts)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.actionBursts)

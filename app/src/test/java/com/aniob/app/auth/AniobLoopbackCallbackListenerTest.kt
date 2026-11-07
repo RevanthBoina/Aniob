@@ -90,6 +90,31 @@ class AniobLoopbackCallbackListenerTest {
         } finally { l.close() }
     }
 
+    @Test fun `both loopback names accept bare and bound port authorities`() = runBlocking<Unit> {
+        for (name in listOf("127.0.0.1", "localhost")) for (withPort in listOf(false, true)) {
+            val listener = AniobLoopbackCallbackListener(0); listener.bind()
+            try {
+                val waiting = async(kotlinx.coroutines.Dispatchers.IO) { listener.awaitCallback("/auth/callback", 10_000) }
+                val host = name + if (withPort) ":${listener.boundPort}" else ""
+                assertTrue(raw(listener.boundPort, "GET /auth/callback?code=c&state=s HTTP/1.1\r\nHost: $host\r\n\r\n").startsWith("HTTP/1.1 200"))
+                assertEquals("/auth/callback?code=c&state=s", waiting.await())
+            } finally { listener.close() }
+        }
+    }
+
+    @Test fun `wrong ports duplicate hosts and lookalike names are rejected`() = runBlocking<Unit> {
+        val listener = AniobLoopbackCallbackListener(0); listener.bind()
+        try {
+            val waiting = async(kotlinx.coroutines.Dispatchers.IO) { listener.awaitCallback("/auth/callback", 10_000) }
+            for (host in listOf("localhost:0", "127.0.0.1:0", "localhost.evil.test", "user@localhost", "[::1]")) {
+                assertTrue(raw(listener.boundPort, "GET /auth/callback HTTP/1.1\r\nHost: $host\r\n\r\n").startsWith("HTTP/1.1 400"))
+            }
+            assertTrue(raw(listener.boundPort, "GET /auth/callback HTTP/1.1\r\nHost: localhost\r\nHost: 127.0.0.1\r\n\r\n").startsWith("HTTP/1.1 400"))
+            assertEquals(200, get(listener.boundPort, "/auth/callback?code=c&state=s").first)
+            waiting.await()
+        } finally { listener.close() }
+    }
+
     @Test fun `non GET methods are rejected`() = runBlocking<Unit> {
         val l = AniobLoopbackCallbackListener(0); l.bind()
         try {

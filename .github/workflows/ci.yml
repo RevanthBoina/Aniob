@@ -21,8 +21,6 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
       - name: Preflight guards
         run: |
           chmod +x scripts/*.sh
@@ -32,7 +30,7 @@ jobs:
       - name: Unit tests (core-agent + app)
         run: |
           set -o pipefail
-          if gradle :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"; then
+          if ./gradlew :core-agent:test :app:testDebugUnitTest --console=plain --stacktrace 2>&1 | tee "$RUNNER_TEMP/unit-tests.log"; then
             exit 0
           fi
           # Surface actionable failures through the Checks API as well as downloadable logs.
@@ -54,7 +52,7 @@ jobs:
           PY
           exit 1
       - name: Android lint
-        run: gradle :app:lintDebug --console=plain
+        run: ./gradlew :app:lintDebug --console=plain
       - name: Publish test reports
         if: always()
         uses: actions/upload-artifact@v4

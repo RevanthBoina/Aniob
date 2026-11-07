@@ -4,16 +4,17 @@ Persistent, repo-specific knowledge for agents working in this repository.
 
 ## Build & test
 
-Gradle wrapper is not present; use an installed Gradle. This environment uses:
+Use the checked-in Gradle 9.3.1 wrapper (distribution SHA-256 pinned). Install Java 17 and the
+Android SDK, and set `JAVA_HOME` / `ANDROID_HOME` to their actual local locations.
 
 ```bash
-export JAVA_HOME=/opt/jdk17
-export ANDROID_HOME=$HOME/android-sdk
-export PATH=/tmp/setup/gradle-dist/gradle-9.3.1/bin:$PATH
-
-gradle :core-agent:test :app:testDebugUnitTest --console=plain
-gradle :app:assembleDebug --console=plain
+./gradlew :core-agent:test :app:testDebugUnitTest :app:lintDebug --console=plain
+./gradlew :app:assembleDebug --console=plain
+bash scripts/ci-preflight.sh
 ```
+
+The wrapper JAR SHA-256 is `b3a875ddc1f044746e1b1a55f645584505f4a10438c1afea9f15e92a7c42ec13`,
+verified against the upstream v9.3.1 source. CI also validates wrapper JARs via Gradle's setup action.
 
 - `:core-agent` is pure Kotlin/JVM. Guarded by CI preflight: **zero `android.*` imports**. Keep it
   platform-free; put Android-runtime dependencies behind interfaces in `app`.
@@ -25,8 +26,8 @@ gradle :app:assembleDebug --console=plain
 
 ## CI preflight
 
-`bash scripts/ci-preflight.sh` runs five compliance guards (no billing/payment SDKs, skill-assets sync,
-core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing changes; it must end with
+`bash scripts/ci-preflight.sh` runs compliance guards (billing/payment SDKs, source sync, core purity, broad-catch ratchet,
+smoke pins, UX copy, catalog URLs, repository hygiene, and outcome invariants). Run it before proposing changes; it must end with
 `ALL PREFLIGHT CI GUARDS PASSED SUCCESSFULLY`.
 
 ## App discovery & launch

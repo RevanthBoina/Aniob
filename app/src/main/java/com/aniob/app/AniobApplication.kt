@@ -117,8 +117,11 @@ class AniobApplication : Application(), ComponentCallbacks2 {
         }
     }
 
-    override fun onConfigurationChanged(newConfig: Configuration) = Unit
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+    }
     override fun onLowMemory() {
+        super.onLowMemory()
         eventLogger.info("AniobApplication", "onLowMemory -> reflex releasing LiteRT engine")
         onMemoryTrimListener?.invoke(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
     }

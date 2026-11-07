@@ -102,6 +102,17 @@ object AniobScreenDiff {
         ((hash xor (if (b) 1L else 0L)) * FNV_PRIME)
 
     /**
+     * 64-bit FNV-1a structural screen hash (F-2).
+     */
+    fun computeScreenHash64(packageName: String, activityName: String, structuralSignature: String): String {
+        var h = FNV_OFFSET_BASIS
+        h = fnvMixString(h, packageName)
+        h = fnvMixString(h, activityName)
+        h = fnvMixString(h, structuralSignature)
+        return java.lang.Long.toUnsignedString(h, 16)
+    }
+
+    /**
      * Zero-allocation 64-bit FNV-1a streaming structural tree hash.
      * Eliminates multi-KB joinToString allocations and reduces collision probability from 2^-32 to 2^-64.
      */

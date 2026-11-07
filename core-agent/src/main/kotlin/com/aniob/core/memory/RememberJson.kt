@@ -10,7 +10,7 @@ package com.aniob.core.memory
  */
 internal object RememberJson {
 
-    private const val VERSION = 1
+    private const val VERSION = 2
 
     fun write(cache: RememberCache): String = buildString {
         append("{\"version\":").append(VERSION).append(",\"entries\":[")
@@ -22,6 +22,10 @@ internal object RememberJson {
             append("\"hash\":").append(quote(entry.screenHash)).append(',')
             append("\"updated\":").append(entry.updatedAtMs).append(',')
             append("\"hits\":").append(entry.hits).append(',')
+            append("\"expectedNextHash\":").append(quote(entry.expectedNextHash)).append(',')
+            append("\"mustContainText\":").append(quote(entry.mustContainText)).append(',')
+            append("\"failures\":").append(entry.failures).append(',')
+            append("\"successCount\":").append(entry.successCount).append(',')
             append("\"actions\":[")
             entry.actions.forEachIndexed { actionIndex, action ->
                 if (actionIndex > 0) append(',')
@@ -73,7 +77,11 @@ internal object RememberJson {
                 screenHash = hash,
                 actions = actions,
                 updatedAtMs = obj.long("updated") ?: 0L,
-                hits = (obj.long("hits") ?: 0L).toInt()
+                hits = (obj.long("hits") ?: 0L).toInt(),
+                expectedNextHash = obj.string("expectedNextHash").orEmpty(),
+                mustContainText = obj.string("mustContainText").orEmpty(),
+                failures = (obj.long("failures") ?: 0L).toInt().coerceAtLeast(0),
+                successCount = (obj.long("successCount") ?: 1L).toInt().coerceAtLeast(1)
             )
         }
     }

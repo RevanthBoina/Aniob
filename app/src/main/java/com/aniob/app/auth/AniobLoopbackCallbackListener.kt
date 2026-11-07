@@ -91,25 +91,13 @@ class AniobLoopbackCallbackListener(
     private fun handle(client: Socket, callbackPath: String, deadline: Long): String? {
         try {
             val readDeadline = minOf(deadline, now() + READ_TIMEOUT_MS)
-            val input = client.getInputStream()
-            var remaining = MAX_HEADER_BYTES
-            fun line(): String? {
-                val result = StringBuilder()
-                while (remaining-- > 0) {
-                    val wait = readDeadline - now()
-                    if (wait <= 0L) return null
-                    client.soTimeout = wait.coerceAtMost(READ_TIMEOUT_MS.toLong()).toInt().coerceAtLeast(1)
-                    val c = input.read()
-                    if (c == -1) return null
-                    if (c == 10) return result.toString().removeSuffix("\r")
-                    result.append(c.toChar())
-                }
-                return null
+            val reader = AniobCallbackHeaderReader(client.getInputStream(), readDeadline, MAX_HEADER_BYTES, now) {
+                client.soTimeout = it
             }
-            val requestLine = line() ?: return null
+            val requestLine = reader.readLine() ?: return null
             var host: String? = null
             while (true) {
-                val header = line() ?: return null
+                val header = reader.readLine() ?: return null
                 if (header.isEmpty()) break
                 if (header.startsWith("host:", ignoreCase = true)) {
                     if (host != null) { respond(client, 400, "Bad request"); return null }
@@ -122,7 +110,7 @@ class AniobLoopbackCallbackListener(
             if (method != "GET" || target == null || !target.startsWith("/")) {
                 respond(client, 400, "Bad request"); return null
             }
-            if (host == null || (host != "127.0.0.1:$boundPort" && host != "localhost:$boundPort" && host != "127.0.0.1")) {
+            if (host == null || (host != "127.0.0.1:$boundPort" && host != "localhost:$boundPort" && host != "127.0.0.1" && host != "localhost")) {
                 respond(client, 400, "Bad request"); return null
             }
             if (target.substringBefore('?') != callbackPath) {

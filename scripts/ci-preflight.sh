@@ -6,6 +6,7 @@ echo "=== Running Aniob CI Preflight Inspection ==="
 # 1. Billing & Payment Zero-Reference Guard
 echo "[Guard 1/8] Verifying zero billing or payment SDKs..."
 bash scripts/check_no_billing.sh
+bash scripts/test-check-no-billing.sh
 
 # 2. Skill YAML <-> Assets Sync Guard
 echo "[Guard 2/8] Verifying YAML skill library and assets sync..."
