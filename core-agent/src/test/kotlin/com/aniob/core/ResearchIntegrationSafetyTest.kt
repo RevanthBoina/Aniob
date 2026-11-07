@@ -45,6 +45,14 @@ class ResearchIntegrationSafetyTest {
         assertEquals(0, restored.size)
     }
 
+    @Test fun `legacy replay rows load with safe metadata defaults`() {
+        val legacy = """{"version":1,"entries":[{"goal":"recipient-select","package":"app","hash":"before","updated":1,"hits":0,"actions":[{"kind":"tap","viewId":"app:id/row","text":"Recipient 12"}]}]}"""
+        val entry = RememberCache.fromJson(legacy).snapshot().single()
+        assertEquals("", entry.expectedNextHash)
+        assertEquals(0, entry.failures)
+        assertEquals(1, entry.successCount)
+    }
+
     @Test fun `password fields and short numeric secrets never seed replay`() {
         assertNull(RememberAction.fromAction(AniobAction.InputText(SemanticTarget.SomIndex(1), "secret"), node.copy(isPassword = true), screen))
         assertNull(RememberAction.fromAction(AniobAction.InputText(SemanticTarget.SomIndex(1), "123456"), node, screen))

@@ -8,8 +8,12 @@ class AniobTokenScopeTest {
     private fun client(scope: Any? = null, includeScope: Boolean = false): AniobTokenClient {
         val body = AniobAuthJson.parseObject(AniobAuthFixtures.tokenBody("access", "refresh"))!!.toMutableMap()
         if (includeScope) body["scope"] = scope else body.remove("scope")
+        // The production JSON writer omits null map values; put an explicit wire null into this fixture.
+        val json = if (includeScope && scope == null) {
+            AniobAuthJson.toJson(body).dropLast(1) + ",\"scope\":null}"
+        } else AniobAuthJson.toJson(body)
         return AniobTokenClient(AniobAuthFixtures.config,
-            AniobAuthFixtures.FakeTransport { _, _, _ -> AniobAuthFixtures.json(200, AniobAuthJson.toJson(body)) },
+            AniobAuthFixtures.FakeTransport { _, _, _ -> AniobAuthFixtures.json(200, json) },
             AniobAuthFixtures.FakeClock(), AniobAuthFixtures.verifier)
     }
 

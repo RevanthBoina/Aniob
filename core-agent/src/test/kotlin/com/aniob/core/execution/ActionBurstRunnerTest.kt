@@ -84,6 +84,22 @@ class ActionBurstRunnerTest {
         assertFalse(outcome.shouldReplan)
     }
 
+    @Test fun `a recycled index never replaces the identity that the guard approved`() = runBlocking {
+        val fresh = list.copy(nodes = listOf(row(2, "Wrong row"), row(20, "6:15 PM")))
+        val ran = mutableListOf<AniobAction>()
+        val runner = ActionBurstRunner(capture = { fresh }, executeMember = { member, c, screen, target ->
+            ran += member
+            if (ran.size == 2) {
+                assertEquals(20, target?.id)
+                assertEquals(tap(20), member)
+            }
+            stepResult(member, screen, ctx = c)
+        })
+        val outcome = runner.run(ActionBurst("p", true, listOf(tap(1), tap(2))), list, ctx())
+        assertEquals(listOf(tap(1), tap(20)), ran)
+        assertTrue(outcome.completed)
+    }
+
     @Test
     fun `the screen is re-read before every member after the first`() = runBlocking {
         var captures = 0

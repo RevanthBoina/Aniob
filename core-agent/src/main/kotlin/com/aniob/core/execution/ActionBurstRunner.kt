@@ -132,6 +132,7 @@ class ActionBurstRunner(
             // Look again before every member: the previous one may have changed the screen, and a
             // target is only dispatchable while it is still the thing the plan meant.
             var liveScreen = currentScreen
+            var matchedTarget: AniobNode? = null
             if (index > 0 && dispatchedSinceCapture >= captureEvery) {
                 val fresh = try {
                     capture()
@@ -157,12 +158,24 @@ class ActionBurstRunner(
                         "action ${index + 1} (${member.toolName}) dropped: ${verdict.reason}"
                     )
                 }
+                matchedTarget = verdict.matchedNode
                 liveScreen = fresh
                 dispatchedSinceCapture = 0
             }
 
-            val target = resolveTarget(member, liveScreen)
-            val result = executeMember(member, currentCtx, liveScreen, target)
+            // The guard matched the original widget by identity, not by its recycled prompt ID.
+            // Carry that node into dispatch rather than resolving the old ID on the new screen.
+            val target = matchedTarget ?: resolveTarget(member, liveScreen)
+            val dispatchMember = if (target != null && member.semanticTarget() is com.aniob.core.domain.SemanticTarget.SomIndex) {
+                val liveTarget = com.aniob.core.domain.SemanticTarget.SomIndex(target.id)
+                when (member) {
+                    is AniobAction.Tap -> member.copy(target = liveTarget)
+                    is AniobAction.LongPress -> member.copy(target = liveTarget)
+                    is AniobAction.InputText -> member.copy(target = liveTarget)
+                    else -> member
+                }
+            } else member
+            val result = executeMember(dispatchMember, currentCtx, liveScreen, target)
             lastResult = result
             ran.add(result.action)
             currentCtx = result.nextCtx
