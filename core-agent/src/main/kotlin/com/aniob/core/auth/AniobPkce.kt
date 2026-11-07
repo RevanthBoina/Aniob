@@ -43,10 +43,10 @@ object AniobPkce {
 object AniobAuthorizeUrlBuilder {
     private val RESERVED = setOf(
         "response_type", "client_id", "redirect_uri", "scope",
-        "code_challenge", "code_challenge_method", "state", "resource"
+        "code_challenge", "code_challenge_method", "state", "resource", "nonce", "agent_name_hint", "ext_agent_host_id"
     )
 
-    fun build(config: AniobAuthConfig, codeChallenge: String, state: String): String {
+    fun build(config: AniobAuthConfig, codeChallenge: String, state: String, nonce: String = AniobPkce.newState()): String {
         val params = LinkedHashMap<String, String>()
         params["response_type"] = "code"
         params["client_id"] = config.clientId
@@ -55,7 +55,10 @@ object AniobAuthorizeUrlBuilder {
         params["code_challenge"] = codeChallenge
         params["code_challenge_method"] = AniobPkce.METHOD
         params["state"] = state
-        params["resource"] = "https://api.openai.com/v1"
+        params["resource"] = config.resource
+        params["nonce"] = nonce
+        config.extraAuthorizeParams["ext_agent_host_id"]?.let { params["ext_agent_host_id"] = it }
+        if (config.clientId == "dynamic_agent_client") params["agent_name_hint"] = "Aniob"
         // Extras may add parameters but can never override the protocol ones above.
         config.extraAuthorizeParams.forEach { (k, v) -> if (k !in RESERVED) params[k] = v }
         val query = params.entries.joinToString("&") { (k, v) -> "${percentEncode(k)}=${percentEncode(v)}" }
@@ -78,7 +81,7 @@ object AniobAuthorizeUrlBuilder {
 
 sealed interface AniobCallbackResult {
     /** The code is a secret: redacted in [toString]. */
-    class Code(val code: String) : AniobCallbackResult {
+    class Code(val code: String, val clientId: String? = null) : AniobCallbackResult {
         override fun toString(): String = "Code(<redacted>)"
     }
 
@@ -99,6 +102,8 @@ object AniobAuthCallbackParser {
         val path = requestTarget.substringBefore('?').substringBefore('#')
         if (path != expectedPath) return AniobCallbackResult.Ignored
         val query = requestTarget.substringAfter('?', "").substringBefore('#')
+        val pairs = query.split('&').map { decode(it.substringBefore('=')) }
+        if (pairs.size != pairs.toSet().size) return AniobCallbackResult.Failure(AniobAuthError.Unparseable)
         val params = parseQuery(query)
 
         // Nothing in the callback is trusted until state matches, errors included.
@@ -119,7 +124,7 @@ object AniobAuthCallbackParser {
         }
         val code = params["code"]
         if (code.isNullOrEmpty()) return AniobCallbackResult.Failure(AniobAuthError.Unparseable)
-        return AniobCallbackResult.Code(code)
+        return AniobCallbackResult.Code(code, params["client_id"]?.takeIf { it.isNotBlank() })
     }
 
     fun parseQuery(query: String): Map<String, String> {

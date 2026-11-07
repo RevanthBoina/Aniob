@@ -49,6 +49,26 @@ class AniobLoopbackCallbackListenerTest {
         } finally { l.close() }
     }
 
+    @Test fun `configured listener ignores wrong state and only answers accepted browser after outcome`() = runBlocking<Unit> {
+        val l = AniobLoopbackCallbackListener(0)
+        l.configureAttempt("expected")
+        l.bind()
+        try {
+            val waiting = async(kotlinx.coroutines.Dispatchers.IO) { l.awaitCallback("/auth/callback", 10_000) }
+            assertEquals(400, get(l.boundPort, "/auth/callback?code=wrong&state=wrong").first)
+            assertEquals(400, get(l.boundPort, "/auth/callback?code=a&code=b&state=expected").first)
+            val browser = async(kotlinx.coroutines.Dispatchers.IO) {
+                get(l.boundPort, "/auth/callback?code=PRIVATE&state=expected")
+            }
+            assertEquals("/auth/callback?code=PRIVATE&state=expected", waiting.await())
+            assertFalse(browser.isCompleted)
+            l.complete(false)
+            val page = browser.await().second
+            assertTrue(page.contains("Sign-in was not completed"))
+            assertFalse(page.contains("PRIVATE"))
+        } finally { l.close() }
+    }
+
     @Test fun `a favicon request gets a 404 and the wait continues`() = runBlocking<Unit> {
         val l = AniobLoopbackCallbackListener(0); l.bind()
         try {

@@ -39,7 +39,8 @@ class AniobAuthRepository(
     private val tokenClient: AniobTokenClient,
     private val clock: AniobClock = AniobClock.SYSTEM,
     private val refreshLeadMs: Long = 5 * 60 * 1000L,
-    private val backoffMs: Long = 30_000L
+    private val backoffMs: Long = 30_000L,
+    private val registrationStore: AniobRegistrationStore = AniobMemoryRegistrationStore()
 ) {
     private val mutex = Mutex()
     private val _state = MutableStateFlow<AniobAuthState>(AniobAuthState.SignedOut)
@@ -48,29 +49,64 @@ class AniobAuthRepository(
     private var cached: AniobAuthTokens? = null
     private var backoffUntil = 0L
 
-    /** Loads a stored session at startup. A blob that cannot be read leaves the user signed out. */
-    suspend fun initialize() = mutex.withLock {
+    private var initialized = false
+    private var sessionVersion = 0L
+
+    suspend fun initialize() = mutex.withLock { initializeLocked() }
+
+    private suspend fun initializeLocked() {
+        if (initialized) return
         val stored = store.load()
-        cached = stored
-        _state.value = stored?.let(::signedIn) ?: AniobAuthState.SignedOut
+        cached = stored?.takeIf { it.clientId.isNotBlank() && tokenClient.config.requiredScope in it.scopes }
+        if (stored != null && cached == null) store.clear()
+        _state.value = cached?.let(::signedIn) ?: AniobAuthState.SignedOut
+        initialized = true
     }
 
-    fun markSigningIn() {
+    suspend fun clientIdForSignIn(): String = mutex.withLock {
+        initializeLocked()
+        registrationStore.load() ?: cached?.clientId ?: tokenClient.config.clientId
+    }
+
+    suspend fun markSigningIn(): Long = mutex.withLock {
+        initializeLocked()
+        sessionVersion += 1
         _state.value = AniobAuthState.SigningIn(clock.now())
+        sessionVersion
     }
 
-    fun markFailed(error: AniobAuthError) {
-        _state.value = if (error is AniobAuthError.UserCancelled) restingState() else AniobAuthState.Failed(error)
+    suspend fun markFailed(error: AniobAuthError, expectedVersion: Long? = null) = mutex.withLock {
+        if (expectedVersion == null || expectedVersion == sessionVersion) markFailedLocked(error)
     }
 
-    /** The state the user returns to when a sign-in attempt is dropped. */
-    private fun restingState(): AniobAuthState = cached?.let(::signedIn) ?: AniobAuthState.SignedOut
+    private fun markFailedLocked(error: AniobAuthError) {
+        _state.value = if (error is AniobAuthError.UserCancelled) cached?.let(::signedIn) ?: AniobAuthState.SignedOut
+            else AniobAuthState.Failed(error)
+    }
 
     /** Exchanges the authorization [code] and stores the result. Returns the failure, if any. */
-    suspend fun completeSignIn(code: String, codeVerifier: String): AniobAuthError? = mutex.withLock {
-        when (val result = tokenClient.exchangeCode(code, codeVerifier)) {
+    suspend fun completeSignIn(
+        code: String, codeVerifier: String, nonce: String,
+        issuedClientId: String? = null, requestedClientId: String = tokenClient.config.clientId,
+        expectedVersion: Long? = null
+    ): AniobAuthError? = mutex.withLock {
+        initializeLocked()
+        if (expectedVersion != null && expectedVersion != sessionVersion) return@withLock AniobAuthError.UserCancelled
+        val registered = registrationStore.load() ?: cached?.clientId
+        val expected = registered ?: requestedClientId.takeUnless { it == "dynamic_agent_client" }
+        val clientId = issuedClientId ?: expected
+        if (clientId.isNullOrBlank() || clientId == "dynamic_agent_client" || (expected != null && clientId != expected)) {
+            markFailedLocked(AniobAuthError.ClientMismatch)
+            return@withLock AniobAuthError.ClientMismatch
+        }
+        try { registrationStore.save(clientId) } catch (e: IOException) {
+            val error = AniobAuthError.Network(e)
+            markFailedLocked(error)
+            return@withLock error
+        }
+        when (val result = tokenClient.exchangeCode(code, codeVerifier, clientId, nonce)) {
             is AniobTokenResult.Failure -> {
-                markFailed(result.error)
+                markFailedLocked(result.error)
                 result.error
             }
             is AniobTokenResult.Success -> {
@@ -78,7 +114,7 @@ class AniobAuthRepository(
                     store.save(result.tokens)
                 } catch (e: IOException) {
                     val error = AniobAuthError.Network(e)
-                    markFailed(error)
+                    markFailedLocked(error)
                     return@withLock error
                 }
                 cached = result.tokens
@@ -95,10 +131,8 @@ class AniobAuthRepository(
      * has already been replaced by another caller the new token is returned without a call.
      */
     suspend fun obtainAccess(rejectedAccessToken: String? = null): AniobAccessResult = mutex.withLock {
-        val current = cached ?: store.load()?.also {
-            cached = it
-            if (_state.value is AniobAuthState.SignedOut) _state.value = signedIn(it)
-        } ?: return@withLock AniobAccessResult.Unavailable(
+        initializeLocked()
+        val current = cached ?: return@withLock AniobAccessResult.Unavailable(
                 (_state.value as? AniobAuthState.Expired)?.reason ?: AniobAuthError.RefreshRejected(null)
             )
         val now = clock.now()
@@ -125,7 +159,7 @@ class AniobAuthRepository(
                 granted(result.tokens)
             }
             is AniobTokenResult.Failure -> when (val error = result.error) {
-                is AniobAuthError.RefreshRejected -> {
+                is AniobAuthError.RefreshRejected, AniobAuthError.PlanHasNoAccess -> {
                     store.clear()
                     cached = null
                     _state.value = AniobAuthState.Expired(error)
@@ -140,12 +174,18 @@ class AniobAuthRepository(
         }
     }
 
-    /** Clears this device's session only. The account itself is untouched. */
-    suspend fun signOut() = mutex.withLock {
+    /** Local cleanup is guaranteed even when remote revocation fails. Returns revocation status. */
+    suspend fun signOut(forgetRegistration: Boolean = false): Boolean = mutex.withLock {
+        initializeLocked()
+        sessionVersion += 1
+        val previous = cached
+        // Clear locally before attempting the bounded network operation.
         store.clear()
         cached = null
         backoffUntil = 0L
         _state.value = AniobAuthState.SignedOut
+        if (forgetRegistration) registrationStore.clear()
+        previous == null || tokenClient.revoke(previous)
     }
 
     private fun granted(tokens: AniobAuthTokens) =

@@ -29,13 +29,11 @@ class AniobAccountContainer(private val app: Application) {
     /** Null (feature hidden) unless every required BuildConfig value is present and well formed. */
     val config: AniobAuthConfig? by lazy {
         val configuredClientId = unset(BuildConfig.ACCOUNT_AUTH_CLIENT_ID)
-        val isDynamic = configuredClientId.isBlank()
-        val clientId = if (isDynamic) "dynamic_agent_client" else configuredClientId
+        if (configuredClientId.isBlank()) return@lazy null
+        val clientId = configuredClientId
 
         val extraParams = AniobAuthConfig.parseExtraParams(BuildConfig.ACCOUNT_AUTH_EXTRA_PARAMS).toMutableMap()
-        if (isDynamic || clientId == "dynamic_agent_client") {
-            extraParams["ext_agent_host_id"] = getOrCreateExtAgentHostId()
-        }
+        extraParams["ext_agent_host_id"] = getOrCreateExtAgentHostId()
 
         val c = AniobAuthConfig(
             clientId = clientId,
@@ -54,13 +52,19 @@ class AniobAccountContainer(private val app: Application) {
     val featureAvailable: Boolean get() = config != null
 
     private val cipher by lazy { AniobKeystoreCipher("aniob_account_auth_v1") }
-    val tokenStore by lazy { AniobKeystoreTokenStore(dir, cipher) }
+    private val registrationStore by lazy { AniobKeystoreRegistrationStore(dir, cipher) }
+    private val tokenStore by lazy { AniobKeystoreTokenStore(dir, cipher) }
     val pendingStore by lazy { AniobKeystorePendingStore(dir, cipher) }
 
     /** The only owner of tokens. Null when the feature is not configured. */
     val repository: AniobAuthRepository? by lazy {
         config?.let { c ->
-            AniobAuthRepository(tokenStore, AniobTokenClient(c, AniobOkHttpTokenTransport(), AniobClock.SYSTEM))
+            AniobAuthRepository(
+                tokenStore,
+                AniobTokenClient(c, AniobOkHttpTokenTransport(), AniobClock.SYSTEM,
+                    com.aniob.core.auth.AniobJwksIdTokenVerifier(c.issuer, AniobOkHttpJwksTransport())),
+                registrationStore = registrationStore
+            )
                 .also { repo -> scope.launch { repo.initialize() } }
         }
     }
@@ -83,9 +87,16 @@ class AniobAccountContainer(private val app: Application) {
     val state: AniobAuthState get() = repository?.state?.value ?: AniobAuthState.SignedOut
     val isSignedIn: Boolean get() = state is AniobAuthState.SignedIn
 
+    private val _source = kotlinx.coroutines.flow.MutableStateFlow(
+        AniobCloudSource.fromPref(prefs.getString(KEY_SOURCE, null)))
+    val source: kotlinx.coroutines.flow.StateFlow<AniobCloudSource> = _source
+
     var cloudSource: AniobCloudSource
         get() = AniobCloudSource.fromPref(prefs.getString(KEY_SOURCE, null))
-        set(value) = prefs.edit().putString(KEY_SOURCE, value.prefValue).apply()
+        set(value) {
+            prefs.edit().putString(KEY_SOURCE, value.prefValue).apply()
+            _source.value = value
+        }
 
     var model: String
         get() = catalog.resolve(prefs.getString(KEY_MODEL, null))
@@ -102,26 +113,19 @@ class AniobAccountContainer(private val app: Application) {
         return AniobAccountModelClient(c, r, model, reasoningEffort.ifBlank { null }, sessionId, onLlmRequest)
     }
 
-    /** Sign out everywhere on this device: tokens, any pending sign-in, and the Keystore key. */
-    suspend fun signOutEverywhere() {
-        coordinator?.cancel()
-        repository?.signOut()
-        pendingStore.clear()
-        tokenStore.clear()
-        // If the key cannot be removed, no blob is left that it could decrypt, so this is informational.
-        val keyRemoved = try {
-            cipher.deleteKey()
-            true
-        } catch (e: java.security.KeyStoreException) {
-            false
-        }
-        (app as? com.aniob.app.AniobApplication)?.eventLogger?.info("AniobAccount", "signed out everywhere; keystore key removed=$keyRemoved")
+    /** Cancel and await the browser operation before clearing session state. Registration is retained. */
+    suspend fun signOut(): Boolean {
+        return coordinator?.signOut() ?: repository?.signOut() ?: true
     }
 
-    /** Delete this provider: sign out, forget the model choices, and return the cloud to the gateway. */
+    /** Compatibility name: this clears this installation only, not other devices. */
+    suspend fun signOutEverywhere() { signOut() }
+
     suspend fun deleteProvider() {
-        signOutEverywhere()
-        prefs.edit().remove(KEY_MODEL).remove(KEY_EFFORT).putString(KEY_SOURCE, AniobCloudSource.OMNIROUTE.prefValue).apply()
+        coordinator?.signOut(forgetRegistration = true) ?: repository?.signOut(forgetRegistration = true)
+        prefs.edit().remove(KEY_MODEL).remove(KEY_EFFORT).apply()
+        cloudSource = AniobCloudSource.OMNIROUTE
+        // Stable per-install host id is intentionally retained; the client binding is forgotten.
     }
 
     private fun getOrCreateExtAgentHostId(): String {

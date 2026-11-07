@@ -83,6 +83,30 @@ class AniobViewModelExecutionWiringTest {
     }
 
     @Test
+    fun selectedAccountDoesNotBecomeReadyFromAnUnrelatedGatewayKey() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val secrets = com.aniob.app.data.AniobSecretStore(app)
+        val source = app.accountAuth.cloudSource
+        val key = secrets.getOmniRouteApiKey()
+        val address = secrets.getOmniRouteBaseUrl()
+        try {
+            secrets.setOmniRouteApiKey("test-key")
+            secrets.setOmniRouteBaseUrl("https://gateway.example.test/v1")
+            app.accountAuth.cloudSource = com.aniob.core.auth.AniobCloudSource.ACCOUNT
+            app.systemState.refresh()
+            assertFalse(app.systemState.state.value.cloudReady)
+            app.accountAuth.cloudSource = com.aniob.core.auth.AniobCloudSource.OMNIROUTE
+            app.systemState.refresh()
+            assertTrue(app.systemState.state.value.cloudReady)
+        } finally {
+            secrets.setOmniRouteApiKey(key)
+            secrets.setOmniRouteBaseUrl(address)
+            app.accountAuth.cloudSource = source
+            app.systemState.refresh()
+        }
+    }
+
+    @Test
     fun intentShortcutClosingRequiresObservableScreenCriteria() {
         val bareCriteria = com.aniob.core.domain.SuccessCriteria(minSteps = 1)
         assertFalse("Bare minSteps has no observable check", bareCriteria.hasObservableCheck)

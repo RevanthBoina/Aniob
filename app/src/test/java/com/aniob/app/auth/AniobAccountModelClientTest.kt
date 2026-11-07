@@ -56,7 +56,7 @@ class AniobAccountModelClientTest {
     private val base get() = "http://127.0.0.1:${server.address.port}/api"
 
     private fun tokens(access: String = "acc-1", exp: Long = clock.t + 3_600_000L) = AniobAuthTokens(
-        access, "ref-1", null, exp, accountId = "acct-9", email = "j@x.io", planType = "plus"
+        access, "ref-1", null, exp, accountId = "acct-9", email = "j@x.io", planType = "plus", clientId = "test_client", scopes = setOf("chatgpt.tokens.use.direct")
     )
 
     private suspend fun repo(

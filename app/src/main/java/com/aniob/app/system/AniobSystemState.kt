@@ -14,6 +14,13 @@ import androidx.core.app.NotificationManagerCompat
 import com.aniob.app.AniobApplication
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.service.AniobAccessibilityService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +34,8 @@ data class SystemState(
     val batteryUnrestricted: Boolean = false,
     val networkAvailable: Boolean = true,
     val modelReady: Boolean = false,
+    val localModelReady: Boolean = false,
+    val cloudReady: Boolean = false,
     val checkedAt: Long = 0L
 )
 
@@ -48,16 +57,30 @@ class AniobSystemState(private val app: AniobApplication) {
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var started = false
+    private var observerScope: CoroutineScope? = null
 
     fun start() {
         if (started) return
         started = true
         registerConnectivityCallback()
         refresh()
+        observerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scope ->
+            scope.launch {
+                val account = app.accountAuth
+                combine(account.source, account.repository?.state ?: MutableStateFlow<com.aniob.core.auth.AniobAuthState>(
+                    com.aniob.core.auth.AniobAuthState.SignedOut)) { _, _ -> Unit }.collect { refresh() }
+            }
+        }
     }
 
     /** Re-reads every gate. Cheap: called from onResume, service callbacks and package events. */
     fun refresh() {
+        val localReady = isLocalModelReady()
+        val cloudReady = com.aniob.core.auth.AniobCloudSourceSelector.select(
+            app.accountAuth.cloudSource, app.accountAuth.state, app.accountAuth.featureAvailable,
+            com.aniob.app.provider.AniobProviderConfig.isConfigured(
+                secretStore.getOmniRouteApiKey(), secretStore.getOmniRouteBaseUrl())
+        ) is com.aniob.core.auth.AniobCloudSelection.Use
         _state.update {
             SystemState(
                 accessibilityConnected = AniobAccessibilityService.isServiceConnected,
@@ -65,7 +88,9 @@ class AniobSystemState(private val app: AniobApplication) {
                 notificationsEnabled = NotificationManagerCompat.from(app).areNotificationsEnabled(),
                 batteryUnrestricted = isBatteryUnrestricted(),
                 networkAvailable = isNetworkAvailable(),
-                modelReady = isModelReady(),
+                modelReady = localReady || cloudReady,
+                localModelReady = localReady,
+                cloudReady = cloudReady,
                 checkedAt = System.currentTimeMillis()
             )
         }
@@ -91,11 +116,10 @@ class AniobSystemState(private val app: AniobApplication) {
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
-    private fun isModelReady(): Boolean {
+    private fun isLocalModelReady(): Boolean {
         val defaultId = downloader.getDefaultModelId()
         val hasLocalModel = !defaultId.isNullOrBlank() && downloader.isModelInstalled(defaultId)
-        val hasCloudKey = secretStore.getOmniRouteApiKey().isNotBlank()
-        return hasLocalModel || hasCloudKey
+        return hasLocalModel
     }
 
     private fun registerConnectivityCallback() {
@@ -124,6 +148,8 @@ class AniobSystemState(private val app: AniobApplication) {
     }
 
     fun stop() {
+        observerScope?.cancel()
+        observerScope = null
         started = false
         val cm = connectivityManager ?: return
         val callback = networkCallback ?: return

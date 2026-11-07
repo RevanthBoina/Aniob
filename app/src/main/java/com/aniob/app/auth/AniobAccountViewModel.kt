@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -28,7 +29,8 @@ data class AniobAccountSettingsUi(
     val effort: String,
     val modelError: Boolean = false,
     val testing: Boolean = false,
-    val testResult: AniobAccountTestResult? = null
+    val testResult: AniobAccountTestResult? = null,
+    val revocationUnconfirmed: Boolean = false
 )
 
 /**
@@ -52,6 +54,7 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
     init {
         // A sign-in the system interrupted continues here; nothing is bound otherwise.
         container.coordinator?.resumeIfPending()
+        viewModelScope.launch { container.source.collect { refresh() } }
     }
 
     private fun read() = AniobAccountSettingsUi(
@@ -63,8 +66,12 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
     fun startSignIn() { container.coordinator?.start() }
     fun cancelSignIn() { container.coordinator?.cancel() }
 
-    fun signOut() { viewModelScope.launch { container.repository?.signOut(); refresh() } }
-    fun signOutEverywhere() { viewModelScope.launch { container.signOutEverywhere(); refresh() } }
+    fun signOut() { viewModelScope.launch {
+        val revoked = container.signOut()
+        refresh()
+        _settings.update { it.copy(revocationUnconfirmed = !revoked) }
+    } }
+    fun signOutEverywhere() = signOut()
     fun deleteProvider() { viewModelScope.launch { container.deleteProvider(); refresh() } }
 
     private fun refresh() { _settings.value = read() }
@@ -94,7 +101,7 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
                 container.newClient()
                     .getNextActionRaw("You are a connection test. Reply briefly.", "Reply with the single word: ok")
                     .fold(
-                        onSuccess = { AniobAccountTestResult.OK },
+                        onSuccess = { if (it.trim().equals("ok", ignoreCase = true)) AniobAccountTestResult.OK else AniobAccountTestResult.REJECTED },
                         onFailure = { map(it) }
                     )
             } catch (e: CancellationException) {

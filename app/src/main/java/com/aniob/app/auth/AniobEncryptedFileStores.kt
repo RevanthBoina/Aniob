@@ -103,3 +103,11 @@ class AniobKeystorePendingStore(
 
     override suspend fun clear() = blob.delete()
 }
+
+/** Registered client identity uses the same private encrypted/backup-excluded storage as tokens. */
+class AniobKeystoreRegistrationStore(dir: File, cipher: AniobSecretCipher) : com.aniob.core.auth.AniobRegistrationStore {
+    private val blob = AniobEncryptedBlobFile(File(dir, "registration.v1"), cipher)
+    override suspend fun load(): String? = blob.read()?.toString(Charsets.UTF_8)?.takeIf { it.isNotBlank() }
+    override suspend fun save(clientId: String) = blob.write(clientId.toByteArray(Charsets.UTF_8))
+    override suspend fun clear() = blob.delete()
+}

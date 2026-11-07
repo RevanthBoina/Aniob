@@ -20,8 +20,10 @@ class AniobAuthCodecTest {
     }
 
     @Test fun `pending round trip`() {
-        val p = AniobPendingSignIn("ver", "st", 5L)
+        val p = AniobPendingSignIn("ver", "st", 5L, "nonce", "test_client")
         val back = AniobAuthCodec.decodePending(AniobAuthCodec.encode(p))!!
+        assertEquals("nonce", back.nonce)
+        assertEquals("test_client", back.clientId)
         assertEquals(Triple("ver", "st", 5L), Triple(back.verifier, back.state, back.startedAtMs))
         assertNull(AniobAuthCodec.decodePending("{}".toByteArray()))
     }

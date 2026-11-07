@@ -6,7 +6,7 @@ package com.aniob.core.auth
  * cannot read is null, which callers treat as "nothing stored".
  */
 object AniobAuthCodec {
-    private const val VERSION = 1L
+    private const val VERSION = 2L
 
     fun encode(tokens: AniobAuthTokens): ByteArray = AniobAuthJson.toJson(
         linkedMapOf(
@@ -17,7 +17,9 @@ object AniobAuthCodec {
             "exp" to tokens.expiresAtEpochMs,
             "account" to tokens.accountId,
             "plan" to tokens.planType,
-            "email" to tokens.email
+            "email" to tokens.email,
+            "client" to tokens.clientId,
+            "scopes" to tokens.scopes.toList()
         )
     ).toByteArray(Charsets.UTF_8)
 
@@ -31,12 +33,15 @@ object AniobAuthCodec {
             expiresAtEpochMs = AniobAuthJson.long(json["exp"]) ?: return null,
             accountId = AniobAuthJson.str(json["account"]),
             planType = AniobAuthJson.str(json["plan"]),
-            email = AniobAuthJson.str(json["email"])
+            email = AniobAuthJson.str(json["email"]),
+            clientId = AniobAuthJson.str(json["client"]) ?: return null,
+            scopes = (json["scopes"] as? List<*>)?.filterIsInstance<String>()?.toSet() ?: return null
         )
     }
 
     fun encode(pending: AniobPendingSignIn): ByteArray = AniobAuthJson.toJson(
-        linkedMapOf("v" to VERSION, "verifier" to pending.verifier, "state" to pending.state, "at" to pending.startedAtMs)
+        linkedMapOf("v" to VERSION, "verifier" to pending.verifier, "state" to pending.state, "at" to pending.startedAtMs,
+            "nonce" to pending.nonce, "client" to pending.clientId)
     ).toByteArray(Charsets.UTF_8)
 
     fun decodePending(bytes: ByteArray): AniobPendingSignIn? {
@@ -45,7 +50,9 @@ object AniobAuthCodec {
         return AniobPendingSignIn(
             verifier = AniobAuthJson.str(json["verifier"]) ?: return null,
             state = AniobAuthJson.str(json["state"]) ?: return null,
-            startedAtMs = AniobAuthJson.long(json["at"]) ?: return null
+            startedAtMs = AniobAuthJson.long(json["at"]) ?: return null,
+            nonce = AniobAuthJson.str(json["nonce"]) ?: return null,
+            clientId = AniobAuthJson.str(json["client"]) ?: return null
         )
     }
 }

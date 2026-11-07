@@ -33,7 +33,7 @@ import com.aniob.app.system.SystemState
 @Composable
 fun AniobSetupConciergeScreen(
     systemState: SystemState,
-    // True when a cloud key and gateway address are saved, so the brain step can complete.
+    // Selected cloud connection is configured/authenticated; not a claim of successful inference.
     cloudReady: Boolean = false,
     onBack: () -> Unit,
     onNavigateToModels: () -> Unit,
@@ -130,11 +130,26 @@ fun AniobSetupConciergeScreen(
                 testTag = "setup_demo"
             )
             if (demoPlaying) {
-                SimulatedDemo(onDone = onRunDemoTask)
+                SimulatedDemo(onDone = { demoPlaying = false })
             }
 
             SetupCard(
                 index = 2,
+                title = "Choose a model connection",
+                body = "Sign in with ChatGPT, use an on-device model, or configure a gateway. Phone permissions are separate.",
+                done = systemState.modelReady || cloudReady,
+                actionLabel = "Connections",
+                onAction = onNavigateToSettings,
+                testTag = "setup_brain"
+            )
+            AniobAccountSignInCard()
+            OutlinedButton(onClick = onNavigateToModels, modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)) {
+                Text("Choose an on-device model")
+            }
+            Text("Phone control is optional for chat. ChatGPT sign-in does not require debugging or device pairing.")
+
+            SetupCard(
+                index = 3,
                 title = "Accessibility access",
                 body = "To tap buttons for you — only while a task runs.",
                 done = systemState.accessibilityConnected,
@@ -148,7 +163,7 @@ fun AniobSetupConciergeScreen(
             )
 
             SetupCard(
-                index = 3,
+                index = 4,
                 title = "Overlay permission",
                 body = "Shows a small status pill and approvals while you watch.",
                 done = systemState.overlayGranted,
@@ -174,7 +189,7 @@ fun AniobSetupConciergeScreen(
             )
 
             SetupCard(
-                index = 4,
+                index = 5,
                 title = "Notifications",
                 body = "So you can pause or stop a task from anywhere.",
                 done = systemState.notificationsEnabled,
@@ -198,7 +213,7 @@ fun AniobSetupConciergeScreen(
             )
 
             SetupCard(
-                index = 5,
+                index = 6,
                 title = "Battery optimisation",
                 body = "Stops the system from killing Aniob mid-task.",
                 done = systemState.batteryUnrestricted,
@@ -219,24 +234,6 @@ fun AniobSetupConciergeScreen(
                 },
                 testTag = "setup_battery"
             )
-
-            SetupCard(
-                index = 6,
-                title = "Give Aniob a brain",
-                body = "On-device (private) or cloud (fast). Cloud setup lives in Settings.",
-                done = systemState.modelReady || cloudReady,
-                actionLabel = "Choose a brain",
-                onAction = onNavigateToModels,
-                testTag = "setup_brain"
-            )
-            if (!systemState.modelReady) {
-                OutlinedButton(
-                    onClick = onNavigateToSettings,
-                    modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).testTag("setup_cloud_key_btn")
-                ) {
-                    Text("Or add Cloud API Key in Settings")
-                }
-            }
 
             SetupCard(
                 index = 7,

@@ -17,9 +17,13 @@ interface AniobCallbackListener : Closeable {
     @Throws(IOException::class)
     fun bind()
 
+    /** Configure acceptance before opening the browser. Implementations must never reflect state. */
+    fun configureAttempt(state: String) = Unit
+    fun complete(success: Boolean) = Unit
+
     /**
-     * Waits for the **first** request whose path is [callbackPath], answers it with a static page,
-     * closes, and returns the request target (`/path?query`). Null on timeout.
+     * Waits for an acceptable callback target (`/path?query`). Unrelated/wrong-state traffic must
+     * not consume an attempt. Hold the accepted browser response until [complete]. Null on timeout.
      */
     suspend fun awaitCallback(callbackPath: String, timeoutMs: Long): String?
 }
@@ -30,7 +34,10 @@ fun interface AniobBrowserLauncher {
 }
 
 /** Short-lived record that lets a sign-in survive the app being recreated mid-way. */
-class AniobPendingSignIn(val verifier: String, val state: String, val startedAtMs: Long) {
+class AniobPendingSignIn(
+    val verifier: String, val state: String, val startedAtMs: Long,
+    val nonce: String = AniobPkce.newState(), val clientId: String? = null
+) {
     override fun toString(): String = "AniobPendingSignIn(<redacted>)"
 }
 
@@ -62,7 +69,8 @@ class AniobSignInFlow(
         val pending = resume ?: AniobPendingSignIn(
             verifier = AniobPkce.generate().verifier,
             state = AniobPkce.newState(),
-            startedAtMs = clock.now()
+            startedAtMs = clock.now(),
+            clientId = repository.clientIdForSignIn()
         )
         val remaining = config.maxSignInMs - (clock.now() - pending.startedAtMs)
         if (remaining <= 0L) {
@@ -71,8 +79,10 @@ class AniobSignInFlow(
         }
 
         val listener = listenerFactory()
+        val version = repository.markSigningIn()
+        var successful = false
         try {
-            repository.markSigningIn()
+            listener.configureAttempt(pending.state)
             try {
                 pendingStore.save(pending)
             } catch (e: IOException) {
@@ -87,29 +97,38 @@ class AniobSignInFlow(
             }
             if (resume == null) {
                 val challenge = AniobPkce.challengeFor(pending.verifier)
-                val url = AniobAuthorizeUrlBuilder.build(config, challenge, pending.state)
+                val url = AniobAuthorizeUrlBuilder.build(config.copy(clientId = pending.clientId ?: config.clientId), challenge, pending.state, pending.nonce)
                 if (!browser.open(url)) return fail(AniobAuthError.BrowserUnavailable)
             }
-            val target = listener.awaitCallback(config.redirectPath, remaining)
-                ?: return fail(AniobAuthError.CallbackTimeout)
+            val deadline = clock.now() + remaining
+            var parsed: AniobCallbackResult
+            do {
+                val target = listener.awaitCallback(config.redirectPath, (deadline - clock.now()).coerceAtLeast(0L))
+                    ?: return fail(AniobAuthError.CallbackTimeout)
+                parsed = AniobAuthCallbackParser.parse(target, config.redirectPath, pending.state)
+            } while (parsed == AniobCallbackResult.Ignored ||
+                (parsed is AniobCallbackResult.Failure && parsed.error == AniobAuthError.StateMismatch))
 
-            return when (val parsed = AniobAuthCallbackParser.parse(target, config.redirectPath, pending.state)) {
-                is AniobCallbackResult.Code -> repository.completeSignIn(parsed.code, pending.verifier)
+            return when (parsed) {
+                is AniobCallbackResult.Code -> repository.completeSignIn(parsed.code, pending.verifier, pending.nonce, parsed.clientId,
+                    pending.clientId ?: config.clientId, version).also { successful = it == null }
                 is AniobCallbackResult.Failure -> fail(parsed.error)
                 AniobCallbackResult.Ignored -> fail(AniobAuthError.Unparseable)
             }
         } catch (e: CancellationException) {
-            withContext(NonCancellable) { repository.markFailed(AniobAuthError.UserCancelled) }
+            withContext(NonCancellable) { repository.markFailed(AniobAuthError.UserCancelled, version) }
             throw e
         } finally {
             withContext(NonCancellable) {
-                pendingStore.clear()
-                listener.close()
+                try { listener.complete(successful) } finally {
+                    listener.close()
+                    pendingStore.clear()
+                }
             }
         }
     }
 
-    private fun fail(error: AniobAuthError): AniobAuthError {
+    private suspend fun fail(error: AniobAuthError): AniobAuthError {
         repository.markFailed(error)
         return error
     }
