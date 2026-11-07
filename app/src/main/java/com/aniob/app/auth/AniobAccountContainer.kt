@@ -28,11 +28,12 @@ class AniobAccountContainer(private val app: Application) {
 
     /** Null (feature hidden) unless every required BuildConfig value is present and well formed. */
     val config: AniobAuthConfig? by lazy {
-        val configuredClientId = unset(BuildConfig.ACCOUNT_AUTH_CLIENT_ID)
-        if (configuredClientId.isBlank()) return@lazy null
-        val clientId = configuredClientId
+        // Seed value only. With dynamic registration the provider issues this install's real
+        // client id in the first callback and the repository stores it. UNSET therefore means
+        // "use dynamic registration", not "hide the feature" (CI/release builds have no .env).
+        val clientId = unset(BuildConfig.ACCOUNT_AUTH_CLIENT_ID).ifBlank { "dynamic_agent_client" }
 
-        val extraParams = AniobAuthConfig.parseExtraParams(BuildConfig.ACCOUNT_AUTH_EXTRA_PARAMS).toMutableMap()
+        val extraParams = AniobAuthConfig.parseExtraParams(unset(BuildConfig.ACCOUNT_AUTH_EXTRA_PARAMS)).toMutableMap()
         extraParams["ext_agent_host_id"] = getOrCreateExtAgentHostId()
 
         val c = AniobAuthConfig(
