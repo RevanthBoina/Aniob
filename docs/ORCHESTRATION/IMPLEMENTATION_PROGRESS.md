@@ -2,6 +2,7 @@
 
 **Last updated:** 2026-11-08
 **Branch:** `arena/7227bd6a-aniob`
+**Pull request:** [#32](https://github.com/RevanthBoina/Aniob/pull/32) — draft, open for review.
 **Overall status:** Parts 1–8 have active source changes and regression tests; implementation is in progress and unvalidated.
 **Current blocker:** The workspace has no JDK, Android SDK, Gradle distribution/cache, or dependency cache. An earlier `./gradlew :core-agent:test` attempt exited before Gradle started because `JAVA_HOME` was unset and `java` was unavailable. Per the user instruction, do not run JDK, Gradle, or APK-build commands. Continue source review and static checks; do not describe unrun tests as passing.
 
@@ -108,6 +109,6 @@ The Parts 1–8 work is active on this branch. The rows below describe source-le
 
 ## Exact next actions
 
-1. Finish the read-only source review and `git diff --check`; do not run a local build/test/APK command.
-2. Commit and push only to `arena/7227bd6a-aniob`, then open the requested pull request from that branch. Mark validation as unavailable rather than passing.
+1. Keep PR #32 in draft while runtime validation is unavailable; `git diff --check` passed, but no tests/builds have been run. Do not mark validation as passing.
+2. When a permitted validation-capable path becomes available, validate the focused core/app suites and review CI results before marking the PR ready.
 3. Continue the still-partial Part 8 extractions only after a validation-capable review path is available; do not collapse screen identity semantics or create a second dispatch path.
