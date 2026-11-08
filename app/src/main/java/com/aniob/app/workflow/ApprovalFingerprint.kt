@@ -69,9 +69,8 @@ object ApprovalFingerprint {
     private fun targetIdentity(action: AniobAction, node: AniobNode?): String {
         val semantic = action.semanticTarget()?.let(::semanticTarget).orEmpty()
         val grounded = node?.let {
-            val anchor = it.viewId.takeIf(String::isNotBlank)
-                ?: "${it.className}:${it.bounds.left},${it.bounds.top},${it.bounds.right},${it.bounds.bottom}"
-            "node:$anchor:${sha256(it.text)}:${sha256(it.contentDescription)}:${it.isPassword}"
+            val bounds = "${it.bounds.left},${it.bounds.top},${it.bounds.right},${it.bounds.bottom}"
+            "node:${it.className}:${it.viewId}:$bounds:${sha256(it.text)}:${sha256(it.contentDescription)}:${it.isPassword}"
         }.orEmpty()
         return sha256("target:$semantic|grounded:$grounded")
     }

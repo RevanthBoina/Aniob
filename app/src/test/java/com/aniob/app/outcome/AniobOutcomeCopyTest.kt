@@ -31,7 +31,7 @@ class AniobOutcomeCopyTest {
 
     @Test
     fun failureWithoutEvidenceUsesPlainLanguageAndOffersRetry() {
-        val copy = AniobOutcomeCopy.forTask(Outcome.FAILED, "grounding_miss: Save")
+        val copy = AniobOutcomeCopy.forTask(Outcome.FAILED, "grounding_miss: text:'Save' (exact)")
         assertEquals("Needs attention", copy.title)
         assertTrue(copy.message.contains("Couldn't find 'Save' on screen"))
         assertTrue(copy.message.contains("Want me to try again?"))
