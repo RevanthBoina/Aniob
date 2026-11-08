@@ -2,9 +2,9 @@
 
 **Last updated:** 2026-11-08
 **Branch:** `arena/7227bd6a-aniob`
-**Pull request:** [#32](https://github.com/RevanthBoina/Aniob/pull/32) — draft, open for review.
-**Overall status:** Parts 1–8 have active source changes and regression tests; implementation is in progress and unvalidated.
-**Current blocker:** The workspace has no JDK, Android SDK, Gradle distribution/cache, or dependency cache. An earlier `./gradlew :core-agent:test` attempt exited before Gradle started because `JAVA_HOME` was unset and `java` was unavailable. Per the user instruction, do not run JDK, Gradle, or APK-build commands. Continue source review and static checks; do not describe unrun tests as passing.
+**Pull request:** [#32](https://github.com/RevanthBoina/Aniob/pull/32) — open and ready for review.
+**Overall status:** Parts 1–8 have active source changes; GitHub Actions CI passes at `3d745b8`. Part 8 remains partial.
+**Remaining scope:** Do not run local JDK, Gradle, or APK-build commands per instruction. The latest GitHub Actions run provides unit-test and lint validation; required review is still needed before merge.
 
 ## Updated locked decisions (2026-11-08)
 
@@ -85,30 +85,30 @@ The Parts 1–8 work is active on this branch. The rows below describe source-le
 
 | Part | Current source state | Validation / remaining scope |
 |---|---|---|
-| 1 — Interruption policy | `AskPolicy` owns OFF/BALANCED/CAREFUL decisions; money, secrets, and deletion still require approval at every level. Approval waits indefinitely, task-start heads-up copy is present, approvals bind opaque payload/target fingerprints, and repeated misses for one target use the clarification channel. | Core/app tests updated or added; unrun. Review stop/cancellation paths and sensitive-field copy. |
+| 1 — Interruption policy | `AskPolicy` owns OFF/BALANCED/CAREFUL decisions; money, secrets, and deletion still require approval at every level. Approval waits indefinitely, task-start heads-up copy is present, approvals bind opaque payload/target fingerprints, and repeated misses for one target use the clarification channel. | Core/app tests passed in the latest GitHub Actions run. Review stop/cancellation paths and sensitive-field copy. |
 | 2 — Completion surface | `CompletionReporter` owns one result notification and only reopens chat for failed or unverified outcomes. Completion Toast and floating status-pill lifecycle are removed; progress remains in the in-app ticker and notification. | Source/docs review only; Android notification behavior unrun. |
-| 3 — Capability-first routing | Direct intent resolution runs before workflow chooser/clarification/model paths; launchability comes from the installed-app inventory; unavailable/unknown apps do not create guessed destinations; app chooser candidates are launchable-only. | Resolver/router regressions and installed Notes coverage are present; unrun. |
-| 4 — Honest outcomes | `AniobOutcomeCopy` is the task-result copy boundary; partial failures remain FAILED and include the task label, unfinished checks, and retry offer. Evidence is still required for verified completion. | Outcome and failure-copy tests updated; unrun. |
-| 5 — Task-scoped state | Target-miss retry counts live in `TaskTargetMissLedger`. The unused process-wide blocked-fingerprint retry state was removed from `AniobSafetyInterceptor`; hard policy blocks remain independent. | Ledger and interceptor tests updated; unrun. |
+| 3 — Capability-first routing | Direct intent resolution runs before workflow chooser/clarification/model paths; launchability comes from the installed-app inventory; unavailable/unknown apps do not create guessed destinations; app chooser candidates are launchable-only. | Resolver/router regressions and installed Notes coverage passed in the latest GitHub Actions run. |
+| 4 — Honest outcomes | `AniobOutcomeCopy` is the task-result copy boundary; partial failures remain FAILED and include the task label, unfinished checks, and retry offer. Evidence is still required for verified completion. | Outcome and failure-copy tests passed in the latest GitHub Actions run. |
+| 5 — Task-scoped state | Target-miss retry counts live in `TaskTargetMissLedger`. The unused process-wide blocked-fingerprint retry state was removed from `AniobSafetyInterceptor`; hard policy blocks remain independent. | Ledger and interceptor tests passed in the latest GitHub Actions run. |
 | 6 — Build gating | `AniobBuild` checks Android's debuggable flag; release mode uses the full-capability default, and research controls/telemetry views are hidden or ignored outside developer builds. | No release APK/build was run, per instruction. |
-| 7 — Preserved invariants | Shared `StepPipeline` re-grounds against the fresh observation and refuses recycled/unplanned targets. Bursts have a 2–8 wire limit; the first targeted action and subsequent members are revalidated, unnamed input is bound only to one safe editable field, deferred actions are hints only, and safety/approval/verification still run per member. One-action arrays fall back to the normal parser. | Parser/scope/runner/pipeline/privacy tests added or edited; unrun. The observation-reuse default of 3 is a separate planning optimization, not the plan-size cap. |
+| 7 — Preserved invariants | Shared `StepPipeline` re-grounds against the fresh observation and refuses recycled/unplanned targets. Bursts have a 2–8 wire limit; the first targeted action and subsequent members are revalidated, unnamed input is bound only to one safe editable field, deferred actions are hints only, and safety/approval/verification still run per member. One-action arrays fall back to the normal parser. | Parser/scope/runner/pipeline/privacy tests passed in the latest GitHub Actions run. The observation-reuse default of 3 is a separate planning optimization, not the plan-size cap. |
 | 8 — Consolidation seams | `CompletionReporter`, `AniobBuild`, and `AniobOutcomeCopy` are extracted; `StepPipeline` remains the only mutation path and `ActionBurstRunner` the burst executor. | **Partial:** `TaskRunner`, a distinct `ApprovalCoordinator`, telemetry sink, `SessionState`, and typed `ScreenId` have not been extracted. Defer those larger moves until the current changes can be validated. |
 
-### Focused tests changed or added (all unrun)
+### Focused tests changed or added (executed by CI)
 
 - Core: `AskPolicyTest`, `AniobSafetyInterceptorTest`, `TaskTargetMissLedgerTest`, `BurstPlanScopeTest`, `ActionBurstTest`, `ActionBurstRunnerTest`, and `StepPipelineTest`.
 - App: `ApprovalBindingTest`, `ApprovalFingerprintTest`, `WorkflowCoordinatorTest` (separate `requiresConsent`-only and sensitive-brief approval cases), routing/resolver tests, and `AniobOutcomeCopyTest`.
-- Other existing regression tests touched in the active diff are listed by `git diff --stat`; no runtime result should be inferred from source inspection.
+- GitHub Actions CI run [42494413927](https://github.com/RevanthBoina/Aniob/actions/runs/42494413927) passed the preflight guards, `:core-agent:test`, `:app:testDebugUnitTest`, and Android lint at commit `3d745b8`.
 
 ### Validation, blocker, and privacy decisions
 
-- **Do not run JDK, Gradle, unit-test, lint, or APK-build commands** for this continuation, as instructed. The workspace also has no JDK/Android SDK or cached Gradle environment; an earlier `./gradlew :core-agent:test` stopped before Gradle started because Java was unavailable.
-- Earlier CI preflight guards 1–6 passed, but guard 7 could not reach the external model catalog (curl exit 35 / HTTP 000); later guards were not established by that run. This was before the current diff and is not a green result for this branch.
+- No local JDK, Gradle, unit-test, lint, or APK-build commands were run, per instruction. GitHub Actions CI is the validation path for this branch.
+- Earlier runs exposed a stale preflight assertion, a billing-string test fixture, compilation issues, and two assertion mismatches. These were corrected; the latest CI run passed all preflight guards, unit tests, and Android lint.
 - The brief-only workflow approval keeps a short sanitized preview for ordinary text so the user can make an informed sharing decision; known DLP-sensitive content is hidden. The approval binds the full brief hash and destination. Explicitly consented or sensitive payloads require approval even for a marked-approved destination.
 - Keep hard safety verdicts, permissions, secret privacy, destination/payload identity, per-action approval, live grounding, and post-action verification intact while finishing the remaining consolidation work.
 
 ## Exact next actions
 
-1. Keep PR #32 in draft while runtime validation is unavailable; `git diff --check` passed, but no tests/builds have been run. Do not mark validation as passing.
-2. When a permitted validation-capable path becomes available, validate the focused core/app suites and review CI results before marking the PR ready.
-3. Continue the still-partial Part 8 extractions only after a validation-capable review path is available; do not collapse screen identity semantics or create a second dispatch path.
+1. PR #32 is ready for review and CI is green; GitHub reports `REVIEW_REQUIRED` as the remaining merge block.
+2. Do not bypass required review or run local JDK/Gradle/APK-build commands.
+3. Continue the still-partial Part 8 extractions in a follow-up after review; do not collapse screen identity semantics or create a second dispatch path.
