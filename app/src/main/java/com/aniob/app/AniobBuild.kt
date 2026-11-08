@@ -8,4 +8,3 @@ object AniobBuild {
     fun isDeveloperBuild(context: Context): Boolean =
         (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 }
-}

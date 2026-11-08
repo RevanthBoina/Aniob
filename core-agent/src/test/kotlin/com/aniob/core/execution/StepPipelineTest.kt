@@ -428,26 +428,32 @@ class StepPipelineTest {
 
     @Test
     fun `high risk skill proposal requires user confirmation before dispatch`() = runBlocking {
-        var confirmCalled = false
-        var dispatched = false
-        val before = screen("com.a", "Settings")
-        val after = screen("com.a", "Display")
-        val result = pipeline().executeStep(
-            ctx = ctx,
-            planningScreen = before,
-            proposal = StepPipeline.Proposal.Skill(
-                action = tap("Settings"),
-                skillName = "high_risk_skill",
-                riskTier = "HIGH",
-                requiresConfirmation = true
-            ),
-            capture = { before },
-            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true, screenAfter = after) },
-            confirm = { _, _, _ -> confirmCalled = true; true }
-        )
-        assertTrue("High-risk skill proposal must invoke confirmation callback", confirmCalled)
-        assertTrue("Approved high-risk skill proposal must dispatch", dispatched)
-        assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
+        val previousLevel = com.aniob.core.safety.AniobSafetyInterceptor.askLevel
+        com.aniob.core.safety.AniobSafetyInterceptor.askLevel = com.aniob.core.safety.AskLevel.CAREFUL
+        try {
+            var confirmCalled = false
+            var dispatched = false
+            val before = screen("com.a", "Settings")
+            val after = screen("com.a", "Display")
+            val result = pipeline().executeStep(
+                ctx = ctx,
+                planningScreen = before,
+                proposal = StepPipeline.Proposal.Skill(
+                    action = tap("Settings"),
+                    skillName = "high_risk_skill",
+                    riskTier = "HIGH",
+                    requiresConfirmation = true
+                ),
+                capture = { before },
+                dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true, screenAfter = after) },
+                confirm = { _, _, _ -> confirmCalled = true; true }
+            )
+            assertTrue("High-risk skill proposal must invoke confirmation callback", confirmCalled)
+            assertTrue("Approved high-risk skill proposal must dispatch", dispatched)
+            assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
+        } finally {
+            com.aniob.core.safety.AniobSafetyInterceptor.askLevel = previousLevel
+        }
     }
 
     @Test

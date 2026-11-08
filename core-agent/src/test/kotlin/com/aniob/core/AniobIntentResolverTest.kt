@@ -35,6 +35,14 @@ class AniobIntentResolverTest {
         AniobAppRegistry.resetForTest()
     }
 
+    private fun registerInstalledClock() {
+        val packageName = "com.android.deskclock"
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(RegisteredApp(packageName = packageName, label = "Clock")),
+            mapOf(AniobAppRegistry.ROLE_CLOCK to packageName)
+        )
+    }
+
     @Test
     fun testOpenSettingsResolvesToTheSettingsPackage() {
         val result = AniobIntentResolver.resolve("Open Settings")
@@ -117,6 +125,7 @@ class AniobIntentResolverTest {
 
     @Test
     fun testSetAlarmOpensTheClockAppWhenOneIsKnown() {
+        registerInstalledClock()
         val alarm = AniobIntentResolver.resolve("Set alarm")
         assertNotNull(alarm)
         assertEquals("the clock app is opened so the step can be verified", AniobIntentResolver.ACTION_MAIN, alarm?.action)
@@ -232,8 +241,9 @@ class AniobIntentResolverTest {
 
     @Test
     fun alarmWithoutATimeOpensTheClockAppToBeObserved() {
-        // No time means no SET_ALARM: the shortcut degrades to opening the clock app, which the
-        // caller must observe before it can call the step done.
+        // No time means no SET_ALARM: with an installed clock app, open its UI and observe it before
+        // the caller can call the step done.
+        registerInstalledClock()
         val result = AniobIntentResolver.resolve("set alarm")
         assertNotNull(result)
         assertEquals(AniobIntentResolver.ACTION_MAIN, result?.action)

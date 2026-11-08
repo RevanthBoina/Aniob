@@ -3758,11 +3758,13 @@ class AniobViewModel(
                         taskContext = run.ctx
                         currentScreen = run.screen
                         lastPlanResult = run.lastResult
-                        val hasGroundingMiss = run.missedAction != null
-                        if (run.missedAction != null) {
-                            val misses = recordTargetMiss(task.id, run.missedAction, run.missedNode)
+                        val missedAction = run.missedAction
+                        val missedNode = run.missedNode
+                        val hasGroundingMiss = missedAction != null
+                        if (missedAction != null) {
+                            val misses = recordTargetMiss(task.id, missedAction, missedNode)
                             if (misses != null && misses >= 2) {
-                                requestTargetClarification(task, run.missedAction, run.missedNode)
+                                requestTargetClarification(task, missedAction, missedNode)
                                 return
                             }
                         }

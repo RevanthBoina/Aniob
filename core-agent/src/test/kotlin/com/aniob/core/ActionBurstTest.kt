@@ -244,7 +244,7 @@ class ActionBurstTest {
     fun retargetFallsBackToTextThenBounds() {
         val textOnly = AniobNode(id = 5, className = "android.widget.TextView", text = "Continue", bounds = AniobRect(0, 0, 100, 50))
         val byText = BurstTargetGuard.retarget(AniobAction.Tap(SemanticTarget.SomIndex(5)), textOnly) as AniobAction.Tap
-        assertEquals(SemanticTarget.Text("Continue"), byText.target)
+        assertEquals(SemanticTarget.Text("Continue", exact = true), byText.target)
 
         val bare = AniobNode(id = 6, className = "android.view.View", bounds = AniobRect(10, 20, 30, 40))
         val byBounds = BurstTargetGuard.retarget(AniobAction.Tap(SemanticTarget.SomIndex(6)), bare) as AniobAction.Tap
