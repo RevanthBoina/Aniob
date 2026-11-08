@@ -56,12 +56,26 @@ object AniobConsequenceClassifier {
             targetNode?.text?.takeIf { it.isNotBlank() },
             targetNode?.contentDescription?.takeIf { it.isNotBlank() },
             (action as? AniobAction.Tap)?.describeTarget(),
-            (action as? AniobAction.LongPress)?.describeTarget()
+            (action as? AniobAction.LongPress)?.describeTarget(),
+            (action as? AniobAction.ConfirmWithUser)?.message,
+            (action as? AniobAction.DeviceControl)?.let { device ->
+                when (device.command) {
+                    com.aniob.core.domain.DeviceCommand.CALL -> "place a call"
+                    com.aniob.core.domain.DeviceCommand.NOTIFICATION_REPLY -> "send a reply"
+                    else -> null
+                }
+            }
         ).joinToString(" ")
 
-        // Typing is never itself consequential; committing the typed thing is.
+        // Typing and composing a message are not the commit itself; the grounded Send button or
+        // notification-reply command is classified separately.
         if (action is AniobAction.InputText || action is AniobAction.Swipe ||
-            action is AniobAction.GetScreenInfo || action is AniobAction.TakeScreenshot
+            action is AniobAction.GetScreenInfo || action is AniobAction.TakeScreenshot ||
+            (action is AniobAction.DeviceControl && action.command in setOf(
+                com.aniob.core.domain.DeviceCommand.MESSAGE_SMS,
+                com.aniob.core.domain.DeviceCommand.MESSAGE_TELEGRAM,
+                com.aniob.core.domain.DeviceCommand.MESSAGE_WHATSAPP
+            ))
         ) {
             return benign()
         }

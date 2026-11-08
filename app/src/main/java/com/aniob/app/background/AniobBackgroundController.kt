@@ -2,62 +2,39 @@ package com.aniob.app.background
 
 import android.app.Activity
 import android.content.Context
-import com.aniob.app.overlay.AniobOverlayPill
 import java.lang.ref.WeakReference
 
 /**
- * Manages background automation integrity:
- * - On task start: minimizes Aniob (`moveTaskToBack(true)`) so the Accessibility Service
- *   perceives the target application rather than Aniob's own chat UI (no self-observation loop).
- * - Starts the foreground service to protect process priority.
- * - On task completion: post the result notification and bring the chat back to the front.
- *   Background activity starts are restricted since Android 10, but this app already starts
- *   activities from its accessibility service to drive other apps; the same call brings Aniob
- *   itself forward. The notification stays as the fallback when the service is gone.
+ * Owns background-task startup and progress. Completion presentation is delegated to
+ * [CompletionReporter], which posts one result notification and only reopens chat when needed.
  */
 object AniobBackgroundController {
-
     private var currentActivityRef: WeakReference<Activity>? = null
     val currentActivity: Activity? get() = currentActivityRef?.get()
-    private var pill: AniobOverlayPill? = null
 
     fun registerActivity(activity: Activity) {
         currentActivityRef = WeakReference(activity)
+        CompletionReporter.registerActivity(activity)
     }
 
     fun unregisterActivity(activity: Activity) {
-        if (currentActivityRef?.get() == activity) {
-            currentActivityRef = null
-        }
+        if (currentActivityRef?.get() == activity) currentActivityRef = null
+        CompletionReporter.unregisterActivity(activity)
     }
 
     fun onTaskStarted(context: Context, prompt: String) {
         AniobForegroundService.startService(context, prompt)
-
-        // Status pill 2.0 (UX-3): narration + pause/stop while the user watches.
-        pill?.hide()
-        pill = AniobOverlayPill(
-            context = context,
-            onCancelTask = { AniobForegroundService.requestStop() },
-            onPauseToggle = { AniobForegroundService.requestPauseToggle() },
-            onOpenApp = { AniobForegroundService.requestOpenApp(context) }
-        ).also { it.show(0, "Getting ready") }
-
         currentActivityRef?.get()?.let { activity ->
-            activity.runOnUiThread {
-                activity.moveTaskToBack(true)
-            }
+            activity.runOnUiThread { activity.moveTaskToBack(true) }
         }
     }
 
-    /** Narration line for the pill + notification; called from the ViewModel's record path. */
+    /** Progress is carried by the ongoing notification; no floating overlay is created. */
     fun onStepNarrated(stepIndex: Int, narration: String) {
-        pill?.updateStep(stepIndex, narration)
         AniobForegroundService.updateProgress(stepIndex, narration)
     }
 
     fun onTaskPaused(paused: Boolean) {
-        pill?.setPaused(paused)
         AniobForegroundService.setPaused(paused)
     }
 
@@ -65,54 +42,16 @@ object AniobBackgroundController {
         context: Context,
         summary: String,
         isSuccess: Boolean = true,
-        unverified: Boolean = false
+        unverified: Boolean = false,
+        openChat: Boolean = !isSuccess || unverified,
+        wasStopped: Boolean = false,
+        resultTitle: String? = null
     ) {
-        pill?.showDoneAndDismiss()
-        pill = null
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            try {
-                android.widget.Toast.makeText(
-                    context,
-                    when {
-                        isSuccess -> "✓ $summary"
-                        unverified -> summary
-                        else -> "Task ended: $summary"
-                    },
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-            } catch (_: Exception) {
-            }
-            returnToApp(context)
-        }
-        AniobForegroundService.finishWithNotification(context, summary, isSuccess, unverified)
+        CompletionReporter.report(context, summary, isSuccess, unverified, openChat, wasStopped, resultTitle)
     }
 
-    /**
-     * Brings the chat back when a run ends, so the result is on screen instead of only in the
-     * notification. The accessibility service is what moved the target app to the front; the same
-     * call moves Aniob back. Skipped when the chat is already the foreground package.
-     */
-    private fun returnToApp(context: Context) {
-        val intent = android.content.Intent(context, com.aniob.app.MainActivity::class.java).apply {
-            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-        }
-        val service = com.aniob.app.service.AniobAccessibilityService.instance
-        if (service != null) {
-            if (service.currentForegroundPackage() != context.packageName) {
-                runCatching { service.startActivity(intent) }
-            }
-        } else {
-            runCatching { context.startActivity(intent) }
-        }
-    }
-
-    /** Accessibility access was revoked mid-run: drop the pill and post the recovery door (UX-6). */
+    /** Accessibility access was revoked mid-run: post the recovery notification. */
     fun onAccessibilityLost(context: Context) {
-        pill?.hide()
-        pill = null
         AniobForegroundService.notifyAccessibilityLost(context)
     }
 }
-

@@ -45,7 +45,9 @@ data class Destination(
     val category: DestinationCategory = DestinationCategory.GENERIC,
     val provenance: DestinationProvenance = DestinationProvenance.USER_INPUT,
     val compatibilityConstraints: List<String> = emptyList(),
-    val isApproved: Boolean = false
+    val isApproved: Boolean = false,
+    /** Human-readable installed-app/site label; [handler] remains the canonical package or host. */
+    val label: String? = null
 ) {
     val destinationKey: String
         get() = url ?: handler

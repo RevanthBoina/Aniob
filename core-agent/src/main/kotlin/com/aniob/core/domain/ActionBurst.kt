@@ -17,10 +17,9 @@ package com.aniob.core.domain
  *   what the model already decided instead of paying for the same reasoning again, and they are
  *   only honoured after the screen they were written for has actually been observed.
  *
- * A model that is asked for "2-3 actions for everything on this screen" answers that way. The
- * canonical shape is still one action per screen, so the plan is *reduced* to what the observation
- * can ground rather than rejected: rejecting it was how a correct multi-step plan turned into a
- * three-step fallback and made the basic task fail.
+ * A model asked for a grounded 2–8 action stretch can plan ahead across screens. The executable
+ * prefix is still reduced to what the current observation can ground rather than rejected: a
+ * deferred tail is carried forward and re-planned from a fresh capture.
  */
 data class ActionBurst(
     val thought: String,
@@ -58,7 +57,7 @@ data class ActionBurst(
 
     companion object {
         /** Hard ceiling for one reply; larger arrays are rejected, never executed in part. */
-        const val MAX_ACTIONS = 3
+        const val MAX_ACTIONS = 8
 
         /** Smallest plan that is worth the extra output tokens a burst reply costs. */
         const val MIN_ACTIONS = 2

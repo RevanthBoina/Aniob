@@ -59,7 +59,7 @@ data class AniobSizing(
     val heroIcon: Dp = 72.dp,
     /** Max readable measure for an answer bubble (~60 characters at bodyLarge). */
     val bubbleMaxWidth: Dp = 328.dp,
-    /** The live status dot in the ticker and overlay pill. */
+    /** The live status dot in the in-app ticker. */
     val statusDot: Dp = 10.dp,
     /** Height of the cockpit ticker. Fixed so it never reflows mid-task. */
     val tickerHeight: Dp = 52.dp,

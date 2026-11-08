@@ -3,26 +3,30 @@ package com.aniob.core.policy
 import com.aniob.core.domain.AniobAction
 
 /**
- * Adaptive Observe/Act Burst Policy.
- * Replaces repetitive capture-observe-after-every-touch with confident multi-action bursts:
- * - If last 2 actions were in the same package AND DeterministicVerifier confirmed AND no scroll occurred:
- *   burst 2-3 actions without full intermediate hierarchy capture/diffing.
- * - Otherwise: triggers full screen observation.
- * Reduces perceive_ms from ~80ms p50 to ~40ms during predictable workflows.
+ * Reuse policy for the last verified accessibility observation during short, predictable runs.
+ *
+ * This is not the multi-action plan limit and it is not a dispatch shortcut. The action-array
+ * contract is independently bounded at 2–8; ordinary steps still re-capture in [StepPipeline], and
+ * [com.aniob.core.execution.ActionBurstRunner] revalidates a targeted first member plus every later
+ * member against a live tree. This policy only decides whether the planning loop needs an additional
+ * pre-planning hierarchy read after a recent verified result.
+ *
+ * A planning snapshot may be reused after distinct successful actions in the same package when no
+ * scroll occurred. Any actual dispatch must still pass the shared fresh-grounding, safety and
+ * verification path.
  */
 class AniobObservationPolicy(
     maxBurstSteps: Int = 3
 ) {
 
     /**
-     * Live burst ceiling. Research ablation switches this at task start: 3 for the burst modes,
-     * 1 for BASELINE / INTENT_SHORTCUT_ONLY so every step performs a full observation.
-     * Defaults to the constructor value, so non-experimental behaviour is unchanged.
+     * Maximum consecutive planning passes allowed to reuse verified observations in an ablation.
+     * The default 3 is a research setting, not the 2–8 action-plan limit.
      */
     @Volatile
     private var burstLimit: Int = maxBurstSteps.coerceAtLeast(1)
 
-    /** Changes the burst ceiling without recreating the policy (keeps action history). */
+    /** Changes the observation-reuse ceiling without recreating the policy. */
     fun setBurstLimit(maxBurstSteps: Int) {
         burstLimit = maxBurstSteps.coerceAtLeast(1)
     }
@@ -59,18 +63,13 @@ class AniobObservationPolicy(
         if (verifiedSuccess && !isScroll) {
             currentBurstCount++
         } else {
-            // Error, verification failure, or scroll reset burst sequence
             currentBurstCount = 0
         }
     }
 
-    /**
-     * Determines whether the agent should perform a full screen observation capture
-     * or proceed immediately with an action burst.
-     */
+    /** True when the planning loop needs a separate observation before the next model pass. */
     @Synchronized
     fun shouldObserve(): Boolean {
-        // Always observe if no previous actions or burst limit reached
         if (recentActions.size < 2 || currentBurstCount >= burstLimit) {
             currentBurstCount = 0
             return true
@@ -81,19 +80,15 @@ class AniobObservationPolicy(
         val bothConfirmed = lastTwo.all { it.verifiedSuccess }
         val noScroll = lastTwo.none { it.wasScroll }
 
-        // Repeated identical action means the previous gesture likely landed mid-animation and
-        // produced no visible change. Force a fresh observation instead of chaining a burst on
-        // a screen that may still be animating.
+        // Repeated identical action likely landed mid-animation or made no visible change. Require
+        // a new planning observation instead of extrapolating from the previous result.
         if (lastTwo[0].action.describeAction() == lastTwo[1].action.describeAction()) {
             currentBurstCount = 0
             return true
         }
 
-        val canBurst = sameApp && bothConfirmed && noScroll
-        if (canBurst) {
-            // Confident burst: Skip intermediate capture (reduces perception latency to ~40ms)
-            return false
-        }
+        val canReuseVerifiedObservation = sameApp && bothConfirmed && noScroll
+        if (canReuseVerifiedObservation) return false
 
         currentBurstCount = 0
         return true

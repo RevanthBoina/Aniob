@@ -114,14 +114,19 @@ class AniobAppHardeningRegressionTest {
     }
 
     @Test
-    fun clearBlockedFingerprintRemovesSingleEntryOnly() {
-        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
-        val vm = AniobViewModel(app)
+    fun targetMissRetryMemoryIsScopedToTaskAndTarget() {
+        val ledger = com.aniob.core.execution.TaskTargetMissLedger()
+        ledger.beginTask("task_a")
 
-        vm.clearBlockedFingerprint("fp_sample_123")
-        assertTrue("Blocked actions list should not contain cleared fingerprint",
-            vm.blockedActions().none { it.fingerprint == "fp_sample_123" }
-        )
+        assertEquals(1, ledger.recordMiss("task_a", "target_a"))
+        assertEquals(1, ledger.recordMiss("task_a", "target_b"))
+        ledger.recordSuccess("task_a", "target_a")
+        assertEquals("Success clears only that target's retry count", 1, ledger.recordMiss("task_a", "target_a"))
+        assertEquals("A different target retains its own count", 2, ledger.recordMiss("task_a", "target_b"))
+
+        ledger.beginTask("task_b")
+        assertEquals("An old task cannot mutate the new task's ledger", 0, ledger.recordMiss("task_a", "target_a"))
+        assertEquals(1, ledger.recordMiss("task_b", "target_a"))
     }
 
     @Test

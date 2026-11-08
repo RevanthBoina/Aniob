@@ -11,6 +11,7 @@ import com.aniob.core.domain.TaskContext
 import com.aniob.core.learning.LearningPipeline
 import com.aniob.core.memory.history.NeutralWordingContract
 import com.aniob.core.safety.AniobSafetyInterceptor
+import com.aniob.core.safety.InterceptResult
 import com.aniob.core.verifier.AniobReflectionAgent
 import com.aniob.core.verifier.DeterministicVerifier
 import kotlinx.coroutines.currentCoroutineContext
@@ -122,7 +123,7 @@ class StepPipeline(
         proposal: Proposal,
         capture: suspend () -> AniobScreenState,
         dispatch: suspend (AniobAction) -> DispatchOutcome,
-        confirm: suspend (String) -> Boolean = { false },
+        confirm: suspend (AniobAction, AniobNode?, InterceptResult) -> Boolean = { _, _, _ -> false },
         judge: (String) -> ReflectionOutcome = { ReflectionOutcome.rejected(it, it) },
         targetNode: AniobNode? = null
     ): StepResult {
@@ -185,12 +186,41 @@ class StepPipeline(
             )
         }
 
-        // GATE: safety sees the *resolved node*, not a substring of toString()
-        val resolvedNode = targetNode ?: AniobActionExecutor.resolveTarget(action, observed)?.node
+        // Re-resolve every element against the live observation and compare it with the node the
+        // plan meant. A sequential accessibility index can be recycled between those reads; a
+        // different widget at that index is a grounding miss, never a dispatch target.
+        val target = action.semanticTarget()
+        val plannedNode = if (target == null) null else targetNode
+            ?: AniobActionExecutor.resolveTarget(action, planningScreen)?.node
+        val screenNavigated = target != null &&
+            com.aniob.core.perception.BurstTargetGuard.screenNavigated(planningScreen, observed)
+        val resolvedNode = when {
+            target == null || plannedNode == null || screenNavigated -> null
+            else -> com.aniob.core.perception.BurstTargetGuard.match(observed.nodes, plannedNode)
+        }
+        if (target != null && resolvedNode == null) {
+            val reason = "grounding_miss: the intended control no longer matches the live screen"
+            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, reason).withFailure()
+            return finish(
+                action, proposal, nextCtx, observed, plannedNode,
+                StepResult.TerminalState.FAIL, reason, start,
+                verification = null,
+                dispatch = DispatchCommand.NoOp(reason),
+                dispatched = false
+            )
+        }
+        var effectiveAction = if (resolvedNode != null) {
+            com.aniob.core.perception.BurstTargetGuard.retarget(action, resolvedNode)
+        } else {
+            action
+        }
+        var effectiveNode = resolvedNode
+
+        // GATE: safety sees the *live resolved node*, not a substring of toString().
         val skillProposal = proposal as? Proposal.Skill
         val intercept = AniobSafetyInterceptor.evaluateAction(
-            action = action,
-            targetNode = resolvedNode,
+            action = effectiveAction,
+            targetNode = effectiveNode,
             screenState = observed,
             screenFingerprint = observed.treeHash,
             skillRisk = skillProposal?.riskTier,
@@ -200,7 +230,7 @@ class StepPipeline(
             val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("blocked before execution: ${intercept.reason}"))
                 .withFailure()
             return finish(
-                action, proposal, nextCtx, observed, resolvedNode,
+                effectiveAction, proposal, nextCtx, observed, resolvedNode,
                 StepResult.TerminalState.FAIL, intercept.reason, start,
                 verification = null, dispatched = false,
                 blockedBySafety = true,
@@ -209,8 +239,6 @@ class StepPipeline(
         }
 
         // Plan-6.4: Pre-Execution Physical Safety Net Gate (Gate B)
-        var effectiveAction = action
-        var effectiveNode = resolvedNode
         if (resolvedNode != null) {
             val gateB = com.aniob.core.gates.AniobPhysicalSafetyNetGate.evaluate(
                 targetNode = resolvedNode,
@@ -225,7 +253,7 @@ class StepPipeline(
                     NeutralWordingContract.neutralize("blocked by physical safety gate: ${gateB.reason}")
                 ).withFailure()
                 return finish(
-                    action, proposal, nextCtx, observed, resolvedNode,
+                    effectiveAction, proposal, nextCtx, observed, resolvedNode,
                     StepResult.TerminalState.FAIL, gateB.reason, start,
                     verification = null, dispatched = false
                 )
@@ -263,9 +291,35 @@ class StepPipeline(
             }
         }
 
-        if (intercept.requiresConfirmation) {
+        // Re-evaluate the final, possibly healed action/target so approval covers exactly what
+        // will dispatch. This is especially important when a burst re-grounds a member on a fresh
+        // observation.
+        val approvalVerdict = AniobSafetyInterceptor.evaluateAction(
+            action = effectiveAction,
+            targetNode = effectiveNode,
+            screenState = observed,
+            screenFingerprint = observed.treeHash,
+            skillRisk = skillProposal?.riskTier,
+            skillRequiresConfirmation = skillProposal?.requiresConfirmation == true
+        )
+        if (!approvalVerdict.isAllowed) {
+            val nextCtx = ctx.withStep(
+                ctx.stepIndex + 1,
+                observed,
+                NeutralWordingContract.neutralize("blocked before execution: ${approvalVerdict.reason}")
+            ).withFailure()
+            return finish(
+                effectiveAction, proposal, nextCtx, observed, effectiveNode,
+                StepResult.TerminalState.FAIL, approvalVerdict.reason, start,
+                verification = null, dispatched = false,
+                blockedBySafety = true,
+                blockedFingerprint = observed.treeHash.takeIf { it.isNotBlank() }
+            )
+        }
+
+        if (approvalVerdict.requiresConfirmation) {
             currentCoroutineContext().ensureActive()
-            val approved = confirm(effectiveAction.describeAction())
+            val approved = confirm(effectiveAction, effectiveNode, approvalVerdict)
             currentCoroutineContext().ensureActive()
             if (!approved) {
                 val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, "the user declined: ${effectiveAction.describeAction()}")

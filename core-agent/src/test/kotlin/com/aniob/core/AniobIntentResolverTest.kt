@@ -2,6 +2,7 @@ package com.aniob.core
 
 import com.aniob.core.knowledge.AniobAppCatalog
 import com.aniob.core.knowledge.AniobAppRegistry
+import com.aniob.core.knowledge.RegisteredApp
 import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import org.junit.After
@@ -32,6 +33,14 @@ class AniobIntentResolverTest {
     @After
     fun tearDown() {
         AniobAppRegistry.resetForTest()
+    }
+
+    private fun registerInstalledClock() {
+        val packageName = "com.android.deskclock"
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(RegisteredApp(packageName = packageName, label = "Clock")),
+            mapOf(AniobAppRegistry.ROLE_CLOCK to packageName)
+        )
     }
 
     @Test
@@ -116,6 +125,7 @@ class AniobIntentResolverTest {
 
     @Test
     fun testSetAlarmOpensTheClockAppWhenOneIsKnown() {
+        registerInstalledClock()
         val alarm = AniobIntentResolver.resolve("Set alarm")
         assertNotNull(alarm)
         assertEquals("the clock app is opened so the step can be verified", AniobIntentResolver.ACTION_MAIN, alarm?.action)
@@ -152,6 +162,36 @@ class AniobIntentResolverTest {
         assertEquals("com.google.android.youtube", AniobIntentResolver.resolve("Open YouTube")?.targetPackage)
         assertEquals("org.telegram.messenger", AniobIntentResolver.resolve("launch telegram")?.targetPackage)
         assertEquals("com.spotify.music", AniobIntentResolver.resolve("Open Spotify")?.targetPackage)
+    }
+
+    @Test
+    fun staleRegistryAppIsRejectedByThePlatformLaunchabilityCheck() {
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(RegisteredApp(packageName = "com.sample.customapp", label = "Custom App"))
+        )
+
+        assertNull(
+            "A stale cached package must not become an app launch",
+            AniobIntentResolver.resolve("Open Custom App") { false }
+        )
+        val live = AniobIntentResolver.resolve("Open Custom App") { true }
+        assertEquals("com.sample.customapp", live?.targetPackage)
+    }
+
+    @Test
+    fun unavailableCachedNamedAppDoesNotFallBackToAWebsite() {
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(RegisteredApp(packageName = "com.sample.linkedin", label = "LinkedIn"))
+        )
+
+        assertNull(
+            "A stale installed-app record must clarify/fail, not change the destination to a website",
+            AniobIntentResolver.resolve("Open LinkedIn") { false }
+        )
+        assertEquals(
+            "com.sample.linkedin",
+            AniobIntentResolver.resolve("Open LinkedIn") { true }?.targetPackage
+        )
     }
 
     @Test
@@ -201,8 +241,9 @@ class AniobIntentResolverTest {
 
     @Test
     fun alarmWithoutATimeOpensTheClockAppToBeObserved() {
-        // No time means no SET_ALARM: the shortcut degrades to opening the clock app, which the
-        // caller must observe before it can call the step done.
+        // No time means no SET_ALARM: with an installed clock app, open its UI and observe it before
+        // the caller can call the step done.
+        registerInstalledClock()
         val result = AniobIntentResolver.resolve("set alarm")
         assertNotNull(result)
         assertEquals(AniobIntentResolver.ACTION_MAIN, result?.action)

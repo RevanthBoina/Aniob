@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Catches result/pill deep links while the activity is alive.
+     * Catches result and confirmation deep links while the activity is alive.
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

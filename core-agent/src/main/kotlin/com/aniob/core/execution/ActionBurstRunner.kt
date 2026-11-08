@@ -31,7 +31,7 @@ import kotlinx.coroutines.CancellationException
  * verification.
  */
 class ActionBurstRunner(
-    /** Re-reads the window. Called before every member after the first. */
+    /** Re-reads the window before a target-bearing first member and between later members. */
     private val capture: suspend () -> AniobScreenState?,
     /**
      * Runs one member through the full step pipeline (safety → dispatch → settle → verify →
@@ -53,6 +53,65 @@ class ActionBurstRunner(
      */
     private val captureEvery: Int = 1
 ) {
+
+    private fun targetOnOrigin(member: AniobAction, origin: AniobScreenState): AniobNode? {
+        val semantic = member.semanticTarget()
+        return if (member is AniobAction.InputText &&
+            semantic is com.aniob.core.domain.SemanticTarget.SomIndex &&
+            semantic.index == ActionBurst.UNNAMED_TARGET
+        ) {
+            com.aniob.core.perception.BurstPlanScope.soleEditable(origin)
+        } else {
+            resolveTarget(member, origin)
+        }
+    }
+
+    private fun validateFreshTarget(
+        member: AniobAction,
+        origin: AniobScreenState,
+        fresh: AniobScreenState
+    ): com.aniob.core.perception.BurstTargetGuard.Verdict {
+        if (com.aniob.core.perception.BurstTargetGuard.screenNavigated(origin, fresh)) {
+            return com.aniob.core.perception.BurstTargetGuard.Verdict(
+                allowed = false,
+                reason = "screen navigated to ${fresh.packageName}"
+            )
+        }
+        val semantic = member.semanticTarget()
+        if (member is AniobAction.InputText &&
+            semantic is com.aniob.core.domain.SemanticTarget.SomIndex &&
+            semantic.index == ActionBurst.UNNAMED_TARGET
+        ) {
+            val plannedField = com.aniob.core.perception.BurstPlanScope.soleEditable(origin)
+                ?: return com.aniob.core.perception.BurstTargetGuard.Verdict(
+                    allowed = false,
+                    reason = "the unnamed input no longer has one editable field"
+                )
+            if (plannedField.isPassword) {
+                return com.aniob.core.perception.BurstTargetGuard.Verdict(
+                    allowed = false,
+                    reason = "unnamed input is not allowed for a protected field"
+                )
+            }
+            val liveField = com.aniob.core.perception.BurstTargetGuard.match(fresh.nodes, plannedField)
+                ?: return com.aniob.core.perception.BurstTargetGuard.Verdict(
+                    allowed = false,
+                    reason = "the unnamed input field is no longer on screen"
+                )
+            if (liveField.isPassword) {
+                return com.aniob.core.perception.BurstTargetGuard.Verdict(
+                    allowed = false,
+                    reason = "unnamed input is not allowed for a protected field"
+                )
+            }
+            return if (liveField.isEnabled) {
+                com.aniob.core.perception.BurstTargetGuard.Verdict(true, matchedNode = liveField)
+            } else {
+                com.aniob.core.perception.BurstTargetGuard.Verdict(false, "the unnamed input field is disabled")
+            }
+        }
+        return com.aniob.core.perception.BurstTargetGuard.check(member, origin, fresh)
+    }
 
     /** Why a plan stopped early. */
     enum class Stop {
@@ -91,7 +150,11 @@ class ActionBurstRunner(
         val screen: AniobScreenState,
         val stop: Stop,
         val detail: String = "",
-        val completed: Boolean = false
+        val completed: Boolean = false,
+        /** Grounded semantic target lost before dispatch, when this was a true target miss. */
+        val missedAction: AniobAction? = null,
+        /** Stable identity of the target on the screen the plan was based on. */
+        val missedNode: AniobNode? = null
     ) {
         /** True when the next step must be planned from a new observation. */
         val shouldReplan: Boolean
@@ -129,11 +192,14 @@ class ActionBurstRunner(
                 return Outcome(ran, lastResult, currentCtx, currentScreen, Stop.ABORTED, "the run stopped")
             }
 
-            // Look again before every member: the previous one may have changed the screen, and a
-            // target is only dispatchable while it is still the thing the plan meant.
+            // Re-read before the first element action too: the observation may have gone stale
+            // between planning and dispatch. Later actions are re-read so prior actions cannot
+            // silently retarget them to a different widget.
             var liveScreen = currentScreen
             var matchedTarget: AniobNode? = null
-            if (index > 0 && dispatchedSinceCapture >= captureEvery) {
+            val mustRefresh = (index == 0 && member.semanticTarget() != null) ||
+                (index > 0 && dispatchedSinceCapture >= captureEvery)
+            if (mustRefresh) {
                 val fresh = try {
                     capture()
                 } catch (e: CancellationException) {
@@ -147,7 +213,7 @@ class ActionBurstRunner(
                         "could not read the screen before action ${index + 1}; not dispatching blind"
                     )
                 }
-                val verdict = com.aniob.core.perception.BurstTargetGuard.check(member, origin, fresh)
+                val verdict = validateFreshTarget(member, origin, fresh)
                 if (!verdict.allowed) {
                     val stop = when {
                         verdict.reason.startsWith("screen navigated") -> Stop.NAVIGATED
@@ -155,7 +221,13 @@ class ActionBurstRunner(
                     }
                     return Outcome(
                         ran, lastResult, currentCtx, fresh, stop,
-                        "action ${index + 1} (${member.toolName}) dropped: ${verdict.reason}"
+                        "action ${index + 1} (${member.toolName}) dropped: ${verdict.reason}",
+                        missedAction = member.takeIf {
+                            it.semanticTarget() != null && stop == Stop.TARGET_GONE
+                        },
+                        missedNode = if (stop == Stop.TARGET_GONE && member.semanticTarget() != null) {
+                            targetOnOrigin(member, origin)
+                        } else null
                     )
                 }
                 matchedTarget = verdict.matchedNode
@@ -191,7 +263,12 @@ class ActionBurstRunner(
                     return Outcome(
                         ran, result, currentCtx, currentScreen, Stop.BLOCKED,
                         "action ${index + 1} (${member.toolName}) was blocked or failed: " +
-                            (result.verification?.reason ?: "")
+                            (result.verification?.reason ?: ""),
+                        missedAction = member.takeIf {
+                            it.semanticTarget() != null &&
+                                (result.dispatch as? DispatchCommand.NoOp)?.reason?.startsWith("grounding_miss:") == true
+                        },
+                        missedNode = result.resolvedNode
                     )
                 StepResult.TerminalState.CONTINUE -> Unit
             }

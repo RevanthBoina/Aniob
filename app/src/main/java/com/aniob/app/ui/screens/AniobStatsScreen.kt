@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.aniob.app.AniobBuild
 import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.theme.AniobTheme
@@ -307,9 +308,9 @@ fun AniobStatsScreen(
                 }
             }
 
-            // Research metrics: the paper's three numbers for the active ablation mode, plus the
-            // manual verdict used when deterministic verification cannot decide a run.
-            item {
+            // Experimental verdict controls are present only in developer builds.
+            if (AniobBuild.isDeveloperBuild(context)) {
+                item {
                 val lastRun = uiState.researchLastRun
                 val summary = uiState.researchSummary
                 Card(
@@ -394,6 +395,7 @@ fun AniobStatsScreen(
                         }
                     }
                 }
+            }
             }
 
             // Provider Breakdown

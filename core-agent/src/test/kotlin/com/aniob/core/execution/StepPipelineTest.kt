@@ -152,8 +152,9 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `blocked action fails fast and never dispatches`() = runBlocking {
+    fun `payment action waits for approval and rejection never dispatches`() = runBlocking {
         var dispatched = false
+        var confirmationRequested = false
         val paymentScreen = screen("com.a", "Checkout")
         val records = mutableListOf<StepPipeline.StepRecord>()
         val result = pipeline(records = records).executeStep(
@@ -161,14 +162,39 @@ class StepPipelineTest {
             planningScreen = paymentScreen,
             proposal = StepPipeline.Proposal.Model(tap("Checkout"), "CLOUD"),
             capture = { paymentScreen },
-            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) },
+            confirm = { _, _, _ -> confirmationRequested = true; false }
         )
-        assertFalse("blocked actions must not reach the device", dispatched)
+        assertTrue("Payment must enter the shared approval gate", confirmationRequested)
+        assertFalse("A rejected payment must never reach the device", dispatched)
         assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
-        assertFalse("Record must show dispatched = false", records.first().dispatched)
-        assertTrue("Record must flag blockedBySafety", records.first().blockedBySafety)
-        assertEquals(paymentScreen.treeHash, records.first().blockedFingerprint)
-        com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(paymentScreen.treeHash)
+        assertFalse("User rejection is not a hard-safety block", records.first().blockedBySafety)
+        assertFalse(records.first().dispatched)
+    }
+
+    @Test
+    fun `off still pauses a payment at the shared StepPipeline gate`() = runBlocking {
+        val previousLevel = com.aniob.core.safety.AniobSafetyInterceptor.askLevel
+        com.aniob.core.safety.AniobSafetyInterceptor.askLevel = com.aniob.core.safety.AskLevel.OFF
+        try {
+            var confirmationRequested = false
+            var dispatched = false
+            val payScreen = screen("com.a", "Pay now")
+            val result = pipeline().executeStep(
+                ctx = ctx,
+                planningScreen = payScreen,
+                proposal = StepPipeline.Proposal.Model(tap("Pay now"), "CLOUD"),
+                capture = { payScreen },
+                dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) },
+                confirm = { _, _, _ -> confirmationRequested = true; false }
+            )
+
+            assertTrue(confirmationRequested)
+            assertFalse(dispatched)
+            assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        } finally {
+            com.aniob.core.safety.AniobSafetyInterceptor.askLevel = previousLevel
+        }
     }
 
     @Test
@@ -205,10 +231,68 @@ class StepPipelineTest {
             ),
             capture = { sendScreen },
             dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) },
-            confirm = { false }
+            confirm = { _, _, _ -> false }
         )
         assertFalse(dispatched)
         assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+    }
+
+    @Test
+    fun `a target from another package is not reused even when the widget identity matches`() = runBlocking {
+        val planned = screen("com.a", "Settings")
+        val live = screen("com.other", "Settings")
+        var dispatched = false
+        val result = pipeline().executeStep(
+            ctx = ctx,
+            planningScreen = planned,
+            proposal = StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
+            capture = { live },
+            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+        )
+
+        assertFalse("A cross-package widget lookalike must not receive the action", dispatched)
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertTrue((result.dispatch as DispatchCommand.NoOp).reason.startsWith("grounding_miss:"))
+    }
+
+    @Test
+    fun `a target absent from the planning screen is not rescued by the live screen`() = runBlocking {
+        val planned = screen("com.a", "Other control")
+        val live = screen("com.a", "Settings")
+        var dispatched = false
+        val result = pipeline().executeStep(
+            ctx = ctx,
+            planningScreen = planned,
+            proposal = StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
+            capture = { live },
+            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+        )
+
+        assertFalse("The action was not grounded when proposed", dispatched)
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertTrue((result.dispatch as DispatchCommand.NoOp).reason.startsWith("grounding_miss:"))
+    }
+
+    @Test
+    fun `recycled accessibility index is a grounding miss instead of a different tap`() = runBlocking {
+        val planned = screen("com.a", "Settings")
+        val live = screen("com.a", "Delete file") // same id, different grounded control
+        var dispatched = false
+        val result = pipeline().executeStep(
+            ctx = ctx,
+            planningScreen = planned,
+            proposal = StepPipeline.Proposal.Model(
+                AniobAction.Tap(SemanticTarget.SomIndex(1)),
+                "LOCAL"
+            ),
+            capture = { live },
+            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+        )
+
+        assertFalse("The new widget at the recycled index must not receive the old action", dispatched)
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertEquals("Settings", result.resolvedNode?.text)
+        assertTrue((result.dispatch as DispatchCommand.NoOp).reason.startsWith("grounding_miss:"))
     }
 
     @Test
@@ -295,7 +379,7 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `all four ladder routes enforce policy boundary on blocked payment`() = runBlocking {
+    fun `all four ladder routes use the same payment approval gate`() = runBlocking {
         val paymentScreen = screen("com.a", "Checkout")
         val proposals = listOf(
             StepPipeline.Proposal.DirectIntent(tap("Checkout")),
@@ -305,28 +389,29 @@ class StepPipelineTest {
         )
 
         for (proposal in proposals) {
-            com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(paymentScreen.treeHash)
             var dispatched = false
+            var confirmationRequested = false
             val records = mutableListOf<StepPipeline.StepRecord>()
             val result = pipeline(records = records).executeStep(
                 ctx = ctx,
                 planningScreen = paymentScreen,
                 proposal = proposal,
                 capture = { paymentScreen },
-                dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+                dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) },
+                confirm = { _, _, _ -> confirmationRequested = true; false }
             )
-            assertFalse("${proposal.providerLabel} must block payment dispatch", dispatched)
+            assertTrue("${proposal.providerLabel} must request approval", confirmationRequested)
+            assertFalse("${proposal.providerLabel} must not dispatch after rejection", dispatched)
             assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+            assertFalse("${proposal.providerLabel} denial is not a hard block", records.first().blockedBySafety)
             assertFalse(records.first().dispatched)
         }
-        com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(paymentScreen.treeHash)
     }
 
     @Test
     fun `burst head model actions cannot dispatch risky targets without confirmation`() = runBlocking {
         for (label in listOf("Pay now", "Send message", "Delete file")) {
             val before = screen("com.a", label, "Settings")
-            com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(before.treeHash)
             var dispatched = false
             val result = pipeline().executeStep(
                 ctx = ctx,
@@ -334,36 +419,41 @@ class StepPipelineTest {
                 proposal = StepPipeline.Proposal.Model(tap(label), "CLOUD"),
                 capture = { before },
                 dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) },
-                confirm = { false }
+                confirm = { _, _, _ -> false }
             )
             assertFalse("$label must not dispatch", dispatched)
             assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
-            com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(before.treeHash)
         }
     }
 
     @Test
     fun `high risk skill proposal requires user confirmation before dispatch`() = runBlocking {
-        var confirmCalled = false
-        var dispatched = false
-        val before = screen("com.a", "Settings")
-        val after = screen("com.a", "Display")
-        val result = pipeline().executeStep(
-            ctx = ctx,
-            planningScreen = before,
-            proposal = StepPipeline.Proposal.Skill(
-                action = tap("Settings"),
-                skillName = "high_risk_skill",
-                riskTier = "HIGH",
-                requiresConfirmation = true
-            ),
-            capture = { before },
-            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true, screenAfter = after) },
-            confirm = { confirmCalled = true; true }
-        )
-        assertTrue("High-risk skill proposal must invoke confirmation callback", confirmCalled)
-        assertTrue("Approved high-risk skill proposal must dispatch", dispatched)
-        assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
+        val previousLevel = com.aniob.core.safety.AniobSafetyInterceptor.askLevel
+        com.aniob.core.safety.AniobSafetyInterceptor.askLevel = com.aniob.core.safety.AskLevel.CAREFUL
+        try {
+            var confirmCalled = false
+            var dispatched = false
+            val before = screen("com.a", "Settings")
+            val after = screen("com.a", "Display")
+            val result = pipeline().executeStep(
+                ctx = ctx,
+                planningScreen = before,
+                proposal = StepPipeline.Proposal.Skill(
+                    action = tap("Settings"),
+                    skillName = "high_risk_skill",
+                    riskTier = "HIGH",
+                    requiresConfirmation = true
+                ),
+                capture = { before },
+                dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true, screenAfter = after) },
+                confirm = { _, _, _ -> confirmCalled = true; true }
+            )
+            assertTrue("High-risk skill proposal must invoke confirmation callback", confirmCalled)
+            assertTrue("Approved high-risk skill proposal must dispatch", dispatched)
+            assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
+        } finally {
+            com.aniob.core.safety.AniobSafetyInterceptor.askLevel = previousLevel
+        }
     }
 
     @Test

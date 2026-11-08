@@ -21,9 +21,9 @@ object FailureReasonCopy {
         Regex("(?i)accessibility.*(disabled|not connected)|service disabled") to { _ -> "Accessibility access is turned off" },
         Regex("(?i)timeout|timed out") to { _ -> "The app took too long to respond" },
         Regex("(?i)loop[_ ]detected|watchdog") to { _ -> "Aniob got stuck repeating an action" },
-        Regex("(?i)payment|checkout|purchase|transaction") to { _ -> "Aniob doesn't do payments" },
+        Regex("(?i)payment|checkout|purchase|transaction") to { _ -> "Aniob stopped this payment route for safety" },
         Regex("(?i)destructive|delete account|factory reset") to { _ -> "That action could erase your data, so Aniob stopped" },
-        Regex("(?i)sensitive") to { _ -> "That field holds a secret Aniob never reads" },
+        Regex("(?i)sensitive") to { _ -> "Aniob stopped before using a protected value" },
         Regex("(?i)confirm") to { _ -> "The step needs your approval" }
     )
 

@@ -20,7 +20,7 @@ import org.junit.Test
 /**
  * The bundled-plan contract as a model actually produces it.
  *
- * The earlier contract assumed a model would answer a "plan 2-3 actions for this screen" request
+ * The earlier contract assumed a model would answer a "plan 2-8 actions for this screen" request
  * with a list whose every element is visible right now. A model that understands the task answers
  * with the whole task — `tap(Add alarm) → input(7:30) → tap(OK)` — and two thirds of that reply
  * describes a screen that does not exist yet. Those replies were rejected outright, which is why
@@ -81,29 +81,29 @@ class BurstPlanScopeTest {
 
     @Test
     fun `a quoted id is the same id`() {
-        val burst = plan("""{"thought":"p","actions":[{"type":"tap","id":"1"}]}""")
-        assertEquals(SemanticTargetOf.som(1), (burst.actions.single() as AniobAction.Tap).target)
+        val burst = plan("""{"thought":"p","actions":[{"type":"tap","id":"1"},{"type":"tap","id":2}]}""")
+        assertEquals(SemanticTargetOf.som(1), (burst.actions.first() as AniobAction.Tap).target)
     }
 
     @Test
     fun `the canonical target object is accepted inside a plan`() {
-        val burst = plan("""{"thought":"p","actions":[{"type":"tap","target":{"kind":"som_index","value":2}}]}""")
-        assertEquals(SemanticTargetOf.som(2), (burst.actions.single() as AniobAction.Tap).target)
+        val burst = plan("""{"thought":"p","actions":[{"type":"tap","target":{"kind":"som_index","value":2}},{"type":"tap","id":1}]}""")
+        assertEquals(SemanticTargetOf.som(2), (burst.actions.first() as AniobAction.Tap).target)
     }
 
     @Test
     fun `index and node_id are aliases for id`() {
-        assertEquals(SemanticTargetOf.som(3), (plan("""{"actions":[{"type":"tap","index":3}]}""").actions.single() as AniobAction.Tap).target)
-        assertEquals(SemanticTargetOf.som(4), (plan("""{"actions":[{"type":"tap","node_id":4}]}""").actions.single() as AniobAction.Tap).target)
+        assertEquals(SemanticTargetOf.som(3), (plan("""{"actions":[{"type":"tap","index":3},{"type":"tap","id":1}]}""").actions.first() as AniobAction.Tap).target)
+        assertEquals(SemanticTargetOf.som(4), (plan("""{"actions":[{"type":"tap","node_id":4},{"type":"tap","id":1}]}""").actions.first() as AniobAction.Tap).target)
     }
 
     @Test
     fun `a plan may start by opening an app or issuing a device command`() {
-        val open = plan("""{"actions":[{"type":"open_app","package_name":"com.google.android.deskclock"}]}""")
-        assertEquals("com.google.android.deskclock", (open.actions.single() as AniobAction.OpenApp).packageName)
+        val open = plan("""{"actions":[{"type":"open_app","package_name":"com.google.android.deskclock"},{"type":"wait","duration_ms":100}]}""")
+        assertEquals("com.google.android.deskclock", (open.actions.first() as AniobAction.OpenApp).packageName)
 
-        val command = plan("""{"actions":[{"type":"device_control","command":"volume_set","args":{"percent":"70"}}]}""")
-        val device = command.actions.single() as AniobAction.DeviceControl
+        val command = plan("""{"actions":[{"type":"device_control","command":"volume_set","args":{"percent":"70"}},{"type":"wait","duration_ms":100}]}""")
+        val device = command.actions.first() as AniobAction.DeviceControl
         assertEquals("volume_set", device.command.wire)
         assertEquals("70", device.args["percent"])
     }
@@ -121,24 +121,24 @@ class BurstPlanScopeTest {
     @Test
     fun `prose and a markdown fence around the object are tolerated`() {
         val burst = AniobActionSchema.parseActionBurstOrNull(
-            "Here is my plan:\n```json\n{\"thought\":\"p\",\"actions\":[{\"type\":\"tap\",\"id\":2}]}\n```\nDone."
+            "Here is my plan:\n```json\n{\"thought\":\"p\",\"actions\":[{\"type\":\"tap\",\"id\":2},{\"type\":\"tap\",\"id\":1}]}\n```\nDone."
         )
         assertNotNull(burst)
-        assertEquals(1, burst!!.actions.size)
+        assertEquals(2, burst!!.actions.size)
     }
 
     @Test
     fun `a plan longer than the cap is refused whole, never truncated`() {
-        assertNull(
-            AniobActionSchema.parseActionBurstOrNull(
-                """{"actions":[{"type":"tap","id":1},{"type":"tap","id":2},{"type":"tap","id":3},{"type":"tap","id":1}]}"""
-            )
-        )
+        val actions = List(ActionBurst.MAX_ACTIONS + 1) { """{"type":"tap","id":1}""" }
+            .joinToString(",")
+        assertNull(AniobActionSchema.parseActionBurstOrNull("""{"actions":[$actions]}"""))
     }
 
     @Test
     fun `an unknown action type refuses the plan instead of guessing`() {
-        assertNull(AniobActionSchema.parseActionBurstOrNull("""{"actions":[{"type":"teleport","id":1}]}"""))
+        assertNull(AniobActionSchema.parseActionBurstOrNull(
+            """{"actions":[{"type":"teleport","id":1},{"type":"tap","id":2}]}"""
+        ))
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -182,7 +182,7 @@ class BurstPlanScopeTest {
         assertFalse(scoped.groundedOnScreen)
         assertTrue(scoped.executable.isEmpty())
         assertNull(AniobStructuredOutput.parseBurstOrRepair(
-            """{"thought":"p","actions":[{"type":"tap","id":42}]}""", alarmList, goal
+            """{"thought":"p","actions":[{"type":"tap","id":42},{"type":"tap","id":1}]}""", alarmList, goal
         ))
     }
 
@@ -215,8 +215,8 @@ class BurstPlanScopeTest {
 
     @Test
     fun `typing without an id is allowed when the screen has exactly one field and the text is the user's`() {
-        val burst = plan("""{"thought":"p","is_complete":true,"actions":[{"type":"input","text":"7:30"}]}""")
-        val input = burst.actions.single() as AniobAction.InputText
+        val burst = plan("""{"thought":"p","is_complete":true,"actions":[{"type":"input","text":"7:30"},{"type":"tap","id":99}]}""")
+        val input = burst.actions.first() as AniobAction.InputText
         assertEquals(ActionBurst.UNNAMED_TARGET, (input.target as com.aniob.core.domain.SemanticTarget.SomIndex).index)
 
         val scoped = BurstPlanScope.scope(burst, alarmEditor, goal)
@@ -227,7 +227,7 @@ class BurstPlanScopeTest {
     @Test
     fun `typing without an id is refused when the value is not in the request`() {
         // An injected screen must not be able to steer arbitrary text into the UI.
-        val burst = plan("""{"thought":"p","actions":[{"type":"input","text":"9999"}]}""")
+        val burst = plan("""{"thought":"p","actions":[{"type":"input","text":"9999"},{"type":"tap","id":99}]}""")
         assertFalse(BurstPlanScope.scope(burst, alarmEditor, goal).groundedOnScreen)
     }
 
@@ -237,7 +237,7 @@ class BurstPlanScopeTest {
             packageName = "com.example",
             nodes = listOf(node(1, "android.widget.EditText", edit = true, password = true))
         )
-        val burst = plan("""{"actions":[{"type":"input","text":"7:30"}]}""")
+        val burst = plan("""{"actions":[{"type":"input","text":"7:30"},{"type":"tap","id":99}]}""")
         assertFalse(BurstPlanScope.scope(burst, secure, goal).groundedOnScreen)
     }
 
@@ -250,7 +250,7 @@ class BurstPlanScopeTest {
                 node(2, "android.widget.EditText", edit = true)
             )
         )
-        val burst = plan("""{"actions":[{"type":"input","text":"7:30"}]}""")
+        val burst = plan("""{"actions":[{"type":"input","text":"7:30"},{"type":"tap","id":99}]}""")
         assertFalse(BurstPlanScope.scope(burst, twoFields, goal).groundedOnScreen)
     }
 

@@ -10,6 +10,7 @@ import com.aniob.core.domain.ExecutorRequest
 import com.aniob.core.domain.KeyType
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.perception.BurstTargetGuard
+import com.aniob.core.providers.AniobStructuredOutput
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -90,13 +91,36 @@ class ActionBurstTest {
     }
 
     @Test
-    fun rejectsBurstsOverThreeActions() {
+    fun rejectsPlansLongerThanEightActionsAsAWhole() {
+        val actions = List(ActionBurst.MAX_ACTIONS + 1) { """{"type":"tap","id":1}""" }
+            .joinToString(",")
         val burst = AniobActionSchema.parseActionBurstOrNull(
-            """{"thought":"too much","actions":[
-                {"type":"tap","id":1},{"type":"tap","id":2},{"type":"tap","id":1},
-                {"type":"tap","id":2},{"type":"tap","id":1}]}"""
+            """{"thought":"too much","actions":[$actions]}"""
         )
         assertNull(burst)
+    }
+
+    @Test
+    fun acceptsTheEightActionCeiling() {
+        val actions = List(ActionBurst.MAX_ACTIONS) { """{"type":"tap","id":1}""" }
+            .joinToString(",")
+        val burst = AniobActionSchema.parseActionBurstOrNull(
+            """{"thought":"bounded plan","actions":[$actions]}"""
+        )
+        assertNotNull(burst)
+        assertEquals(ActionBurst.MAX_ACTIONS, burst!!.actions.size)
+    }
+
+    @Test
+    fun aOneActionArrayFallsBackToTheSingleActionContract() {
+        val oneActionArray = """{"thought":"tap","actions":[{"type":"tap","id":1}]}"""
+        assertNull(AniobActionSchema.parseActionBurstOrNull(oneActionArray))
+        assertEquals(SemanticTarget.SomIndex(1), (AniobActionSchema.parseActionJsonOrNull(oneActionArray) as AniobAction.Tap).target)
+
+        val productionParse = AniobStructuredOutput.parseOrRepair(oneActionArray, screen)
+        assertFalse(productionParse.usedFallback)
+        assertTrue(productionParse.action is AniobAction.Tap)
+        assertEquals(SemanticTarget.SomIndex(1), (productionParse.action as AniobAction.Tap).target)
     }
 
     @Test
@@ -151,8 +175,8 @@ class ActionBurstTest {
         assertTrue(prompt.contains("\"actions\""))
         assertTrue(prompt.contains("\"is_complete\""))
         assertTrue(prompt.contains("tap|input|long_press|scroll|back|open_app|wait|device_control"))
-        assertTrue(prompt.contains("1 to 3"))
-        assertTrue(prompt.contains("under 80 tokens"))
+        assertTrue(prompt.contains("2 to 8"))
+        assertTrue(prompt.contains("Keep the reply compact"))
         // The model is told which half of its plan runs now and which half is held back.
         assertTrue(prompt.contains("held back"))
         assertFalse(prompt.contains("\"tool\": \"TAP\""))
@@ -220,7 +244,7 @@ class ActionBurstTest {
     fun retargetFallsBackToTextThenBounds() {
         val textOnly = AniobNode(id = 5, className = "android.widget.TextView", text = "Continue", bounds = AniobRect(0, 0, 100, 50))
         val byText = BurstTargetGuard.retarget(AniobAction.Tap(SemanticTarget.SomIndex(5)), textOnly) as AniobAction.Tap
-        assertEquals(SemanticTarget.Text("Continue"), byText.target)
+        assertEquals(SemanticTarget.Text("Continue", exact = true), byText.target)
 
         val bare = AniobNode(id = 6, className = "android.view.View", bounds = AniobRect(10, 20, 30, 40))
         val byBounds = BurstTargetGuard.retarget(AniobAction.Tap(SemanticTarget.SomIndex(6)), bare) as AniobAction.Tap
@@ -247,7 +271,7 @@ class ActionBurstTest {
     @Test
     fun `burst elements accept submit too`() {
         val burst = AniobActionSchema.parseActionBurstOrNull(
-            """{"thought":"search","is_complete":true,"actions":[{"type":"input","id":3,"text":"pizza","submit":true}]}"""
+            """{"thought":"search","is_complete":true,"actions":[{"type":"input","id":3,"text":"pizza","submit":true},{"type":"tap","id":2}]}"""
         )
         val action = burst?.actions?.first() as AniobAction.InputText
         assertTrue(action.submit)

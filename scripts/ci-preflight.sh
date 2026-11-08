@@ -103,9 +103,12 @@ if [ ! -f app/src/main/java/com/aniob/app/receiver/AniobPackageReceiver.kt ]; th
     SMOKE_FAIL=1
 fi
 
-# 5f. Safety interceptor confirm-with-user + notification OTP blocklist
-if ! grep -q "ConfirmWithUser" core-agent/src/main/kotlin/com/aniob/core/safety/AniobSafetyInterceptor.kt 2>/dev/null; then
-    echo "ERROR: confirm_with_user safety gate missing."
+# 5f. Shared AskPolicy approval gate + notification OTP blocklist
+# Consequence prompts now flow through AskPolicy and the one StepPipeline confirmation gate;
+# they are no longer represented as a special case in AniobSafetyInterceptor.
+if ! grep -q "AskPolicy.decide" core-agent/src/main/kotlin/com/aniob/core/safety/AniobSafetyInterceptor.kt 2>/dev/null || \
+   ! grep -q "if (approvalVerdict.requiresConfirmation)" core-agent/src/main/kotlin/com/aniob/core/execution/StepPipeline.kt 2>/dev/null; then
+    echo "ERROR: shared AskPolicy/StepPipeline confirmation gate missing."
     SMOKE_FAIL=1
 fi
 if [ ! -f app/src/main/java/com/aniob/app/service/AniobNotificationListenerService.kt ]; then

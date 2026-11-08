@@ -6,6 +6,8 @@ import com.aniob.app.ui.model.ConfirmDecision
 import com.aniob.app.ui.model.ConfirmRequest
 import com.aniob.core.workflow.OperationIdentity
 import kotlinx.coroutines.async
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
@@ -34,7 +36,7 @@ class ApprovalBindingTest {
             why = "Test",
             risk = ConfirmRequest.Risk.MEDIUM,
             details = "details",
-            timeoutSec = 5,
+            timeoutSec = 0,
             taskId = "task_1",
             target = "https://example.com"
         )
@@ -73,7 +75,7 @@ class ApprovalBindingTest {
             why = "Test",
             risk = ConfirmRequest.Risk.LOW,
             details = "details",
-            timeoutSec = 5,
+            timeoutSec = 0,
             taskId = "task_1",
             target = "https://example.com"
         )
@@ -98,6 +100,91 @@ class ApprovalBindingTest {
     }
 
     @Test
+    fun clearingOneTaskKeepsAnotherTasksApprovalMemo() = runTest {
+        val controller = ApprovalController()
+        val requestA = ConfirmRequest(
+            id = "req_a",
+            title = "Approval needed",
+            what = "Share summary",
+            why = "A",
+            risk = ConfirmRequest.Risk.LOW,
+            details = "details",
+            timeoutSec = 0,
+            taskId = "task_a",
+            target = "https://example.com/a"
+        )
+        val identityA = OperationIdentity(
+            taskId = "task_a",
+            actionId = "action_a",
+            generation = 1L,
+            destinationKey = "https://example.com/a",
+            approvedPayloadHash = "hash_a"
+        )
+        val jobA = async { controller.requestApproval(requestA, identityA) }
+        runCurrent()
+        assertTrue(controller.resolveConfirmation(ConfirmDecision.APPROVE_FOR_TASK, "task_a", "req_a"))
+        assertEquals(ConfirmDecision.APPROVE_FOR_TASK, jobA.await())
+
+        val requestB = requestA.copy(id = "req_b", taskId = "task_b", target = "https://example.com/b")
+        val identityB = OperationIdentity(
+            taskId = "task_b",
+            actionId = "action_b",
+            generation = 1L,
+            destinationKey = "https://example.com/b",
+            approvedPayloadHash = "hash_b"
+        )
+        val jobB = async { controller.requestApproval(requestB, identityB) }
+        runCurrent()
+        assertTrue(controller.resolveConfirmation(ConfirmDecision.APPROVE_FOR_TASK, "task_b", "req_b"))
+        assertEquals(ConfirmDecision.APPROVE_FOR_TASK, jobB.await())
+
+        controller.clearForTask("task_a")
+        val repeatedB = async { controller.requestApproval(requestB.copy(id = "req_b_again"), identityB) }
+        runCurrent()
+        assertTrue("Clearing task A must not revoke task B's memoized grant", repeatedB.isCompleted)
+        assertEquals(ConfirmDecision.APPROVE_FOR_TASK, repeatedB.await())
+    }
+
+    @Test
+    fun approvalWaitsIndefinitelyUntilTheUserAnswersOrStops() = runTest {
+        val controller = ApprovalController()
+        val identity = OperationIdentity(
+            taskId = "task_wait",
+            actionId = "action_wait",
+            generation = 7L,
+            destinationKey = "https://example.com",
+            approvedPayloadHash = "payload-hash"
+        )
+        val request = ConfirmRequest(
+            id = "req_wait",
+            title = "Approval needed",
+            what = "Send this message",
+            why = "The action needs your approval",
+            risk = ConfirmRequest.Risk.MEDIUM,
+            details = "Message contents are bound to this request",
+            timeoutSec = 0,
+            taskId = identity.taskId,
+            target = identity.destinationKey
+        )
+
+        val approvalJob = async { controller.requestApproval(request, identity) }
+        runCurrent()
+        advanceTimeBy(24 * 60 * 60 * 1000L)
+        runCurrent()
+
+        assertTrue("An unanswered approval must remain pending", approvalJob.isActive)
+        assertNotNull(controller.confirmRequest.value)
+        assertTrue(
+            controller.resolveConfirmation(
+                ConfirmDecision.APPROVE_ONCE,
+                taskId = identity.taskId,
+                requestId = request.id
+            )
+        )
+        assertEquals(ConfirmDecision.APPROVE_ONCE, approvalJob.await())
+    }
+
+    @Test
     fun testWrongRequestIdDoesNotResolveAndRemainsPending() = runTest {
         val controller = ApprovalController()
         val identity = OperationIdentity(
@@ -113,7 +200,7 @@ class ApprovalBindingTest {
             why = "Test",
             risk = ConfirmRequest.Risk.MEDIUM,
             details = "details",
-            timeoutSec = 5,
+            timeoutSec = 0,
             taskId = "task_1",
             target = "https://example.com"
         )

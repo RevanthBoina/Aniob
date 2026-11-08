@@ -17,7 +17,7 @@ class AniobObservationPolicyTest {
     }
 
     @Test
-    fun `consistent successful actions allow burst`() {
+    fun `consistent verified actions allow planning snapshot reuse`() {
         val policy = AniobObservationPolicy(maxBurstSteps = 3)
         policy.recordActionOutcome(tap(1), "com.app", true)
         policy.recordActionOutcome(tap(2), "com.app", true)

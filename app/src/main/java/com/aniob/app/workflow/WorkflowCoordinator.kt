@@ -76,27 +76,33 @@ class WorkflowCoordinator(
         }
 
         // 2. Approval check if required
-        val needsApproval = destination.isApproved.not() && (
-            payload?.isSensitive == true ||
-            !websiteBrief.isNullOrBlank()
-        )
+        val sensitiveBrief = !websiteBrief.isNullOrBlank() &&
+            com.aniob.core.safety.AniobDlpSanitizer.containsSensitiveData(websiteBrief)
+        val needsApproval = payload?.isSensitive == true ||
+            payload?.requiresConsent == true ||
+            sensitiveBrief ||
+            (!destination.isApproved && !websiteBrief.isNullOrBlank())
         if (needsApproval) {
-            val details = if (payload != null) {
-                "Data hash: ${payload.contentHash.take(8)}"
-            } else if (!websiteBrief.isNullOrBlank()) {
-                "Brief: \"${websiteBrief.take(60)}\""
-            } else {
-                "Target: ${destination.destinationKey}"
+            val details = when {
+                payload != null -> "Data hash: ${payload.contentHash.take(8)}"
+                !websiteBrief.isNullOrBlank() &&
+                    com.aniob.core.safety.AniobDlpSanitizer.containsSensitiveData(websiteBrief) ->
+                    "Brief contains sensitive content; preview hidden. Approval is bound to the exact brief."
+                !websiteBrief.isNullOrBlank() ->
+                    "Brief preview: ${com.aniob.core.safety.AniobDlpSanitizer.sanitize(websiteBrief).take(60)}"
+                else -> "Target: ${destination.destinationKey}"
             }
             val request = ConfirmRequest(
-                id = "confirm_${action.actionId}",
+                id = "confirm_${action.actionId}_$generation",
                 title = "Approve sharing with ${destination.destinationKey}",
                 what = "Share data with ${destination.destinationKey}",
                 why = "The destination will receive external data.",
                 risk = ConfirmRequest.Risk.MEDIUM,
                 details = details,
                 taskId = taskId,
-                target = destination.destinationKey
+                payload = payloadHash.orEmpty(),
+                target = destination.destinationKey,
+                identityTarget = destination.destinationKey
             )
             val decision = approvalController.requestApproval(request, identity)
             if (decision == ConfirmDecision.DENY || decision == ConfirmDecision.TIMEOUT_DENY) {

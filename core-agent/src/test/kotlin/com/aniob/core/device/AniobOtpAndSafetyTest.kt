@@ -14,7 +14,9 @@ import org.junit.Test
 
 class AniobOtpAndSafetyTest {
 
-    @After fun tearDown() = AniobSafetyInterceptor.clearBlockedFingerprints()
+    @After fun tearDown() {
+        AniobSafetyInterceptor.askLevel = com.aniob.core.safety.AskLevel.BALANCED
+    }
 
     @Test
     fun extractsCodesNextToAKeyword() {
@@ -44,10 +46,12 @@ class AniobOtpAndSafetyTest {
         AniobSafetyInterceptor.evaluateAction(action, null, AniobScreenState(packageName = "x"), "fp-${action.describeAction()}")
 
     @Test
-    fun otpCopyIsNotMistakenForAPayment() {
+    fun otpCopyAlwaysRequiresApprovalAsSecretHandling() {
+        AniobSafetyInterceptor.askLevel = com.aniob.core.safety.AskLevel.OFF
         val result = evaluate(AniobAction.DeviceControl(DeviceCommand.OTP_COPY, thought = "Copy the OTP to the clipboard"))
         assertTrue(result.isAllowed)
-        assertFalse(result.requiresConfirmation)
+        assertTrue(result.requiresConfirmation)
+        AniobSafetyInterceptor.askLevel = com.aniob.core.safety.AskLevel.BALANCED
     }
 
     @Test

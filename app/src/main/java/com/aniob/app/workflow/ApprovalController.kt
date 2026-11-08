@@ -8,7 +8,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 
 /**
  * Shared ApprovalController.
@@ -38,7 +39,7 @@ class ApprovalController {
     }
 
     /**
-     * Suspends until the user confirms or the request times out.
+     * Suspends until the user confirms, denies, or explicitly cancels the task. There is no timeout.
      */
     suspend fun requestApproval(
         request: ConfirmRequest,
@@ -59,27 +60,22 @@ class ApprovalController {
             _confirmRequest.value = request
         }
 
-        var decision = ConfirmDecision.TIMEOUT_DENY
+        var decision = ConfirmDecision.DENY
         try {
-            val timeoutMs = (if (request.timeoutSec > 0) request.timeoutSec else 60) * 1000L
-            decision = withTimeoutOrNull(timeoutMs) {
+            decision = try {
                 deferred.await()
-            } ?: ConfirmDecision.TIMEOUT_DENY
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                // Replacing/clearing this request while its task is still active is an explicit
+                // cancellation and resolves as DENY. Cancellation of the task itself propagates.
+                if (currentCoroutineContext().isActive) ConfirmDecision.DENY else throw cancelled
+            }
         } finally {
             synchronized(this) {
                 if (pendingDeferred === deferred) {
                     val current = boundIdentity
-                    if (current != null &&
-                        current.taskId == identity.taskId &&
-                        current.generation == identity.generation &&
-                        current.actionId == identity.actionId
-                    ) {
+                    if (current == identity) {
                         if (decision == ConfirmDecision.APPROVE_FOR_TASK) {
-                            val isHighRisk = request.risk == ConfirmRequest.Risk.HIGH ||
-                                request.what.contains(Regex("(?i)pay|transfer|send|delete|purchase"))
-                            if (!isHighRisk) {
-                                taskApprovals.add(memoKey)
-                            }
+                            taskApprovals.add(memoKey)
                         }
 
                         val record = ConfirmationRecord(
@@ -132,7 +128,8 @@ class ApprovalController {
      */
     fun clearForTask(taskId: String) {
         synchronized(this) {
-            taskApprovals.clear()
+            val prefix = "$taskId|"
+            taskApprovals.removeAll { it.startsWith(prefix) }
             if (boundIdentity?.taskId == taskId) {
                 pendingDeferred?.cancel()
                 pendingDeferred = null

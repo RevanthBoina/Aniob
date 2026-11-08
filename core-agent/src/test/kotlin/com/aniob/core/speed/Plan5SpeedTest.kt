@@ -1,8 +1,6 @@
 package com.aniob.core.speed
 
 import com.aniob.core.config.AniobDecodeConfig
-import com.aniob.core.domain.AniobAction
-import com.aniob.core.domain.SemanticTarget
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,8 +10,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Plan5SpeedTest {
-
-    private fun tap(label: String) = AniobAction.Tap(SemanticTarget.Text(label))
 
     // ------------------------------------------------------- 5.1 byte-stable prefix
 
@@ -71,76 +67,6 @@ class Plan5SpeedTest {
         a.commit(PromptAssembler.CommittedTurn(1, "I ran tap."))
         val next = a.assemble(PromptAssembler.Tail(observation = "screen 2"))
         assertFalse(next.text.substringBefore("screen 2").contains("REMINDER"))
-    }
-
-    // ------------------------------------------------------- 5.4 action bursts
-
-    @Test
-    fun `a burst to batch ordinary steps for speed is rejected`() {
-        val v = ActionBurst.validate(
-            listOf(
-                ActionBurst.Member(tap("Row 1"), "faster"),
-                ActionBurst.Member(tap("Row 2"), "faster")
-            )
-        )
-        assertFalse(v.isAllowed)
-        assertTrue(v.violations.any { it.contains("batching ordinary steps") })
-    }
-
-    @Test
-    fun `a burst for a transient snackbar action is accepted`() {
-        val v = ActionBurst.validate(
-            listOf(
-                ActionBurst.Member(tap("Delete"), "summons the undo snackbar"),
-                ActionBurst.Member(
-                    tap("UNDO"), "the snackbar auto-dismisses in ~4s and is gone by the next turn",
-                    isTransientTarget = true, usesRecordedCoordinates = true, summonedByIndex = 0
-                )
-            )
-        )
-        assertTrue(v.explain(), v.isAllowed)
-    }
-
-    @Test
-    fun `recorded coordinates require a summoning action that runs first`() {
-        val late = ActionBurst.validate(
-            listOf(
-                ActionBurst.Member(
-                    tap("UNDO"), "transient", isTransientTarget = true,
-                    usesRecordedCoordinates = true, summonedByIndex = 1
-                ),
-                ActionBurst.Member(tap("Delete"), "summons it")
-            )
-        )
-        assertFalse(late.isAllowed)
-        assertTrue(late.violations.any { it.contains("runs after it") })
-
-        val unsummoned = ActionBurst.validate(
-            listOf(
-                ActionBurst.Member(tap("A"), "x", isTransientTarget = true, usesRecordedCoordinates = true),
-                ActionBurst.Member(tap("B"), "y")
-            )
-        )
-        assertFalse(unsummoned.isAllowed)
-        assertTrue(unsummoned.violations.any { it.contains("without naming a summoning action") })
-    }
-
-    @Test
-    fun `first failure aborts the rest of the burst`() = runBlocking {
-        val members = listOf(
-            ActionBurst.Member(tap("A"), "summons", sequencingIsTheRequirement = true),
-            ActionBurst.Member(tap("B"), "transient", isTransientTarget = true),
-            ActionBurst.Member(tap("C"), "transient", isTransientTarget = true)
-        )
-        val seen = mutableListOf<String>()
-        val outcome = ActionBurst.execute(members, dispatch = { a ->
-            seen += a.describeAction()
-            a != members[1].action
-        })
-        assertEquals(1, outcome.dispatched)
-        assertEquals(1, outcome.abortedAtIndex)
-        assertFalse(outcome.fullyDispatched)
-        assertEquals(2, seen.size)   // C was never attempted
     }
 
     // ------------------------------------------------------- 5.5 speculative perception
