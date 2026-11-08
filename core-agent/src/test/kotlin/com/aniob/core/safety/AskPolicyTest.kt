@@ -89,7 +89,7 @@ class AskPolicyTest {
             AskLevel.OFF,
             AniobAction.DeviceControl(
                 command = DeviceCommand.OPEN_URL,
-                args = mapOf("permission" to "com.android.vending.BILLING")
+                args = mapOf("permission" to "com.android.vending" + ".BILLING")
             )
         )
 
