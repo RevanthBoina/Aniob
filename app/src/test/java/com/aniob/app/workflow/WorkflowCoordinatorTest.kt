@@ -66,6 +66,44 @@ class WorkflowCoordinatorTest {
     }
 
     @Test
+    fun consentRequiredPayloadNeedsApprovalEvenForApprovedDestination() = runTest {
+        val taskId = "consent_payload_task"
+        val destination = Destination(
+            handler = "example.test",
+            url = "https://example.test/",
+            category = DestinationCategory.BUILDER_SERVICE,
+            isApproved = true
+        )
+        val payload = PayloadReference(
+            id = "consent_payload",
+            mimeType = "text/plain",
+            byteCount = 12L,
+            contentHash = "a".repeat(64),
+            isSensitive = false,
+            requiresConsent = true
+        )
+        val action = WorkflowAction.OpenWebsite(
+            actionId = "consent_payload_action",
+            destination = destination,
+            payload = payload
+        )
+        val pending = async {
+            coordinator.executeAction(action = action, taskId = taskId, generation = 6L)
+        }
+        runCurrent()
+
+        val request = app.approvalController.confirmRequest.value
+        assertNotNull("A consent-required payload must wait for an explicit decision", request)
+        request!!
+        assertEquals(payload.contentHash, request.payload)
+        assertEquals(destination.destinationKey, request.identityTarget)
+        assertEquals("Data hash: ${payload.contentHash.take(8)}", request.details)
+
+        assertTrue(app.approvalController.resolveConfirmation(ConfirmDecision.DENY, taskId, request.id))
+        assertTrue(pending.await() is WorkflowResult.Cancelled)
+    }
+
+    @Test
     fun sensitiveWebsiteBriefIsHiddenAndApprovalBindsExactContent() = runTest {
         val taskId = "sensitive_brief_task"
         val brief = "Use verification code: 123456 to finish setup"

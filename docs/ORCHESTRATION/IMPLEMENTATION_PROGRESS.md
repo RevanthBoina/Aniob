@@ -97,7 +97,7 @@ The Parts 1–8 work is active on this branch. The rows below describe source-le
 ### Focused tests changed or added (all unrun)
 
 - Core: `AskPolicyTest`, `AniobSafetyInterceptorTest`, `TaskTargetMissLedgerTest`, `BurstPlanScopeTest`, `ActionBurstTest`, `ActionBurstRunnerTest`, and `StepPipelineTest`.
-- App: `ApprovalBindingTest`, `ApprovalFingerprintTest`, `WorkflowCoordinatorTest`, routing/resolver tests, and `AniobOutcomeCopyTest`.
+- App: `ApprovalBindingTest`, `ApprovalFingerprintTest`, `WorkflowCoordinatorTest` (separate `requiresConsent`-only and sensitive-brief approval cases), routing/resolver tests, and `AniobOutcomeCopyTest`.
 - Other existing regression tests touched in the active diff are listed by `git diff --stat`; no runtime result should be inferred from source inspection.
 
 ### Validation, blocker, and privacy decisions
