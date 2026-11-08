@@ -6,6 +6,8 @@ import com.aniob.app.ui.model.ConfirmDecision
 import com.aniob.app.ui.model.ConfirmRequest
 import com.aniob.core.workflow.OperationIdentity
 import kotlinx.coroutines.async
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
@@ -119,7 +121,7 @@ class ApprovalBindingTest {
             approvedPayloadHash = "hash_a"
         )
         val jobA = async { controller.requestApproval(requestA, identityA) }
-        kotlinx.coroutines.test.runCurrent()
+        runCurrent()
         assertTrue(controller.resolveConfirmation(ConfirmDecision.APPROVE_FOR_TASK, "task_a", "req_a"))
         assertEquals(ConfirmDecision.APPROVE_FOR_TASK, jobA.await())
 
@@ -132,13 +134,13 @@ class ApprovalBindingTest {
             approvedPayloadHash = "hash_b"
         )
         val jobB = async { controller.requestApproval(requestB, identityB) }
-        kotlinx.coroutines.test.runCurrent()
+        runCurrent()
         assertTrue(controller.resolveConfirmation(ConfirmDecision.APPROVE_FOR_TASK, "task_b", "req_b"))
         assertEquals(ConfirmDecision.APPROVE_FOR_TASK, jobB.await())
 
         controller.clearForTask("task_a")
         val repeatedB = async { controller.requestApproval(requestB.copy(id = "req_b_again"), identityB) }
-        kotlinx.coroutines.test.runCurrent()
+        runCurrent()
         assertTrue("Clearing task A must not revoke task B's memoized grant", repeatedB.isCompleted)
         assertEquals(ConfirmDecision.APPROVE_FOR_TASK, repeatedB.await())
     }
@@ -166,9 +168,9 @@ class ApprovalBindingTest {
         )
 
         val approvalJob = async { controller.requestApproval(request, identity) }
-        kotlinx.coroutines.test.runCurrent()
-        kotlinx.coroutines.test.advanceTimeBy(24 * 60 * 60 * 1000L)
-        kotlinx.coroutines.test.runCurrent()
+        runCurrent()
+        advanceTimeBy(24 * 60 * 60 * 1000L)
+        runCurrent()
 
         assertTrue("An unanswered approval must remain pending", approvalJob.isActive)
         assertNotNull(controller.confirmRequest.value)

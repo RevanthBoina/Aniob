@@ -2,6 +2,7 @@ package com.aniob.app.workflow
 
 import androidx.test.core.app.ApplicationProvider
 import com.aniob.app.AniobApplication
+import com.aniob.app.ui.model.ConfirmDecision
 import com.aniob.core.workflow.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
