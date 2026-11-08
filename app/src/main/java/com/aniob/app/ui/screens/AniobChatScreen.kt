@@ -121,6 +121,14 @@ fun AniobChatScreen(
 
     val listState = rememberLazyListState()
 
+    // Keep the newest message visible when the keyboard opens (the list shrinks above the composer).
+    val imeBottomPx = androidx.compose.foundation.layout.WindowInsets.ime
+        .getBottom(androidx.compose.ui.platform.LocalDensity.current)
+    LaunchedEffect(imeBottomPx > 0) {
+        val last = listState.layoutInfo.totalItemsCount - 1
+        if (imeBottomPx > 0 && last >= 0) listState.scrollToItem(last)
+    }
+
     // Auto-scroll to latest message
     LaunchedEffect(displayMessages.size, uiState.isStreaming, uiState.streamingBubbleText, uiState.lastSummary) {
         val lastItem = listState.layoutInfo.totalItemsCount - 1

@@ -47,6 +47,7 @@ class ActionBurstRunnerTest {
         screen: AniobScreenState,
         terminal: StepResult.TerminalState = StepResult.TerminalState.CONTINUE,
         verified: Boolean = true,
+        blockedBySafety: Boolean = false,
         ctx: TaskContext = ctx()
     ) = StepResult(
         action = action,
@@ -55,7 +56,8 @@ class ActionBurstRunnerTest {
             isExpected = verified, durationMs = 0, reason = if (verified) "changed" else "no change"
         ),
         nextCtx = ctx.withStep(ctx.stepIndex + 1, screen, "did ${action.toolName}").withAction(action),
-        terminalState = terminal
+        terminalState = terminal,
+        blockedBySafety = blockedBySafety
     )
 
     // ---------------------------------------------------------------------------------------------
@@ -217,7 +219,27 @@ class ActionBurstRunnerTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    fun `a safety block or dispatch failure stops the plan and is not retried`() = runBlocking {
+    fun `a safety block stops the plan and is not retried`() = runBlocking {
+        val runner = ActionBurstRunner(
+            capture = { list },
+            executeMember = { member, c, screen, _ ->
+                if (member == tap(2)) {
+                    stepResult(member, screen, StepResult.TerminalState.FAIL, blockedBySafety = true, ctx = c)
+                } else stepResult(member, screen, ctx = c)
+            }
+        )
+        val outcome = runner.run(
+            ActionBurst(thought = "p", isComplete = false, actions = listOf(tap(1), tap(2), tap(1))),
+            origin = list,
+            ctx = ctx()
+        )
+        assertEquals(ActionBurstRunner.Stop.BLOCKED, outcome.stop)
+        assertTrue(outcome.isHardStop)
+        assertEquals(2, outcome.ran.size)
+    }
+
+    @Test
+    fun `a soft failure closes the plan for a replan instead of ending the task`() = runBlocking {
         val runner = ActionBurstRunner(
             capture = { list },
             executeMember = { member, c, screen, _ ->
@@ -230,8 +252,9 @@ class ActionBurstRunnerTest {
             origin = list,
             ctx = ctx()
         )
-        assertEquals(ActionBurstRunner.Stop.BLOCKED, outcome.stop)
-        assertTrue(outcome.isHardStop)
+        assertEquals(ActionBurstRunner.Stop.TARGET_GONE, outcome.stop)
+        assertTrue(outcome.shouldReplan)
+        assertFalse(outcome.isHardStop)
         assertEquals(2, outcome.ran.size)
     }
 

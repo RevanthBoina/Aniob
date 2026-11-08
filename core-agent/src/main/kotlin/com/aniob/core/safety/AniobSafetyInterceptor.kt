@@ -36,11 +36,44 @@ object AniobSafetyInterceptor {
     val EXACT_BLOCKLIST = listOf(DENIED_BILLING_PERMISSION, "upi://", "pay", "checkout", "purchase", "payment", "transaction", "otp", "password", "cvv")
 
     private val paymentBlocklist = listOf("upi://", DENIED_BILLING_PERMISSION, "checkout", "purchase", "payment", "transaction")
-    private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin")
+    private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin", "verification code", "verification")
     private val SENSITIVE_BLOCKLIST_REGEX = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
         .let { Regex("\\b(?:$it)\\b") }
     private val destructiveBlocklist = listOf("delete account", "erase all", "factory reset", "format storage", "wipe data")
     private val unknownContactKeywords = listOf("unknown", "add new", "new contact", "create contact", "???")
+    /**
+     * Posture. Default (false) = ASSIST: only UPI / Google Billing are hard stops; everything that
+     * used to abort the task (destructive keywords, payment words, sensitive fields) becomes an
+     * explicit user confirmation and never poisons a screen fingerprint. STRICT (true) restores the
+     * old hard blocks. Set from the Trust Center safety level.
+     */
+    enum class Policy { ASSIST, STRICT }
+
+    /** Default ASSIST: keyword hits ask the user instead of ending the task. STRICT keeps hard blocks. */
+    @Volatile var policy: Policy = Policy.ASSIST
+    val strictMode: Boolean get() = policy == Policy.STRICT
+
+    private fun gate(reason: String, fingerprint: String, tier: String = "HIGH"): InterceptResult {
+        if (!strictMode) {
+            return InterceptResult(isAllowed = true, reason = "Confirm: $reason", riskTier = tier, requiresConfirmation = true)
+        }
+        blockedFingerprints.add(fingerprint)
+        blockedTimestamps[fingerprint] = System.currentTimeMillis()
+        return InterceptResult(isAllowed = false, reason = reason, riskTier = tier)
+    }
+
+    /**
+     * A field is sensitive when IT says so (password type, or an otp/pin/cvv/password label) or when
+     * the text being typed names a secret. Digits alone are not evidence: typing "1000" into an alarm
+     * or a quantity box used to be refused as an OTP.
+     */
+    private fun sensitiveContext(node: AniobNode?, typedOrThought: String): Boolean =
+        node?.isPassword == true ||
+            listOfNotNull(node?.viewId, node?.contentDescription, node?.text).any {
+                SENSITIVE_BLOCKLIST_REGEX.containsMatchIn(it.lowercase())
+            } ||
+            SENSITIVE_BLOCKLIST_REGEX.containsMatchIn(typedOrThought)
+
     private val blockedFingerprints = mutableSetOf<String>()
     private val blockedTimestamps = mutableMapOf<String, Long>()
 
@@ -88,18 +121,13 @@ object AniobSafetyInterceptor {
         val destructiveMatch = DESTRUCTIVE_KEYWORDS.containsMatchIn(actionStr) ||
             targetNode?.text?.let { DESTRUCTIVE_KEYWORDS.containsMatchIn(it) } == true ||
             targetNode?.contentDescription?.let { DESTRUCTIVE_KEYWORDS.containsMatchIn(it) } == true
-        if (destructiveMatch) {
-            blockedFingerprints.add(screenFingerprint)
-            blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
-            return InterceptResult(isAllowed = false, reason = "Destructive operation blocked", riskTier = "HIGH")
-        }
+        if (destructiveMatch) return gate("Destructive operation", screenFingerprint)
 
         // Sensitive data on editable fields
-        if (targetNode?.isEditable == true && (SENSITIVE_BLOCKLIST_REGEX.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(typedOrThoughtText))) {
-            blockedFingerprints.add(screenFingerprint)
-            blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
-            return InterceptResult(isAllowed = false, reason = "Sensitive data blocked", riskTier = "HIGH")
-        }
+        // A 4-6 digit number is only an OTP when the FIELD says so (typing "1000" into an alarm is not).
+        if (targetNode?.isEditable == true && sensitiveContext(targetNode, typedOrThoughtText) &&
+            (SENSITIVE_BLOCKLIST_REGEX.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(typedOrThoughtText))
+        ) return gate("Sensitive data entry", screenFingerprint)
 
         // 2. Financial operations: Distinguish reading payment history from committing payment
         val targetText = listOfNotNull(
@@ -123,11 +151,7 @@ object AniobSafetyInterceptor {
         val nodeAndActionText = "$targetText ${action.thought} ${action.describeAction()}".lowercase()
         val paymentMatch = FINANCIAL_KEYWORDS.containsMatchIn(nodeAndActionText)
 
-        if (paymentMatch && !isReadOnlyHistory) {
-            blockedFingerprints.add(screenFingerprint)
-            blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
-            return InterceptResult(isAllowed = false, reason = "Payment operation blocked", riskTier = "HIGH")
-        }
+        if (paymentMatch && !isReadOnlyHistory) return gate("Payment operation", screenFingerprint)
 
         // 3. Consequential message sending controls or unknown contact
         if (action is AniobAction.ConfirmWithUser) {

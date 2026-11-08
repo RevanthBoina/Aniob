@@ -51,7 +51,7 @@ object RememberTemplate {
      */
     private val PARAMETER = Regex(
         "\"([^\"]{1,60})\"" +
-            "|(\\d{1,2}[:.]\\d{2}\\s*(?:a\\.?m\\.?|p\\.?m\\.?)?)" +
+            "|(\\d{1,2}[:.]\\d{2}\\s*(?:a\\.?m\\.?|p\\.?m\\.?)?|\\d{1,2}\\s*(?:a\\.?m\\.?|p\\.?m\\.?)(?![a-z]))" +
             "|\\b(\\d+(?:[.,]\\d+)?)\\b",
         RegexOption.IGNORE_CASE
     )
@@ -60,8 +60,25 @@ object RememberTemplate {
     private val SPACES = Regex("\\s+")
 
     /** Splits a goal into its template and the parameter values that were cut out of it. */
-    fun parse(goal: String): Parsed {
-        if (goal.isBlank()) return Parsed.EMPTY
+    /** "search in <app> for <name>" / "call <name>": an unquoted object after a verb is a parameter too. */
+    /**
+     * Name-bearing verbs come from the shared lexicon, so a verb added there also becomes a replay
+     * parameter here: "search in youtube for mr beast" and "...for pewdiepie" share one trace.
+     */
+    private val NAME_VERBS = com.aniob.core.lexicon.TaskLexicon.NAME_BEARING_VERBS.sortedByDescending { it.length }
+    private val NAME_TAIL = Regex(
+        "^(.*?\\b(?:" + NAME_VERBS.joinToString("|") { v -> v.split(" ").joinToString("\\s+") { Regex.escape(it) } } + ")\\s+)" +
+            "(?!(?:to|me|on|in|for|a|an|the|my|it|them)\\b)([a-z][a-z0-9' ]{1,40})$",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun parse(rawGoal: String): Parsed {
+        if (rawGoal.isBlank()) return Parsed.EMPTY
+        // "ten am" -> "10 am" so spoken and typed values share one template; then quote a bare name.
+        var goal = com.aniob.core.text.SpokenNumbers.normalize(rawGoal.trim())
+        if (!goal.contains('"')) {
+            NAME_TAIL.find(goal)?.let { m -> goal = m.groupValues[1] + "\"" + m.groupValues[2].trim() + "\"" }
+        }
 
         val builder = StringBuilder()
         val params = ArrayList<String>(3)

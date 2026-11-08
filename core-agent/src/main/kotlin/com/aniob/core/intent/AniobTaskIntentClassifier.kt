@@ -219,19 +219,22 @@ object AniobTaskIntentClassifier {
         grillAnswers: Map<String, String> = emptyMap(),
         appCatalog: Map<String, String> = emptyMap()
     ): SuccessCriteria {
+        // Spoken values are normalised once, here: a criterion must assert what the screen shows
+        // ("10:00"), never the words the user happened to say ("ten am").
+        val text = com.aniob.core.text.SpokenNumbers.normalize(prompt)
         val mustContain = mutableListOf<String>()
         val mustShowPackage = mutableListOf<String>()
-        val minSteps = if (classify(prompt) == AniobIntent.DEVICE_AUTOMATION) 1 else 0
+        val minSteps = if (classify(text) == AniobIntent.DEVICE_AUTOMATION) 1 else 0
 
         // Quoted strings are the user's explicit "this must appear" assertions.
         Regex("[\"'\u201c\u2018]([^\"'\u201d\u2019]{2,40})[\"'\u201d\u2019]")
-            .findAll(prompt)
+            .findAll(text)
             .map { it.groupValues[1].trim() }
             .filter { it.isNotEmpty() }
             .forEach { if (it !in mustContain) mustContain += it }
 
         // "open X" / "launch X" -> the named app's package must be foreground at the end.
-        val lower = prompt.lowercase()
+        val lower = text.lowercase()
         val openMatch = Regex("(?:open|launch|start|go to)\\s+([a-z0-9 .&_-]{2,30})").find(lower)
         if (openMatch != null) {
             val target = openMatch.groupValues[1].trim().substringBefore(" and ").trim()
@@ -241,6 +244,8 @@ object AniobTaskIntentClassifier {
         grillAnswers.values
             .map { it.trim() }
             .filter { it.length in 2..40 }
+            // Choices of HOW to do the task (app picker, yes/no) are not text the finished screen must show.
+            .filter { it.lowercase() !in setOf("yes", "no", "ok", "sms / messages", "auto-select cheapest") }
             .forEach { if (it !in mustContain) mustContain += it }
 
         // Hardware toggles assert a WORLD state the screen cannot show (BUG-06): probe the
@@ -248,7 +253,7 @@ object AniobTaskIntentClassifier {
         val deviceAsserts = mutableListOf<DeviceAssertion>()
         val mustBeInstalled = mutableListOf<String>()
         val normalized = normalizeLexical(lower)
-        if (looksLikeDeviceToggle(prompt) && torchNounRx.containsMatchIn(normalized)) {
+        if (looksLikeDeviceToggle(text) && torchNounRx.containsMatchIn(normalized)) {
             val lastOn = normalized.lastIndexOf(" on")
             val lastOff = normalized.lastIndexOf("off")
             val finalOff = lastOff > lastOn
@@ -260,15 +265,15 @@ object AniobTaskIntentClassifier {
         if (installRx.containsMatchIn(normalized) && "com.android.vending" !in mustShowPackage) {
             mustShowPackage += "com.android.vending"
         }
-        val isInstall = AniobStoreCatalog.isInstallPrompt(prompt) || installRx.containsMatchIn(normalized)
-        val installPkg = AniobStoreCatalog.packageForPrompt(prompt)
+        val isInstall = AniobStoreCatalog.isInstallPrompt(text) || installRx.containsMatchIn(normalized)
+        val installPkg = AniobStoreCatalog.packageForPrompt(text)
         if (installPkg != null) {
             mustBeInstalled += installPkg
         }
 
         // Pattern-derived criteria: any registry capability contributes its OWN postconditions.
         // No new capability needs an edit here for its evidence to be enforced.
-        val pattern = PatternCriteriaBridge.derive(prompt)
+        val pattern = PatternCriteriaBridge.derive(text)
         if (!pattern.isEmpty) {
             pattern.mustShowPackage.forEach { if (it !in mustShowPackage) mustShowPackage += it }
             pattern.mustBeInstalled.forEach { if (it !in mustBeInstalled) mustBeInstalled += it }

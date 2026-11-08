@@ -43,13 +43,18 @@ object AniobStoreCatalog {
         "phonepe" to "com.phonepe.app"
     )
 
+    /**
+     * Not anchored: "can you install ludo", "please download the ludo app" and "install ludo for me"
+     * are the same request as "install ludo". Politeness is stripped first so the verb is found.
+     */
     private val INSTALL_RX = Regex(
-        """^(?:install|download)\s+(?:the\s+)?(?:app\s+)?([a-z0-9][a-z0-9 .&'_+-]{1,40})$"""
+        """\b(?:install|download)\s+(?:the\s+)?(?:app\s+)?([a-z0-9][a-z0-9 .&'_+-]{1,40}?)(?:\s+app)?\s*$"""
     )
 
     /** The app name of an install prompt ("install linkedin app" -> "linkedin"), or null. */
     fun installTarget(prompt: String): String? {
-        val lower = prompt.lowercase().trim().trimEnd('?', '.', '!', ',', ';')
+        val lower = com.aniob.core.lexicon.TaskLexicon.stripPoliteness(prompt)
+            .lowercase().trim().trimEnd('?', '.', '!', ',', ';')
         val name = INSTALL_RX.find(lower)?.groupValues?.get(1)?.trim() ?: return null
         return name.removeSuffix(" app").trim().ifBlank { null }
     }

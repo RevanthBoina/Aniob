@@ -8,6 +8,7 @@ import com.aniob.core.auth.AniobAccountHttp
 import com.aniob.core.auth.AniobAccountHttpOutcome
 import com.aniob.core.auth.AniobAuthConfig
 import com.aniob.core.auth.AniobAuthError
+import com.aniob.core.auth.AniobAuthJson
 import com.aniob.core.auth.AniobAuthRepository
 import com.aniob.core.auth.AniobAuthState
 import com.aniob.core.auth.AniobClock
@@ -61,7 +62,8 @@ class AniobAccountModelClient(
     private val clock: AniobClock = AniobClock.SYSTEM,
     private val client: OkHttpClient = AniobHttpClientSingleton.client.newBuilder()
         .readTimeout(120, TimeUnit.SECONDS)
-        .build()
+        .build(),
+    private val logger: (String, String) -> Unit = { tag, msg -> android.util.Log.e(tag, msg) }
 ) : AniobCloudLlmProvider, AniobActionStepProvider {
 
     override val name: String = AniobAccountHttp.NAME
@@ -132,11 +134,11 @@ class AniobAccountModelClient(
 
         gate()
         var grant = grantOrThrow(repository.obtainAccess())
-        var outcome = attempt(grant, body, onDelta, onFirstToken)
+        var outcome = attempt(grant, body, onDelta, onFirstToken, started, userText, instructions)
         if (outcome is Attempt.Unauthorized) {
             // One refresh, one resend. A second 401 is final.
             grant = grantOrThrow(repository.obtainAccess(rejectedAccessToken = grant.accessToken))
-            outcome = attempt(grant, body, onDelta, onFirstToken)
+            outcome = attempt(grant, body, onDelta, onFirstToken, started, userText, instructions)
         }
         return when (outcome) {
             is Attempt.Done -> {
@@ -182,17 +184,23 @@ class AniobAccountModelClient(
         grant: AniobAccessGrant,
         body: String,
         onDelta: (String) -> Unit,
-        onFirstToken: () -> Unit
+        onFirstToken: () -> Unit,
+        started: Long,
+        userText: String,
+        instructions: String
     ): Attempt {
         val request = Request.Builder()
             .url(endpoint)
+            .header("User-Agent", "Aniob/1.0.0")
             .header("Authorization", "Bearer ${grant.accessToken}")
             .header("Accept", "text/event-stream")
-            .header("originator", config.originator)
-            .header("session_id", session)
             .apply {
-                grant.accountId?.let { header("chatgpt-account-id", it) }
-                if (config.betaHeader.isNotBlank()) header("OpenAI-Beta", config.betaHeader)
+                if (config.originator.isNotBlank() && config.originator != "NONE" && config.originator != "UNSET") {
+                    header("originator", config.originator)
+                }
+                if (config.betaHeader.isNotBlank() && config.betaHeader != "NONE" && config.betaHeader != "UNSET") {
+                    header("OpenAI-Beta", config.betaHeader)
+                }
             }
             .post(body.toRequestBody("application/json".toMediaType()))
             .build()
@@ -204,14 +212,22 @@ class AniobAccountModelClient(
             health.recordFailure(endpoint, GatewayFailureKind.UNREACHABLE)
             return Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.UNREACHABLE, null, endpoint, e.javaClass.simpleName))
         }
-        return withContext(Dispatchers.IO) { response.use { read(it, onDelta, onFirstToken) } }
+        return withContext(Dispatchers.IO) { response.use { read(it, onDelta, onFirstToken, started, userText, instructions) } }
     }
 
-    private suspend fun read(response: Response, onDelta: (String) -> Unit, onFirstToken: () -> Unit): Attempt {
+    private suspend fun read(
+        response: Response,
+        onDelta: (String) -> Unit,
+        onFirstToken: () -> Unit,
+        started: Long,
+        userText: String,
+        instructions: String
+    ): Attempt {
         val code = response.code
         val type = response.header("Content-Type")
         if (code !in 200..299) {
             val errorBody = response.peekBody(MAX_ERROR_BYTES).string()
+            logger("AniobAccount", "HTTP $code from $endpoint: ${AniobSecretRedactor.redact(errorBody)}")
             return when (val outcome = AniobAccountHttp.classify(code, type, errorBody, response.header("Retry-After"), endpoint)) {
                 AniobAccountHttpOutcome.Ok -> Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "unexpected reply"))
                 AniobAccountHttpOutcome.Unauthorized -> Attempt.Unauthorized
@@ -230,6 +246,20 @@ class AniobAccountModelClient(
                 }
             }
         }
+
+        // Buffered application/json response handling (single JSON payload rather than SSE)
+        if (type.orEmpty().contains("application/json", ignoreCase = true)) {
+            val bodyText = response.peekBody(MAX_ERROR_BYTES).string()
+            val parsedText = extractTextFromJson(bodyText)
+            if (parsedText.isNotBlank()) {
+                health.recordSuccess(endpoint)
+                AniobEgressLedger.record(name, model, userText.length + instructions.length, parsedText.length, clock.now() - started)
+                onFirstToken()
+                onDelta(parsedText)
+                return Attempt.Done(parsedText)
+            }
+        }
+
         // A 2xx that is not a stream (an HTML page, say) is rejected before parsing.
         val peek = if (type.orEmpty().contains("event-stream", ignoreCase = true)) "" else response.peekBody(MAX_ERROR_BYTES).string()
         val ok = AniobAccountHttp.classify(code, type, peek, null, endpoint)
@@ -265,7 +295,7 @@ class AniobAccountModelClient(
             if (kind == GatewayFailureKind.UNREACHABLE) health.recordFailure(endpoint, kind)
             return Attempt.Failed(AniobAccountHttp.failure(kind, code, endpoint, AniobSecretRedactor.redact(failure.message)))
         }
-        if (!acc.completed) {
+        if (!acc.completed && acc.text().isBlank()) {
             return Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "no completion event"))
         }
         val text = acc.text()
@@ -273,6 +303,35 @@ class AniobAccountModelClient(
             return Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "reply had no text"))
         }
         return Attempt.Done(text)
+    }
+
+    private fun extractTextFromJson(jsonText: String): String {
+        val root = AniobAuthJson.parseObject(jsonText) ?: return ""
+        val response = AniobAuthJson.obj(root["response"]) ?: root
+        val output = response["output"] as? List<*>
+        if (output != null) {
+            for (item in output) {
+                val itemObj = AniobAuthJson.obj(item) ?: continue
+                if (AniobAuthJson.str(itemObj["type"]) == "message") {
+                    val content = itemObj["content"] as? List<*> ?: continue
+                    for (c in content) {
+                        val cObj = AniobAuthJson.obj(c) ?: continue
+                        if (AniobAuthJson.str(cObj["type"]) == "output_text") {
+                            val t = AniobAuthJson.str(cObj["text"])
+                            if (!t.isNullOrBlank()) return t
+                        }
+                    }
+                }
+            }
+        }
+        val choices = root["choices"] as? List<*>
+        if (!choices.isNullOrEmpty()) {
+            val firstChoice = AniobAuthJson.obj(choices[0])
+            val msg = AniobAuthJson.obj(firstChoice?.get("message"))
+            val c = AniobAuthJson.str(msg?.get("content"))
+            if (!c.isNullOrBlank()) return c
+        }
+        return AniobAuthJson.str(root["output_text"]).orEmpty()
     }
 
     companion object {

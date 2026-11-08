@@ -9,6 +9,7 @@ sealed interface AniobStreamEvent {
     data class ToolCallArgumentsDelta(val itemId: String, val delta: String) : AniobStreamEvent
     data class ToolCallDone(val itemId: String, val callId: String?, val name: String?, val arguments: String) : AniobStreamEvent
     data class Completed(val usage: AniobUsage?) : AniobStreamEvent
+    data class ItemDoneText(val text: String) : AniobStreamEvent
 
     /** The service said the response failed or was cut short. [message] is a one-line summary. */
     data class Failed(val code: String?, val message: String) : AniobStreamEvent
@@ -106,18 +107,45 @@ class AniobSseParser {
 
             "response.output_item.done" -> {
                 val item = AniobAuthJson.obj(json["item"]) ?: return
-                if (AniobAuthJson.str(item["type"]) == "function_call") {
+                val itemType = AniobAuthJson.str(item["type"])
+                if (itemType == "function_call") {
                     val id = AniobAuthJson.str(item["id"]) ?: AniobAuthJson.str(item["call_id"]) ?: return
                     out += AniobStreamEvent.ToolCallDone(
                         id, AniobAuthJson.str(item["call_id"]), AniobAuthJson.str(item["name"]),
                         (item["arguments"] as? String).orEmpty()
                     )
+                } else if (itemType == "message") {
+                    val content = item["content"] as? List<*>
+                    content?.forEach { c ->
+                        val obj = c as? Map<*, *>
+                        if (obj?.get("type") == "output_text") {
+                            (obj["text"] as? String)?.takeIf { it.isNotEmpty() }?.let { t ->
+                                out += AniobStreamEvent.ItemDoneText(t)
+                            }
+                        }
+                    }
                 }
             }
 
             "response.completed" -> {
                 terminal = true
-                val usage = AniobAuthJson.obj(AniobAuthJson.obj(json["response"])?.get("usage"))
+                val resp = AniobAuthJson.obj(json["response"])
+                val usage = AniobAuthJson.obj(resp?.get("usage"))
+                val output = resp?.get("output") as? List<*>
+                output?.forEach { item ->
+                    val itemObj = item as? Map<*, *>
+                    if (itemObj?.get("type") == "message") {
+                        val content = itemObj["content"] as? List<*>
+                        content?.forEach { c ->
+                            val obj = c as? Map<*, *>
+                            if (obj?.get("type") == "output_text") {
+                                (obj["text"] as? String)?.takeIf { it.isNotEmpty() }?.let { t ->
+                                    out += AniobStreamEvent.ItemDoneText(t)
+                                }
+                            }
+                        }
+                    }
+                }
                 out += AniobStreamEvent.Completed(
                     usage?.let { AniobUsage(AniobAuthJson.long(it["input_tokens"]), AniobAuthJson.long(it["output_tokens"])) }
                 )
@@ -153,6 +181,7 @@ class AniobStreamAccumulator {
     var completed: Boolean = false
         private set
     val toolCalls = mutableListOf<AniobStreamEvent.ToolCallDone>()
+    private var itemText: String? = null
 
     /** Returns the new text, if the event carried any. */
     fun accept(event: AniobStreamEvent): String? = when (event) {
@@ -160,8 +189,9 @@ class AniobStreamAccumulator {
         is AniobStreamEvent.Completed -> { completed = true; usage = event.usage; null }
         is AniobStreamEvent.Failed -> { if (failure == null) failure = event; null }
         is AniobStreamEvent.ToolCallDone -> { toolCalls += event; null }
+        is AniobStreamEvent.ItemDoneText -> { if (itemText == null) itemText = event.text; null }
         else -> null
     }
 
-    fun text(): String = text.toString()
+    fun text(): String = if (text.isNotEmpty()) text.toString() else itemText.orEmpty()
 }

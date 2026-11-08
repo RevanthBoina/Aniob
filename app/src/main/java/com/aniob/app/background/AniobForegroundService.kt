@@ -39,6 +39,11 @@ class AniobForegroundService : Service() {
         const val ACTION_PAUSE = "com.aniob.app.action.PAUSE_TASK"
         const val ACTION_CONFIRM_APPROVE = "com.aniob.app.action.CONFIRM_APPROVE"
         const val ACTION_CONFIRM_DENY = "com.aniob.app.action.CONFIRM_DENY"
+        const val ACTION_GRILL_ANSWER = "com.aniob.app.action.GRILL_ANSWER"
+        const val EXTRA_GRILL_CHOICE = "extra_grill_choice"
+        const val KEY_GRILL_REPLY = "aniob_grill_reply"
+        private const val GRILL_NOTIFICATION_ID = 8769
+        @Volatile var onGrillAnswerFromNotification: ((questionId: String, answer: String) -> Unit)? = null
         const val EXTRA_TASK_PROMPT = "extra_task_prompt"
         const val EXTRA_TASK_ID = "extra_task_id"
         const val EXTRA_REQUEST_ID = "extra_request_id"
@@ -252,6 +257,46 @@ class AniobForegroundService : Service() {
             nm.notify(CONFIRM_NOTIFICATION_ID, notification)
         }
 
+        /** Grill-Me as a notification: free-text reply (RemoteInput) plus the first two options as buttons. */
+        fun notifyGrillQuestion(context: Context, questionId: String, question: String, options: List<String>) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            ensureChannels(context, nm)
+            fun answerIntent() = Intent(context, AniobForegroundService::class.java).apply {
+                action = ACTION_GRILL_ANSWER
+                putExtra(EXTRA_REQUEST_ID, questionId)
+            }
+            val remoteInput = androidx.core.app.RemoteInput.Builder(KEY_GRILL_REPLY).setLabel("Your answer")
+                .apply { if (options.isNotEmpty()) setChoices(options.toTypedArray()) }.build()
+            val replyPi = PendingIntent.getService(
+                context, 10, answerIntent(), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            )
+            val open = PendingIntent.getActivity(
+                context, 11, Intent(context, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val builder = NotificationCompat.Builder(context, CHANNEL_CONFIRMATIONS)
+                .setContentTitle("Grill me")
+                .setContentText(question)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(question))
+                .setSmallIcon(R.drawable.ic_stat_aniob)
+                .setContentIntent(open)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .addAction(NotificationCompat.Action.Builder(0, "Answer", replyPi).addRemoteInput(remoteInput).build())
+            options.take(2).forEachIndexed { i, option ->
+                val pi = PendingIntent.getService(
+                    context, 12 + i, answerIntent().putExtra(EXTRA_GRILL_CHOICE, option),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                builder.addAction(0, option, pi)
+            }
+            nm.notify(GRILL_NOTIFICATION_ID, builder.build())
+        }
+
+        fun clearGrillQuestion(context: Context) {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)?.cancel(GRILL_NOTIFICATION_ID)
+        }
+
         /** Clears the approval door once a decision exists. */
         fun clearConfirmation(context: Context) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
@@ -414,6 +459,15 @@ class AniobForegroundService : Service() {
                 if (taskId != null && reqId != null) {
                     onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.APPROVE_ONCE, taskId, reqId)
                 }
+                return START_STICKY
+            }
+            ACTION_GRILL_ANSWER -> {
+                val qid = intent?.getStringExtra(EXTRA_REQUEST_ID)
+                val typed = intent?.let { androidx.core.app.RemoteInput.getResultsFromIntent(it) }
+                    ?.getCharSequence(KEY_GRILL_REPLY)?.toString()
+                val answer = typed ?: intent?.getStringExtra(EXTRA_GRILL_CHOICE)
+                clearGrillQuestion(this)
+                if (qid != null && !answer.isNullOrBlank()) onGrillAnswerFromNotification?.invoke(qid, answer.trim())
                 return START_STICKY
             }
             ACTION_CONFIRM_DENY -> {

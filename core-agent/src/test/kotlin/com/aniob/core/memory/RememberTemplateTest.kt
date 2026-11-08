@@ -73,10 +73,21 @@ class RememberTemplateTest {
 
     @Test
     fun `a goal without values keeps the keyword key`() {
-        // Backwards compatible with the entries already on disk: no parameters means the old
-        // order-insensitive keyword key, not a template.
-        assertEquals("pizza-search", RememberTemplate.keyOf("search for pizza"))
-        assertFalse(RememberTemplate.parse("search for pizza").hasParams)
+        // Backwards compatible with the entries already on disk: no parameters and no name-bearing verb
+        // means the old order-insensitive keyword key, not a template.
+        assertEquals("settings-wifi", RememberTemplate.keyOf("open wifi settings"))
+        assertFalse(RememberTemplate.parse("open wifi settings").hasParams)
+    }
+
+    @Test
+    fun `a name after a name-bearing verb becomes a parameter`() {
+        // One verified trace must replay for every other name, not be re-learned per query.
+        assertEquals(RememberTemplate.keyOf("search for pizza"), RememberTemplate.keyOf("search for sushi"))
+        assertEquals(listOf("pizza"), RememberTemplate.parse("search for pizza").params)
+        assertEquals(
+            RememberTemplate.keyOf("search in youtube for mr beast"),
+            RememberTemplate.keyOf("search in youtube for pewdiepie")
+        )
     }
 
     @Test

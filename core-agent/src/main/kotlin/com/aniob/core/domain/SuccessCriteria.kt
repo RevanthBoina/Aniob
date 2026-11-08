@@ -88,9 +88,12 @@ data class SuccessCriteria(
         val evaluations = mutableListOf<CriterionEvaluation>()
 
         mustContainText.forEach { needle ->
-            val matchingNode = screen.nodes.firstOrNull {
-                it.text.contains(needle, ignoreCase = true) ||
-                    it.contentDescription.contains(needle, ignoreCase = true)
+            // A spoken/typed time ("ten am") is shown by the Clock as "10:00" + "AM": compare surface forms.
+            val forms = (listOf(needle) + com.aniob.core.text.SpokenNumbers.timeVariants(needle)).distinct()
+            val matchingNode = screen.nodes.firstOrNull { n ->
+                forms.any { f ->
+                    n.text.contains(f, ignoreCase = true) || n.contentDescription.contains(f, ignoreCase = true)
+                }
             }
             if (matchingNode != null) {
                 val matchedText = matchingNode.text.ifBlank { matchingNode.contentDescription }

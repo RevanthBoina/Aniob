@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -263,6 +265,9 @@ fun FormattedMessageView(
         list
     }
 
+    val clipboard = LocalClipboardManager.current
+    var copiedAll by remember(cleanedContent) { mutableStateOf(false) }
+    SelectionContainer {
     Column(modifier = modifier) {
         if (finalThought != null) {
             ThoughtDisclosureCard(thought = finalThought)
@@ -281,5 +286,23 @@ fun FormattedMessageView(
                 }
             }
         }
+
+        if (cleanedContent.isNotBlank()) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(
+                    onClick = { clipboard.setText(AnnotatedString(cleanedContent)); copiedAll = true },
+                    modifier = Modifier.testTag("copy_message")
+                ) {
+                    Icon(
+                        if (copiedAll) Icons.Default.Check else Icons.Default.ContentCopy,
+                        contentDescription = "Copy response",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (copiedAll) "Copied" else "Copy", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
     }
 }

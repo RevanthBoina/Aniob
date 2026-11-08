@@ -12,6 +12,20 @@ import org.junit.Test
 
 class AniobSafetyInterceptorTest {
 
+    /**
+     * These expectations are the STRICT posture (a keyword hit aborts). The shipped default is ASSIST,
+     * where the same hits ask the user instead of ending the task — see AuditPart2Test.
+     */
+    @org.junit.Before
+    fun useStrictPosture() {
+        AniobSafetyInterceptor.policy = AniobSafetyInterceptor.Policy.STRICT
+    }
+
+    @org.junit.After
+    fun restoreDefaultPosture() {
+        AniobSafetyInterceptor.policy = AniobSafetyInterceptor.Policy.ASSIST
+    }
+
     private fun screen(pkg: String = "com.aniob.test", hash: String = "H1"): AniobScreenState =
         AniobScreenState(packageName = pkg, treeHash = hash)
 

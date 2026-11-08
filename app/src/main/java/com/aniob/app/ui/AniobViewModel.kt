@@ -289,6 +289,32 @@ class AniobViewModel(
 
     private val semanticSkillMatcher = AniobSemanticSkillMatcher()
     private val grillMeEngine by lazy { AniobGrillMeEngine(llmClient = buildGrillLlmClient()) }
+
+    /** Session slots: [Action: Verb] + [Target: Entity]; survives clarification turns. */
+    private val conversationState = com.aniob.core.dialogue.ConversationState()
+
+    private fun postAssistant(text: String, provider: String, badge: String) {
+        updateToIdle {
+            it.copy(
+                chatMessages = it.chatMessages + ChatMessage(
+                    id = "msg_${provider.lowercase()}_${System.currentTimeMillis()}",
+                    role = "assistant", content = text, provider = provider, badge = badge
+                ),
+                statusMessage = "Ready"
+            )
+        }
+    }
+
+    private fun openInstalled(pkg: String) {
+        app.packageManager.getLaunchIntentForPackage(pkg)
+            ?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            ?.let { runCatching { app.startActivity(it) } }
+    }
+
+    private fun announceGrill(prompt: String, q: com.aniob.core.grillme.GrillQuestion) {
+        conversationState.expectAnswer(prompt, q.question, q.options)
+        com.aniob.app.background.AniobForegroundService.notifyGrillQuestion(app, q.id, q.question, q.options)
+    }
     private val planningAgent = AniobPlanningAgent()
     private val memoryStore = AniobEmbeddingStore()
     private val reflectionAgent = AniobReflectionAgent()
@@ -596,6 +622,7 @@ class AniobViewModel(
         // so a mode without remember-replay cannot silently re-enable it.
         applyAblationMode(_uiState.value.ablationMode)
 
+        com.aniob.core.safety.AniobSafetyInterceptor.policy = if (_uiState.value.safetyLevel == SafetyLevel.STRICT) com.aniob.core.safety.AniobSafetyInterceptor.Policy.STRICT else com.aniob.core.safety.AniobSafetyInterceptor.Policy.ASSIST
         // UX-4: an OFF safety level is never silently retained — re-arm on every process start.
         if (_uiState.value.safetyLevel == SafetyLevel.OFF) {
             setSafetyLevel(SafetyLevel.STANDARD)
@@ -1060,6 +1087,7 @@ class AniobViewModel(
             .putInt("safety_level", level.ordinal)
             .putBoolean("safety_gate_enabled", level != SafetyLevel.OFF)
             .apply()
+        com.aniob.core.safety.AniobSafetyInterceptor.policy = if (level == SafetyLevel.STRICT) com.aniob.core.safety.AniobSafetyInterceptor.Policy.STRICT else com.aniob.core.safety.AniobSafetyInterceptor.Policy.ASSIST
         _uiState.update { it.copy(safetyLevel = level, safetyGateEnabled = level != SafetyLevel.OFF) }
     }
 
@@ -2033,8 +2061,15 @@ class AniobViewModel(
      * Entry point when user submits a natural language command.
      */
     fun submitTask(prompt: String) {
-        val trimmed = prompt.trim()
-        if (trimmed.isBlank()) return
+        val shown = prompt.trim()
+        if (shown.isBlank()) return
+        // Resolve "yes", "voice recording app", "subscribe it" against the last turns BEFORE routing.
+        val resolution = conversationState.resolve(shown)
+        val trimmed = resolution.prompt
+        if (resolution.cancelled) {
+            postAssistant("Okay — I've dropped that request.", "STATE", "Cancelled")
+            return
+        }
 
         // Reject if another task is active to prevent double submission
         if (_uiState.value.isRunning && activeTaskJob?.isActive == true) {
@@ -2059,7 +2094,7 @@ class AniobViewModel(
         val userMessage = ChatMessage(
             id = "msg_user_${java.util.UUID.randomUUID()}",
             role = "user",
-            content = trimmed
+            content = shown
         )
 
         _uiState.update {
@@ -2079,6 +2114,54 @@ class AniobViewModel(
 
         activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
             app.taskOwner.attachJob(leaseGen, currentCoroutineContext()[kotlinx.coroutines.Job]!!)
+
+            // Questions ABOUT the device are answered from tools, never by the text-only model.
+            com.aniob.core.dialogue.LocalQueryTools.answer(trimmed)?.let { reply ->
+                postAssistant(reply, "LOCAL_TOOL", "📱 Device")
+                return@launch
+            }
+
+            // Removal / details of an installed app: resolve it here; the system dialog is the confirmation.
+            com.aniob.core.dialogue.AppOps.parse(trimmed)?.let { request ->
+                val hit = com.aniob.core.dialogue.AppOps.resolve(request)
+                if (hit != null) {
+                    val uri = android.net.Uri.parse("package:${hit.packageName}")
+                    val intent = when (request.op) {
+                        com.aniob.core.dialogue.AppOps.Op.UNINSTALL ->
+                            android.content.Intent(android.content.Intent.ACTION_DELETE, uri)
+                        else -> android.content.Intent(
+                            android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, uri
+                        )
+                    }.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    val ok = runCatching { app.startActivity(intent) }.isSuccess
+                    postAssistant(
+                        when {
+                            ok && request.op == com.aniob.core.dialogue.AppOps.Op.UNINSTALL ->
+                                "I found ${hit.appName}. The system is asking you to confirm the uninstall — nothing is removed until you approve it."
+                            ok -> "I opened the ${hit.appName} details page; the ${request.op.wire.replace('_', ' ')} control is there."
+                            else -> "I found ${hit.appName} but couldn't open its system page. Long-press the icon and choose App info."
+                        },
+                        "LOCAL_TOOL", "🗑 Confirm"
+                    )
+                    return@launch
+                }
+            }
+
+            // Capability first: no tap tool -> say so on turn 1 and open the app instead of looping.
+            val affinity = com.aniob.core.dialogue.AppAffinity.forPrompt(trimmed.lowercase())
+            val affinityApp = affinity?.let { com.aniob.core.dialogue.AppAffinity.resolve(it) }
+            if (affinity != null && !AniobAccessibilityService.isServiceConnected) {
+                affinityApp?.let { openInstalled(it.packageName) }
+                postAssistant(
+                    if (affinityApp != null) {
+                        "I cannot directly click buttons inside ${affinityApp.appName} yet, but I've opened it for you."
+                    } else {
+                        "I cannot directly click buttons inside that app yet, and it isn't installed here. Enable Aniob in Accessibility settings to let me drive apps."
+                    },
+                    "CAPABILITY", "ℹ️ Capability"
+                )
+                return@launch
+            }
 
             // Route via WorkflowRouter before existing automation
             val workflowDecision = com.aniob.core.workflow.WorkflowRouter.route(trimmed)
@@ -2104,6 +2187,7 @@ class AniobViewModel(
                     return@launch
                 }
                 is com.aniob.core.workflow.WorkflowDecision.NeedsClarification -> {
+                    conversationState.expectAnswer(trimmed, workflowDecision.question)
                     val asstMsg = ChatMessage(
                         id = "msg_clarify_${System.currentTimeMillis()}",
                         role = "assistant",
@@ -2150,10 +2234,21 @@ class AniobViewModel(
             // Fail CLOSED: a toggle with no device noun and no device in recent user context is
             // ambiguous. Answering it with prose would recreate exactly the report's false success,
             // so ask one question instead. Clarification is cheaper than confident fiction.
+            // "on voice recording": the noun is an app role, not a missing hardware device.
+            val roleHit = com.aniob.core.lexicon.TaskLexicon.splitToggle(trimmed)?.let { (_, spoken) ->
+                com.aniob.core.dialogue.AppAffinity.findInstalled(spoken).firstOrNull()
+            }
+            if (roleHit != null) {
+                openInstalled(roleHit.packageName)
+                postAssistant("Opening ${roleHit.appName}.", "LOCAL_TOOL", "📱 Device")
+                return@launch
+            }
+
             if (intent != AniobIntent.DEVICE_AUTOMATION &&
                 AniobTaskIntentClassifier.looksLikeBareToggle(trimmed) &&
                 effectivePrompt == trimmed
             ) {
+                conversationState.expectAnswer(trimmed, "Which device should I switch?")
                 val clarify = ChatMessage(
                     id = "msg_clarify_${System.currentTimeMillis()}",
                     role = "assistant",
@@ -2294,6 +2389,7 @@ class AniobViewModel(
             val grillResult = grillMeEngine.evaluateTask(trimmed, sharedKnowledgeStore.getAll())
             if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
                 setPhase(AgentPhase.ASKING)
+                announceGrill(trimmed, grillResult.questions.first())
                 _uiState.update {
                     it.copy(
                         grillMeResult = grillResult,
@@ -2406,6 +2502,7 @@ class AniobViewModel(
 
     fun onGrillAnswersSubmitted(answers: Map<String, String>, rememberKeys: Set<String> = emptySet()) {
         val currentTask = _uiState.value.activeTask ?: return
+        com.aniob.app.background.AniobForegroundService.clearGrillQuestion(app)
         // Plan-time feasibility hand-off ("I can't tap the system dialog for you"): the choice is not a task slot.
         answers.entries.firstOrNull { it.key.startsWith("delegate.") }?.let { (_, choice) ->
             when (choice) {
@@ -3013,12 +3110,13 @@ class AniobViewModel(
                         }
                         // The replay is dispatched like a burst: every action is re-grounded on the
                         // live window, and the last one keeps the normal step pipeline so Verify runs.
+                        val replayActions = ladderResult.actions.take(ActionBurst.MAX_ACTIONS)
                         plannedBurst = ActionBurst(
-                            thought = "remembered ${ladderResult.actions.size} action(s)",
+                            thought = "remembered ${replayActions.size} action(s)",
                             isComplete = false,
-                            actions = ladderResult.actions
+                            actions = replayActions
                         )
-                        proposal = StepPipeline.Proposal.Model(ladderResult.actions.last(), primaryProvider)
+                        proposal = StepPipeline.Proposal.Model(replayActions.last(), primaryProvider)
                     }
                     is AniobExecutionRouter.ExecutionPlanResult.FastPathStep -> {
                         primaryProvider = "FASTPATH"
@@ -3833,6 +3931,7 @@ class AniobViewModel(
                     val ask = com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
                     if (ask != null && task.grillAnswers.isEmpty()) {
                         setPhase(AgentPhase.ASKING)
+                        announceGrill(task.rawPrompt, ask)
                         updateToIdle {
                             it.copy(
                                 activeTask = task,

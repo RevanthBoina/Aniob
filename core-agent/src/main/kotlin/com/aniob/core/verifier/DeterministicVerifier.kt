@@ -18,6 +18,26 @@ object DeterministicVerifier {
         val evaluations: List<com.aniob.core.domain.CriterionEvaluation> = emptyList()
     )
 
+    /** Shared verdict for every action whose only evidence is "the screen moved". */
+    private fun effectOr(
+        before: AniobScreenState?,
+        after: AniobScreenState,
+        pass: String,
+        fail: String
+    ): Pair<Boolean, String> = when {
+        before == null -> true to pass
+        changed(before, after) -> true to pass
+        ScreenEffect.between(before, after).customSurface -> true to "Dispatched on a custom surface; effect not observable in the tree."
+        else -> false to fail
+    }
+
+    /** Any of: tree hash, structural hash, package, keyboard, or content-keyed diff moved. */
+    private fun changed(before: AniobScreenState, after: AniobScreenState): Boolean =
+        before.treeHash != after.treeHash ||
+            before.packageName != after.packageName ||
+            (before.screenHash.isNotBlank() && after.screenHash.isNotBlank() && before.screenHash != after.screenHash) ||
+            ScreenEffect.between(before, after).changed
+
     /**
      * Verifies that the previous action caused an expected state transition.
      */
@@ -44,22 +64,23 @@ object DeterministicVerifier {
 
         val result = when (action) {
             is AniobAction.Tap -> {
-                if (screenBefore != null && (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName)) {
+                if (screenBefore != null && changed(screenBefore, screenAfter)) {
                     true to "Tap confirmed: screen transitioned."
                 } else if (screenBefore == null) {
                     true to "Tap acknowledged on initial screen."
+                } else if (ScreenEffect.between(screenBefore, screenAfter).customSurface) {
+                    // Canvas/WebView/video surfaces cannot prove a no-op: do not fail the step on silence.
+                    true to "Tap dispatched on a custom surface; effect not observable in the tree."
                 } else {
-                    false to "No-effect: treeHash unchanged after Tap on ${action.describeTarget()}."
+                    false to "No-effect: screen content unchanged after Tap on ${action.describeTarget()}."
                 }
             }
 
-            is AniobAction.LongPress -> {
-                if (screenBefore != null && screenBefore.treeHash != screenAfter.treeHash) {
-                    true to "LongPress confirmed: UI state transitioned."
-                } else {
-                    false to "No-effect: treeHash unchanged after LongPress for ${action.durationMs}ms."
-                }
-            }
+            is AniobAction.LongPress -> effectOr(
+                screenBefore, screenAfter,
+                pass = "LongPress confirmed: UI state transitioned.",
+                fail = "No-effect: screen content unchanged after LongPress for ${action.durationMs}ms."
+            )
 
             is AniobAction.OpenApp -> {
                 if (screenAfter.packageName.equals(action.packageName, ignoreCase = true)) {
@@ -94,37 +115,29 @@ object DeterministicVerifier {
                 }
             }
 
-            is AniobAction.Swipe -> {
-                if (screenBefore != null && screenBefore.treeHash != screenAfter.treeHash) {
-                    true to "Swipe confirmed: view content shifted."
-                } else {
-                    false to "Swipe had no effect (reached list boundary or gesture unrecognized)."
-                }
-            }
+            is AniobAction.Swipe -> effectOr(
+                screenBefore, screenAfter,
+                pass = "Swipe confirmed: view content shifted.",
+                fail = "Swipe had no effect (reached list boundary or gesture unrecognized)."
+            )
 
-            is AniobAction.SystemKey -> {
-                if (screenBefore != null && (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName)) {
-                    true to "System key press confirmed: screen or package changed."
-                } else {
-                    false to "System key press had no effect."
-                }
-            }
+            is AniobAction.SystemKey -> effectOr(
+                screenBefore, screenAfter,
+                pass = "System key press confirmed: screen or package changed.",
+                fail = "System key press had no effect."
+            )
 
-            is AniobAction.PressKey -> {
-                if (screenBefore != null && (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName)) {
-                    true to "Key press confirmed: screen or package changed."
-                } else {
-                    false to "Key press had no effect."
-                }
-            }
+            is AniobAction.PressKey -> effectOr(
+                screenBefore, screenAfter,
+                pass = "Key press confirmed: screen or package changed.",
+                fail = "Key press had no effect."
+            )
 
-            is AniobAction.Wait -> {
-                if (screenBefore != null && screenBefore.treeHash != screenAfter.treeHash) {
-                    true to "Wait confirmed: UI settled to a new state."
-                } else {
-                    false to "No-effect: treeHash unchanged after Wait for ${action.durationMs}ms."
-                }
-            }
+            is AniobAction.Wait -> effectOr(
+                screenBefore, screenAfter,
+                pass = "Wait confirmed: UI settled to a new state.",
+                fail = "No-effect: screen content unchanged after Wait for ${action.durationMs}ms."
+            )
 
             is AniobAction.ConfirmWithUser -> {
                 true to "Confirmation gate handled."

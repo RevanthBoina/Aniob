@@ -2,13 +2,17 @@
 # accepts any model name the user types. Read by AniobAccountModelCatalog from the APK assets
 # (aniob_config/account_models.yaml). Keep configs/, android-agent/configs/ and the assets copy
 # identical: scripts/config-assets-sync-check.sh enforces it.
-default: gpt-4o
+default: gpt-6-sol
 models:
-  - id: gpt-4o
-    label: "GPT-4o"
-  - id: gpt-4o-mini
-    label: "GPT-4o mini (faster)"
-  - id: o1
-    label: "o1 (reasoning)"
-  - id: o3-mini
-    label: "o3-mini (reasoning, fast)"
+  - id: gpt-6-sol
+    label: "GPT-6 Sol (recommended)"
+  - id: gpt-6.1-sol
+    label: "GPT-6.1 Sol"
+  - id: gpt-6-luna
+    label: "GPT-6 Luna (fast)"
+  - id: gpt-6.1-terra
+    label: "GPT-6.1 Terra"
+  - id: gpt-5.6-sol
+    label: "GPT-5.6 Sol"
+  - id: gpt-6-astra
+    label: "GPT-6 Astra (reasoning)"

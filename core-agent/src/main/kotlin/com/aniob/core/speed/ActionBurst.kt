@@ -24,6 +24,9 @@ object ActionBurst {
      * @param usesRecordedCoordinates  coordinates come from an earlier observation, not live data
      * @param summonedByIndex          index, within this burst, of the action that restores the
      *                                 state those recorded coordinates belonged to
+     * @param verifiedBeforeDispatch   the runner re-observes and re-grounds this member against the
+     *                                 live screen before it fires, so nothing is dispatched blind
+     * @param homogeneousRepeat        the same action repeated on a stable target ("tap it 3 times")
      */
     data class Member(
         val action: AniobAction,
@@ -31,7 +34,9 @@ object ActionBurst {
         val isTransientTarget: Boolean = false,
         val sequencingIsTheRequirement: Boolean = false,
         val usesRecordedCoordinates: Boolean = false,
-        val summonedByIndex: Int? = null
+        val summonedByIndex: Int? = null,
+        val verifiedBeforeDispatch: Boolean = false,
+        val homogeneousRepeat: Boolean = false
     )
 
     data class Validation(val isAllowed: Boolean, val violations: List<String>) {
@@ -55,11 +60,26 @@ object ActionBurst {
     const val MIN_SIZE = 2
     const val MAX_SIZE = 5
 
+    /** Ceiling for one repeated action ("tap the bell 8 times"); a mixed burst stays at [MAX_SIZE]. */
+    const val MAX_REPEAT = 8
+
+    /**
+     * True when every member is the same tool on the same target and none of them relies on
+     * coordinates recorded earlier: the only shape where repetition itself is the task.
+     */
+    fun isHomogeneousRepeat(members: List<Member>): Boolean =
+        members.size >= MIN_SIZE &&
+            members.all { it.homogeneousRepeat && !it.usesRecordedCoordinates } &&
+            members.map { it.action.toolName }.distinct().size == 1 &&
+            members.map { it.action.semanticTarget()?.toString() }.distinct().size == 1
+
     fun validate(members: List<Member>): Validation {
         val v = mutableListOf<String>()
 
+        val repeat = isHomogeneousRepeat(members)
+        val ceiling = if (repeat) MAX_REPEAT else MAX_SIZE
         if (members.size < MIN_SIZE) v += "a burst needs at least $MIN_SIZE actions (got ${members.size})"
-        if (members.size > MAX_SIZE) v += "a burst may contain at most $MAX_SIZE actions (got ${members.size})"
+        if (members.size > ceiling) v += "a burst may contain at most $ceiling actions (got ${members.size})"
 
         // "the agent must justify every member"
         members.forEachIndexed { i, m ->
@@ -68,10 +88,16 @@ object ActionBurst {
 
         // "bursts only for transient targets or when sub-second sequencing is itself the
         //  requirement, never to batch ordinary steps for speed"
-        val qualifies = members.any { it.isTransientTarget } || members.all { it.sequencingIsTheRequirement }
+        // A burst is legitimate when a target is transient, when sub-second ordering IS the step,
+        // when every member is re-grounded against a fresh observation before it fires, or when the
+        // same action is repeated on a stable target. Batching blind, unverified steps is still not.
+        val qualifies = members.any { it.isTransientTarget } ||
+            members.all { it.sequencingIsTheRequirement } ||
+            members.all { it.verifiedBeforeDispatch } ||
+            repeat
         if (!qualifies) {
-            v += "no member targets transient UI and sequencing is not stated as the requirement; " +
-                "batching ordinary steps for speed is not a valid burst"
+            v += "no member targets transient UI, sequencing is not stated as the requirement, and " +
+                "members are not re-grounded before dispatch; batching ordinary steps for speed is not a valid burst"
         }
 
         // "coordinates must come from live data EXCEPT the transient target ... provided the

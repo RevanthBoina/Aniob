@@ -24,6 +24,7 @@
     <!-- Google Play Policy Justification for CALL_PHONE:
          Required for executing direct hands-free NL voice calling commands (DeviceCommand.CALL / Intent.ACTION_CALL) requested by the user without manual dialer interaction. -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- location_share: last known location only, never tracked. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />

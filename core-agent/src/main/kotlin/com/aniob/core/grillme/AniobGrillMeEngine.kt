@@ -88,11 +88,14 @@ class AniobGrillMeEngine(
         taskPrompt: String,
         rememberedAnswers: Map<String, String> = emptyMap()
     ): AniobGrillMeResult {
-        val lower = AniobTextFold.fold(taskPrompt)
+        val lower = com.aniob.core.text.SpokenNumbers.normalize(AniobTextFold.fold(taskPrompt))
         val words = AniobTextFold.tokens(taskPrompt).toSet()
         val isQuestion = words.firstOrNull() in setOf("what", "why", "how", "who", "when", "where", "which", "explain", "define")
         val isRide = !isQuestion && words.any { it in setOf("cab", "ride", "taxi", "uber", "lyft") }
-        val isMessage = !isQuestion && words.any { it in setOf("message", "text", "send", "sms", "whatsapp") }
+        val social = if (isQuestion) null else com.aniob.core.dialogue.AppAffinity.forPrompt(lower)
+        // Messaging vocabulary comes from the shared lexicon, so one new app role extends every layer.
+        val isMessage = !isQuestion && social == null &&
+            com.aniob.core.lexicon.TaskLexicon.MESSAGING_ROLES.any { words.contains(it) || words.contains(it.removeSuffix("s")) }
         val isAlarm = !isQuestion && words.any { it in setOf("alarm", "timer") }
         val questions = mutableListOf<GrillQuestion>()
 
@@ -135,7 +138,7 @@ class AniobGrillMeEngine(
                     AniobCalibratedAsking.Slot(
                         id = "recipient",
                         questionAsAsked = "Who would you like to message?",
-                        options = listOf("Mom", "Work Group", "Recent Contact"),
+                        options = emptyList(),
                         changesBehaviour = true,
                         default = null,
                         consequential = true,
@@ -157,9 +160,9 @@ class AniobGrillMeEngine(
                     AniobCalibratedAsking.Slot(
                         id = "app",
                         questionAsAsked = "Which messaging app?",
-                        options = listOf("SMS / Messages", "WhatsApp", "Telegram"),
+                        options = com.aniob.core.dialogue.AppAffinity.messagingOptions(),
                         changesBehaviour = true,
-                        default = "SMS / Messages",
+                        default = null,
                         consequential = false,
                         deviceFact = AniobCalibratedAsking.DeviceFact.DEFAULT_MESSAGING_APP
                     )
@@ -181,7 +184,7 @@ class AniobGrillMeEngine(
             }
 
             if (relevantSlots.isNotEmpty()) {
-                val plan = calibratedAsking.plan(relevantSlots, taskPrompt)
+                val plan = calibratedAsking.plan(relevantSlots, com.aniob.core.text.SpokenNumbers.normalize(taskPrompt))
                 val upfront = plan.upfront
                 return if (upfront != null) {
                     AniobGrillMeResult(
@@ -253,7 +256,7 @@ class AniobGrillMeEngine(
                     GrillQuestion(
                         id = "recipient",
                         question = "Who would you like to message?",
-                        options = listOf("Mom", "Work Group", "Recent Contact"),
+                        options = emptyList(),
                         allowFreeText = true,
                         defaultOption = null
                     )
@@ -278,9 +281,22 @@ class AniobGrillMeEngine(
                     GrillQuestion(
                         id = "app",
                         question = "Which messaging app?",
-                        options = listOf("SMS / Messages", "WhatsApp", "Telegram"),
-                        allowFreeText = false,
-                        defaultOption = "SMS / Messages"
+                        options = com.aniob.core.dialogue.AppAffinity.messagingOptions(),
+                        allowFreeText = true,
+                        defaultOption = null
+                    )
+                )
+            }
+        } else if (social != null) {
+            // The app is implied by the verb, so only the person is unknown; never re-ask for the app.
+            val who = Regex("(?:to|with|for)\\s+([a-z][a-z .'-]{1,40})$").find(lower)?.groupValues?.get(1)?.trim()
+            if (who == null && !isRemembered("recipient")) {
+                questions.add(
+                    GrillQuestion(
+                        id = "recipient",
+                        question = "Who should I send the ${social.role.replaceFirstChar { it.uppercase() }} request to?",
+                        options = emptyList(),
+                        allowFreeText = true
                     )
                 )
             }

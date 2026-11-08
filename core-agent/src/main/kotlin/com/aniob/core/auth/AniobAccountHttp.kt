@@ -33,11 +33,10 @@ object AniobAccountHttp {
         endpoint: String?
     ): AniobAccountHttpOutcome {
         // Content is checked before anything is parsed: a web page is never an answer.
-        val html = AniobGatewayClassifier.looksLikeHtml(body)
+        val type = contentType.orEmpty().substringBefore(';').trim().lowercase()
+        val html = AniobGatewayClassifier.looksLikeHtml(body) || type == "text/html" || type == "application/xhtml+xml"
         if (status in 200..299) {
-            return if (html || !(AniobGatewayClassifier.isEventStream(contentType) ||
-                    AniobGatewayClassifier.isJsonContentType(contentType) || body.isEmpty())
-            ) {
+            return if (html) {
                 AniobAccountHttpOutcome.Gateway(failure(GatewayFailureKind.NOT_JSON, status, endpoint, "expected a stream but got a web page"))
             } else AniobAccountHttpOutcome.Ok
         }

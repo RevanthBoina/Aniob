@@ -22,6 +22,16 @@ import org.junit.Test
  */
 class StepPipelineTest {
 
+    @org.junit.Before
+    fun useStrictPosture() {
+        com.aniob.core.safety.AniobSafetyInterceptor.policy = com.aniob.core.safety.AniobSafetyInterceptor.Policy.STRICT
+    }
+
+    @org.junit.After
+    fun restoreDefaultPosture() {
+        com.aniob.core.safety.AniobSafetyInterceptor.policy = com.aniob.core.safety.AniobSafetyInterceptor.Policy.ASSIST
+    }
+
     private fun node(id: Int, text: String, clickable: Boolean = true) = AniobNode(
         id = id,
         className = "android.widget.Button",
@@ -153,6 +163,8 @@ class StepPipelineTest {
 
     @Test
     fun `blocked action fails fast and never dispatches`() = runBlocking {
+        // Hard blocks are the STRICT posture; the shipped default asks the user instead (AuditPart2Test).
+        com.aniob.core.safety.AniobSafetyInterceptor.policy = com.aniob.core.safety.AniobSafetyInterceptor.Policy.STRICT
         var dispatched = false
         val paymentScreen = screen("com.a", "Checkout")
         val records = mutableListOf<StepPipeline.StepRecord>()
@@ -169,6 +181,7 @@ class StepPipelineTest {
         assertTrue("Record must flag blockedBySafety", records.first().blockedBySafety)
         assertEquals(paymentScreen.treeHash, records.first().blockedFingerprint)
         com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(paymentScreen.treeHash)
+        com.aniob.core.safety.AniobSafetyInterceptor.policy = com.aniob.core.safety.AniobSafetyInterceptor.Policy.ASSIST
     }
 
     @Test

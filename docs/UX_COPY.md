@@ -40,7 +40,7 @@ exception: it names the gateway the user is asked to connect, so the Cloud AI ca
 | Empty title | What do you want Aniob to do? |
 | Empty body | Type, speak, or tap a suggestion below. |
 | Queue chip | After this task: %1$s |
-| Grill title | Help me understand |
+| Grill title | Grill me |
 | Grill subtitle | A couple of quick details so I get this right. |
 | Remember answer | Remember this answer |
 | Remembered badge | saved ✓ |

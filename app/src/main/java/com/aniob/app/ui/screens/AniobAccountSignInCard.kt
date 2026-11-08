@@ -138,7 +138,7 @@ private fun Connected(
 
     Text(stringResource(R.string.account_model), style = MaterialTheme.typography.labelLarge)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        vm.catalog.models.forEach { model ->
+        vm.models.forEach { model ->
             FilterChip(
                 selected = ui.model == model.id,
                 onClick = { vm.selectModel(model.id) },
@@ -181,6 +181,14 @@ private fun Connected(
     }
     ui.testResult?.let {
         Text(stringResource(testText(it)), modifier = Modifier.testTag("account_test_result"))
+        ui.testErrorMessage?.let { err ->
+            Text(
+                text = err,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp).testTag("account_test_error_message")
+            )
+        }
     }
 
     OutlinedButton(onClick = vm::signOut, modifier = Modifier.fillMaxWidth().testTag("account_sign_out")) {

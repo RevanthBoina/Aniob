@@ -1,6 +1,8 @@
 package com.aniob.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -188,6 +190,10 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
+                        // Scaffold already reserved the nav bar; imePadding() then only adds the part of the
+                        // keyboard that sticks out above it, so the composer rides on top of the keyboard.
+                        .consumeWindowInsets(innerPadding)
+                        .imePadding()
                 ) {
                     AniobChatScreen(
                         uiState = uiState,

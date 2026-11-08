@@ -306,6 +306,10 @@ class ResearchTelemetryManager(
         }
         val line = summaryRow?.hudLine() ?: fallbackHudLine(run)
         logger(line)
+        // One log line per ablation row (BASELINE / INTENT_SHORTCUT_ONLY / BURST_AND_FAST_OBSERVE / FULL_HUMAN_SPEED).
+        ResearchSummaryTable.buildAllModes(synchronized(lock) { store.read() }).forEach { row ->
+            logger("ABLATION_ROW ${row.hudLine()} | runs=${row.runs} | this_run=${row.mode == run.mode}")
+        }
         logger(
             "TASK_END mode=${run.mode.id} pass=${run.studyPass.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
                 "llm_calls=${run.llmCalls} local_inferences=${run.localInferences} steps=${run.steps} " +

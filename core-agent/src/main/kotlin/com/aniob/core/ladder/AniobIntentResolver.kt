@@ -601,7 +601,8 @@ object AniobIntentResolver {
     }
 
     /** Hour/minute from a clock time, or null when the text contains no unambiguous time. */
-    internal fun parseClockTime(text: String): Pair<Int, Int>? {
+    internal fun parseClockTime(raw: String): Pair<Int, Int>? {
+        val text = com.aniob.core.text.SpokenNumbers.normalize(raw)
         TIME_WITH_MINUTES.find(text)?.let { match ->
             val rawHour = match.groupValues[1].toIntOrNull() ?: return null
             val minute = match.groupValues[2].toIntOrNull() ?: return null
@@ -626,7 +627,8 @@ object AniobIntentResolver {
     }
 
     /** Total seconds in a duration phrase ("1 hour 30 minutes"), or null when there is none. */
-    internal fun parseDurationSeconds(text: String): Int? {
+    internal fun parseDurationSeconds(raw: String): Int? {
+        val text = com.aniob.core.text.SpokenNumbers.normalize(raw)
         var total = 0
         var found = false
         for (match in DURATION_PART.findAll(text)) {

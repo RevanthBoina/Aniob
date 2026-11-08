@@ -38,13 +38,18 @@ object AniobScreenDiff {
     ): WaterfallResult {
         // Level 1: Event-Driven Skip (O(1) zero-iteration skip when previous treeHash is known)
         if (previousScreen != null && !hasAccessibilityContentChanged) {
-            val cachedHash = previousScreen.treeHash.ifBlank { computeTreeHash(currentNodes) }
+            // The event counter only says whether an event ARRIVED yet; accessibility events lag the
+            // UI by 100-300 ms in browser, web-view and custom-rendered apps. Reusing the previous hash
+            // here made a tap that really changed the screen look like "treeHash unchanged". Hashing <=60 nodes is
+            // microseconds, so the hash is always recomputed from the nodes just read; only the
+            // expensive screenshot step is skipped.
+            val freshHash = computeTreeHash(currentNodes)
             return WaterfallResult(
                 waterfallLevelUsed = 1,
                 shouldCaptureFullScreenshot = false,
                 changedRegion = null,
-                treeHash = cachedHash,
-                isIdenticalToPrevious = true
+                treeHash = freshHash,
+                isIdenticalToPrevious = freshHash == previousScreen.treeHash
             )
         }
 

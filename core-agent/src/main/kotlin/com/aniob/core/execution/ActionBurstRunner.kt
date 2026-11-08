@@ -124,7 +124,41 @@ class ActionBurstRunner(
             return Outcome(ran, null, currentCtx, currentScreen, Stop.NONE, completed = plan.isComplete)
         }
 
-        for ((index, member) in plan.actions.withIndex()) {
+        // "tap it three times" is one turn of n identical members, not n model calls.
+        val expanded = if (plan.actions.size == 1) {
+            com.aniob.core.speed.RepeatRequest.expandActions(plan.actions[0], ctx.instruction)
+        } else emptyList()
+        val effective = expanded.ifEmpty { plan.actions }
+        if (effective.size >= com.aniob.core.speed.ActionBurst.MIN_SIZE) {
+            val policy = com.aniob.core.speed.ActionBurst.validate(
+                if (expanded.isNotEmpty()) {
+                    com.aniob.core.speed.RepeatRequest.members(effective, plan.thought)
+                } else {
+                    effective.map {
+                        com.aniob.core.speed.ActionBurst.Member(
+                            it, plan.thought, verifiedBeforeDispatch = captureEvery <= 1
+                        )
+                    }
+                }
+            )
+            if (!policy.isAllowed) {
+                // Never dispatch a batch the policy rejects: run the first member only and re-plan.
+                val first = executeMember(effective[0], ctx, origin, resolveTarget(effective[0], origin))
+                if (first.terminalState == StepResult.TerminalState.SUCCESS) {
+                    return Outcome(
+                        listOf(first.action), first, first.nextCtx,
+                        first.nextCtx.lastScreenState ?: origin, Stop.NONE, completed = true
+                    )
+                }
+                return Outcome(
+                    listOf(first.action), first, first.nextCtx,
+                    first.nextCtx.lastScreenState ?: origin, Stop.TARGET_GONE,
+                    "plan reduced to one action: ${policy.explain()}"
+                )
+            }
+        }
+
+        for ((index, member) in effective.withIndex()) {
             if (!shouldContinue()) {
                 return Outcome(ran, lastResult, currentCtx, currentScreen, Stop.ABORTED, "the run stopped")
             }
@@ -185,19 +219,31 @@ class ActionBurstRunner(
             when (result.terminalState) {
                 StepResult.TerminalState.SUCCESS ->
                     return Outcome(ran, result, currentCtx, currentScreen, Stop.NONE, completed = true)
-                StepResult.TerminalState.FAIL ->
-                    // A safety block is final; anything else may simply be a plan that no longer
-                    // fits the screen, which the next observation resolves.
+                StepResult.TerminalState.FAIL -> {
+                    // Only a hard safety stop closes the run. A missed dispatch or a no-effect tap is
+                    // a plan that no longer fits the screen: re-plan from a fresh observation instead
+                    // of ending the task with "could not be safely completed or verified".
+                    if (!result.blockedBySafety && result.action !is com.aniob.core.domain.AniobAction.Fail) {
+                        return Outcome(
+                            ran, result, currentCtx, currentScreen, Stop.TARGET_GONE,
+                            "action ${index + 1} (${member.toolName}) did not take effect: " +
+                                (result.verification?.reason ?: "not dispatched")
+                        )
+                    }
                     return Outcome(
                         ran, result, currentCtx, currentScreen, Stop.BLOCKED,
                         "action ${index + 1} (${member.toolName}) was blocked or failed: " +
                             (result.verification?.reason ?: "")
                     )
+                }
                 StepResult.TerminalState.CONTINUE -> Unit
             }
         }
 
-        return Outcome(ran, lastResult, currentCtx, currentScreen, Stop.NONE, completed = plan.isComplete)
+        return Outcome(
+            ran, lastResult, currentCtx, currentScreen, Stop.NONE,
+            completed = plan.isComplete || (expanded.isNotEmpty() && ran.size == effective.size)
+        )
     }
 
     companion object {

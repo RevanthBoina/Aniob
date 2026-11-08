@@ -128,7 +128,7 @@ class StepPipeline(
     ): StepResult {
         currentCoroutineContext().ensureActive()
         val start = System.currentTimeMillis()
-        val action = proposal.action
+        val action = SystemNavTargets.rewrite(proposal.action)
 
         // OBSERVE: always a fresh capture. Failed capture must not silently reuse stale planning data!
         val observed = runCatching { capture() }.getOrElse {
@@ -252,6 +252,9 @@ class StepPipeline(
         // is searched until the keyboard's own action key is pressed. Models rarely say so, and a
         // separate "find the enter key" step is exactly what they fail at, so submit is derived
         // from the grounded field metadata rather than the user's wording.
+        // A resolved system-UI node (nav bar) is a global key, not an app-window tap.
+        effectiveAction = SystemNavTargets.rewriteWithNode(effectiveAction, effectiveNode)
+
         val typed = effectiveAction as? AniobAction.InputText
         if (typed != null && !typed.submit && effectiveNode != null) {
             val field = effectiveNode
@@ -471,7 +474,8 @@ class StepPipeline(
             terminalState = terminal,
             resolvedNode = resolvedNode,
             tokensUsed = computedTokens,
-            latencyMs = record.latencyMs
+            latencyMs = record.latencyMs,
+            blockedBySafety = blockedBySafety
         )
     }
 

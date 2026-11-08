@@ -58,7 +58,11 @@ data class ActionBurst(
 
     companion object {
         /** Hard ceiling for one reply; larger arrays are rejected, never executed in part. */
-        const val MAX_ACTIONS = 3
+        /** Runtime cap (default 3). Raise per run / per model tier; every member still goes through the full pipeline. */
+        @Volatile var maxActions: Int = 3
+            set(value) { field = value.coerceIn(MIN_ACTIONS, 8) }
+
+        val MAX_ACTIONS: Int get() = maxActions
 
         /** Smallest plan that is worth the extra output tokens a burst reply costs. */
         const val MIN_ACTIONS = 2

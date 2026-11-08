@@ -64,6 +64,12 @@ object ResearchSummaryTable {
             "Mean_LLM_API_Calls_Per_Task,Mean_UI_Steps_Per_Task,Mean_Screenshots_Per_Task," +
             "Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline"
 
+    /** Always one row per [AblationMode], in enum order; a mode with no measured run reports zeros instead of vanishing. */
+    fun buildAllModes(runs: List<ResearchRun>): List<ResearchSummaryRow> {
+        val built = build(runs).associateBy { it.mode }
+        return AblationMode.entries.map { built[it] ?: ResearchSummaryRow(it, 0, 0, 0.0, 0.0, 0.0) }
+    }
+
     /**
      * One row per mode that has at least one measured run, in enum declaration order so the CSV is
      * stable between rewrites. Warm-up runs are excluded from this summary.

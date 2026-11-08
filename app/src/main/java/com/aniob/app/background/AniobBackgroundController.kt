@@ -36,12 +36,19 @@ object AniobBackgroundController {
 
         // Status pill 2.0 (UX-3): narration + pause/stop while the user watches.
         pill?.hide()
-        pill = AniobOverlayPill(
-            context = context,
-            onCancelTask = { AniobForegroundService.requestStop() },
-            onPauseToggle = { AniobForegroundService.requestPauseToggle() },
-            onOpenApp = { AniobForegroundService.requestOpenApp(context) }
-        ).also { it.show(0, "Getting ready") }
+        pill = null
+        // The floating pill covers the app the agent is driving. Opt-in only (Settings); the ongoing
+        // notification (progress, Pause, Stop, Grill-Me reply) is the default status surface.
+        val pillEnabled = context.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+            .getBoolean("overlay_pill_enabled", false)
+        if (pillEnabled) {
+            pill = AniobOverlayPill(
+                context = context,
+                onCancelTask = { AniobForegroundService.requestStop() },
+                onPauseToggle = { AniobForegroundService.requestPauseToggle() },
+                onOpenApp = { AniobForegroundService.requestOpenApp(context) }
+            ).also { it.show(0, "Getting ready") }
+        }
 
         currentActivityRef?.get()?.let { activity ->
             activity.runOnUiThread {

@@ -21,7 +21,9 @@ data class StepResult(
     /** Node that was resolved on the live tree, when the action targeted an element. */
     val resolvedNode: AniobNode? = null,
     val tokensUsed: Int = 0,
-    val latencyMs: Long = 0L
+    val latencyMs: Long = 0L,
+    /** True only for a hard safety stop; every other FAIL is a soft miss that is re-planned. */
+    val blockedBySafety: Boolean = false
 ) {
     enum class TerminalState { CONTINUE, SUCCESS, FAIL }
 

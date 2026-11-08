@@ -40,6 +40,9 @@ class MainActivity : ComponentActivity() {
         com.aniob.app.background.AniobForegroundService.onPauseToggleFromNotification = {
             viewModel.togglePause()
         }
+        com.aniob.app.background.AniobForegroundService.onGrillAnswerFromNotification = { qid, answer ->
+            viewModel.onGrillAnswersSubmitted(mapOf(qid to answer))
+        }
         enableEdgeToEdge()
 
         if (savedInstanceState == null) {
