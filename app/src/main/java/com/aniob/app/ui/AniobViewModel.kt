@@ -3091,12 +3091,13 @@ class AniobViewModel(
                         }
                         // The replay is dispatched like a burst: every action is re-grounded on the
                         // live window, and the last one keeps the normal step pipeline so Verify runs.
+                        val replayActions = ladderResult.actions.take(ActionBurst.MAX_ACTIONS)
                         plannedBurst = ActionBurst(
-                            thought = "remembered ${ladderResult.actions.size} action(s)",
+                            thought = "remembered ${replayActions.size} action(s)",
                             isComplete = false,
-                            actions = ladderResult.actions
+                            actions = replayActions
                         )
-                        proposal = StepPipeline.Proposal.Model(ladderResult.actions.last(), primaryProvider)
+                        proposal = StepPipeline.Proposal.Model(replayActions.last(), primaryProvider)
                     }
                     is AniobExecutionRouter.ExecutionPlanResult.FastPathStep -> {
                         primaryProvider = "FASTPATH"

@@ -39,10 +39,13 @@ data class RememberAction(
         if (!parsed.hasParams) return this
         val inputIndex = parsed.indexOfValue(inputText)
         val textIndex = parsed.indexOfValue(text)
-        if (inputIndex == null && textIndex == null) return this
+        val descIndex = parsed.indexOfValue(contentDescription)
+        if (inputIndex == null && textIndex == null && descIndex == null) return this
         return copy(
+            viewId = if (textIndex != null || descIndex != null) "" else viewId,
             inputText = inputIndex?.let { RememberTemplate.placeholder(it) } ?: inputText,
-            text = textIndex?.let { RememberTemplate.placeholder(it) } ?: text
+            text = textIndex?.let { RememberTemplate.placeholder(it) } ?: text,
+            contentDescription = descIndex?.let { RememberTemplate.placeholder(it) } ?: contentDescription
         )
     }
 
@@ -50,10 +53,39 @@ data class RememberAction(
     fun injected(params: List<String>): RememberAction? {
         val newIn = RememberTemplate.inject(inputText, params) ?: return null
         val newText = RememberTemplate.inject(text, params) ?: return null
+        val newDesc = RememberTemplate.inject(contentDescription, params) ?: return null
         return copy(
             inputText = newIn,
-            text = newText
+            text = newText,
+            contentDescription = newDesc
         )
+    }
+
+    /** Converts this descriptor to an [AniobAction] using its semantic identity. */
+    fun toAction(): AniobAction? {
+        if (kind == BACK) return AniobAction.PressKey(KeyType.BACK)
+        if (kind == SCROLL) {
+            val dir = runCatching { com.aniob.core.domain.SwipeDirection.valueOf(direction) }
+                .getOrDefault(com.aniob.core.domain.SwipeDirection.UP)
+            return AniobAction.Swipe(direction = dir, distancePx = 600)
+        }
+        if (kind == OPEN_APP) {
+            return if (text.isBlank()) null else AniobAction.OpenApp(packageName = text)
+        }
+        val target = when {
+            viewId.isNotBlank() -> SemanticTarget.ResourceId(viewId)
+            text.isNotBlank() -> SemanticTarget.Text(text, exact = true)
+            contentDescription.isNotBlank() -> SemanticTarget.ContentDesc(contentDescription, exact = true)
+            else -> return null
+        }
+        return when (kind) {
+            TAP -> AniobAction.Tap(target)
+            LONG_PRESS -> AniobAction.LongPress(target)
+            INPUT -> inputText.takeIf { it.isNotBlank() }?.let {
+                AniobAction.InputText(target, it, clearFirst = clearFirst)
+            }
+            else -> null
+        }
     }
 
     companion object {

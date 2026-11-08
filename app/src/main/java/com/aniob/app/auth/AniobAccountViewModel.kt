@@ -9,6 +9,7 @@ import com.aniob.core.auth.AniobAccountScreenState
 import com.aniob.core.auth.AniobAuthState
 import com.aniob.core.auth.AniobCloudSource
 import com.aniob.core.external.AniobGatewayClassifier
+import com.aniob.core.external.AniobGatewayHealth
 import com.aniob.core.external.GatewayFailureKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,7 @@ data class AniobAccountSettingsUi(
     val modelError: Boolean = false,
     val testing: Boolean = false,
     val testResult: AniobAccountTestResult? = null,
+    val testErrorMessage: String? = null,
     val revocationUnconfirmed: Boolean = false
 )
 
@@ -42,6 +44,7 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
 
     val available: Boolean = container.featureAvailable
     val catalog: AniobAccountModelCatalog get() = container.catalog
+    val models: List<com.aniob.core.auth.AniobAccountModel> get() = container.currentModels
 
     val screenState: StateFlow<AniobAccountScreenState> =
         (container.repository?.state ?: MutableStateFlow<AniobAuthState>(AniobAuthState.SignedOut))
@@ -55,6 +58,20 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
         // A sign-in the system interrupted continues here; nothing is bound otherwise.
         container.coordinator?.resumeIfPending()
         viewModelScope.launch { container.source.collect { refresh() } }
+        viewModelScope.launch {
+            if (container.isSignedIn) {
+                container.fetchModels()
+                refresh()
+            }
+        }
+        viewModelScope.launch {
+            container.repository?.state?.collect { state ->
+                if (state is AniobAuthState.SignedIn) {
+                    container.fetchModels()
+                    refresh()
+                }
+            }
+        }
     }
 
     private fun read() = AniobAccountSettingsUi(
@@ -84,32 +101,38 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
     fun selectModel(id: String) {
         val error = AniobAccountModelCatalog.validate(id) != null
         if (!error) container.model = id
-        _settings.update { it.copy(model = if (error) it.model else container.model, modelError = error, testResult = null) }
+        _settings.update { it.copy(model = if (error) it.model else container.model, modelError = error, testResult = null, testErrorMessage = null) }
     }
 
     fun setEffort(value: String) {
         container.reasoningEffort = value
-        _settings.update { it.copy(effort = value, testResult = null) }
+        _settings.update { it.copy(effort = value, testResult = null, testErrorMessage = null) }
     }
 
     /** One real, tiny inference call. A model list alone would not prove inference works. */
     fun sendTest() {
         if (_settings.value.testing || !container.isSignedIn) return
-        _settings.update { it.copy(testing = true, testResult = null) }
+        _settings.update { it.copy(testing = true, testResult = null, testErrorMessage = null) }
         viewModelScope.launch {
+            AniobGatewayHealth.shared.reset()
+            var errorMsg: String? = null
             val result = try {
                 container.newClient()
                     .getNextActionRaw("You are a connection test. Reply briefly.", "Reply with the single word: ok")
                     .fold(
-                        onSuccess = { if (it.trim().equals("ok", ignoreCase = true)) AniobAccountTestResult.OK else AniobAccountTestResult.REJECTED },
-                        onFailure = { map(it) }
+                        onSuccess = { if (it.isNotBlank()) AniobAccountTestResult.OK else AniobAccountTestResult.REJECTED },
+                        onFailure = {
+                            errorMsg = it.message
+                            map(it)
+                        }
                     )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IllegalStateException) {
+                errorMsg = e.message
                 AniobAccountTestResult.AUTH
             }
-            _settings.update { it.copy(testing = false, testResult = result) }
+            _settings.update { it.copy(testing = false, testResult = result, testErrorMessage = errorMsg) }
         }
     }
 

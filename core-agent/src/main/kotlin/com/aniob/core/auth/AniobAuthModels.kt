@@ -164,10 +164,16 @@ data class AniobAuthConfig(
 
         /** `a=b&c=d` (as written in a properties file) to an ordered map. Blank keys are dropped. */
         fun parseExtraParams(raw: String): Map<String, String> {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty() || trimmed.equals("NONE", ignoreCase = true) || trimmed.equals("UNSET", ignoreCase = true)) {
+                return emptyMap()
+            }
             val out = LinkedHashMap<String, String>()
-            raw.split('&').forEach { pair ->
+            trimmed.split('&').forEach { pair ->
                 val key = pair.substringBefore('=', "").trim()
-                if (key.isNotEmpty()) out[key] = pair.substringAfter('=', "").trim()
+                if (key.isNotEmpty() && !key.equals("NONE", ignoreCase = true) && !key.equals("UNSET", ignoreCase = true)) {
+                    out[key] = pair.substringAfter('=', "").trim()
+                }
             }
             return out
         }

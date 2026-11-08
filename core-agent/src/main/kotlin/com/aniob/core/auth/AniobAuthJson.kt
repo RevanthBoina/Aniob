@@ -7,10 +7,13 @@ import com.squareup.moshi.Types
 import java.io.IOException
 
 /** Tiny Moshi wrapper so core-agent parses JSON without `org.json` (an Android class). */
-internal object AniobAuthJson {
+object AniobAuthJson {
     private val moshi = Moshi.Builder().build()
     private val mapAdapter: JsonAdapter<Map<String, Any?>> = moshi.adapter(
         Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java)
+    )
+    private val listAdapter: JsonAdapter<List<Map<String, Any?>>> = moshi.adapter(
+        Types.newParameterizedType(List::class.java, Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java))
     )
 
     /** Null for anything that is not a JSON object. Never throws. */
@@ -22,7 +25,17 @@ internal object AniobAuthJson {
         null
     }
 
+    fun parseList(text: String): List<Map<String, Any?>>? = try {
+        listAdapter.fromJson(text)
+    } catch (e: IOException) {
+        null
+    } catch (e: JsonDataException) {
+        null
+    }
+
     fun toJson(map: Map<String, Any?>): String = mapAdapter.toJson(map)
+
+    fun toJsonList(list: List<Map<String, Any?>>): String = listAdapter.toJson(list)
 
     @Suppress("UNCHECKED_CAST")
     fun obj(value: Any?): Map<String, Any?>? = value as? Map<String, Any?>

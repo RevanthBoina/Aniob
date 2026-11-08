@@ -88,7 +88,8 @@ class AniobAuthRepository(
     suspend fun completeSignIn(
         code: String, codeVerifier: String, nonce: String,
         issuedClientId: String? = null, requestedClientId: String = tokenClient.config.clientId,
-        expectedVersion: Long? = null
+        expectedVersion: Long? = null,
+        redirectUri: String? = null
     ): AniobAuthError? = mutex.withLock {
         initializeLocked()
         if (expectedVersion != null && expectedVersion != sessionVersion) return@withLock AniobAuthError.UserCancelled
@@ -104,7 +105,7 @@ class AniobAuthRepository(
             markFailedLocked(error)
             return@withLock error
         }
-        when (val result = tokenClient.exchangeCode(code, codeVerifier, clientId, nonce)) {
+        when (val result = tokenClient.exchangeCode(code, codeVerifier, clientId, nonce, redirectUri ?: tokenClient.config.redirectUri)) {
             is AniobTokenResult.Failure -> {
                 markFailedLocked(result.error)
                 result.error

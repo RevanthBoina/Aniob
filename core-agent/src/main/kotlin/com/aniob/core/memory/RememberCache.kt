@@ -129,7 +129,13 @@ class RememberCache(
         // The trace is stored with {PARAM_n} for the values that came from the prompt; a goal that
         // cannot fill one of them is a different task and must miss rather than tap a stale value.
         val actions = entry.actions.map { it.injected(parsed.params) ?: return null }
-        return actions.map { replayOf(it, screen) ?: return null }
+        if (actions.isEmpty()) return null
+        // Head action must resolve on the current entry screen. Later steps are converted to actions
+        // with their target anchors to be verified live across transitions by ActionBurstRunner (Defects A3 & A5).
+        val headAction = replayOf(actions.first(), screen) ?: return null
+        val restActions = actions.drop(1).mapNotNull { it.toAction() }
+        if (restActions.size != actions.size - 1) return null
+        return listOf(headAction) + restActions
     }
 
     /** Metadata for the exact transition selected by lookup, including wildcard presets. */

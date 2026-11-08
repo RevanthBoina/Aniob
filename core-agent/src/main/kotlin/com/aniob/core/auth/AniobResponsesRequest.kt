@@ -32,7 +32,9 @@ object AniobResponsesRequest {
             "stream" to true,
             "store" to false
         )
-        if (!reasoningEffort.isNullOrBlank()) {
+        val isNonReasoning = model.startsWith("gpt-4", ignoreCase = true) ||
+            model.startsWith("gpt-3", ignoreCase = true)
+        if (!reasoningEffort.isNullOrBlank() && !isNonReasoning) {
             body["reasoning"] = linkedMapOf("effort" to reasoningEffort)
         }
         return AniobAuthJson.toJson(body)
