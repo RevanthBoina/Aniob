@@ -1505,6 +1505,29 @@ class AniobViewModel(
         val current = _uiState.value.lastSealedOutcome ?: return
         if (current.userDecision != null) return
         recordSealedOutcome(taskId, current.withUserDecision(decision, System.currentTimeMillis()))
+        if (decision == UserDecision.YES) {
+            val trajectory = verifiedActions.toList()
+            val taskPrompt = _uiState.value.activeTask?.rawPrompt.orEmpty()
+            if (trajectory.isNotEmpty() && taskPrompt.isNotBlank()) {
+                viewModelScope.launch {
+                    learningPipeline.onTaskSuccess(
+                        TaskContext(
+                            instruction = taskPrompt,
+                            successCriteria = SuccessCriteria(),
+                            taskId = taskId,
+                            lastScreenState = null
+                        ),
+                        trajectory
+                    )
+                }
+            }
+        } else if (decision == UserDecision.NO) {
+            val taskPrompt = _uiState.value.activeTask?.rawPrompt.orEmpty()
+            if (taskPrompt.isNotBlank()) {
+                _uiState.update { it.copy(statusMessage = "Starting task again...") }
+                submitTask(taskPrompt)
+            }
+        }
     }
 
     private fun buildGrillLlmClient(): AniobPromptGrillMeClient? {
@@ -2070,20 +2093,10 @@ class AniobViewModel(
             // clarification, Doctor advice, or model route.
             val effectivePrompt = resolveContextualGoal(trimmed)
             val effectiveTask = task.copy(clarifiedGoal = effectivePrompt)
-            val headsUp = com.aniob.core.safety.AskPolicy.taskStartPreview(
-                effectivePrompt,
-                AniobSafetyInterceptor.askLevel
-            )
             _uiState.update {
                 it.copy(
-                    activeTask = effectiveTask,
-                    chatMessages = it.chatMessages + ChatMessage(
-                    id = "msg_heads_up_${task.id}",
-                    role = "assistant",
-                    content = headsUp,
-                    provider = "ASK_POLICY",
-                    badge = "Heads-up"
-                ))
+                    activeTask = effectiveTask
+                )
             }
             val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt, ::isLaunchablePackage)
             val workflowDecision = if (resolvedShortcut == null) {
@@ -2482,10 +2495,7 @@ class AniobViewModel(
         rememberKeys.forEach { key ->
             answers[key]?.let { rememberGrillAnswer(key, it) }
         }
-        val clarifiedPrompt = buildString {
-            append(currentTask.clarifiedGoal.ifBlank { currentTask.rawPrompt })
-            answers.forEach { (q, a) -> append(" [$q: $a]") }
-        }
+        val clarifiedPrompt = currentTask.clarifiedGoal.ifBlank { currentTask.rawPrompt }
         val updatedTask = currentTask.copy(
             clarifiedGoal = clarifiedPrompt,
             grillAnswers = answers,
@@ -3974,10 +3984,21 @@ class AniobViewModel(
                         )
                         return
                     }
+                    val failReason = (res.action as? AniobAction.Fail)?.reason ?: res.verification?.reason.orEmpty()
+                    if (failReason.contains("no-effect", ignoreCase = true) || failReason.contains("unchanged", ignoreCase = true)) {
+                        _uiState.update {
+                            it.copy(
+                                isPaused = true,
+                                statusMessage = "Nothing changed on screen. Please perform this step manually, then tap Resume."
+                            )
+                        }
+                        pauseRequested = true
+                        AniobBackgroundController.onTaskPaused(true)
+                        currentStep++
+                        continue
+                    }
                     finalOutcome = Outcome.FAILED
-                    terminalReason = (res.action as? AniobAction.Fail)?.reason
-                        ?: res.verification?.reason
-                        ?: "Step failed or rejected"
+                    terminalReason = failReason.ifBlank { "Step failed or rejected" }
                     break
                 }
 

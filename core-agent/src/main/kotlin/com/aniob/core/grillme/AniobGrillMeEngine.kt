@@ -49,7 +49,7 @@ class AniobGrillMeEngine(
         if (llmClient != null) {
             val deterministic = generateFallbackQuestions(trimmed, rememberedAnswers)
             val understood = com.aniob.core.understander.AniobPromptUnderstanding.understand(trimmed)
-            val worthAsking = deterministic.needsClarification || understood.confidence < 0.7 ||
+            val worthAsking = deterministic.needsClarification || understood.confidence < 0.75 ||
                 understood.speechAct == com.aniob.core.understander.AniobPromptUnderstanding.SpeechAct.UNCLEAR
             if (!worthAsking) return AniobGrillMeResult(needsClarification = false)
             return try {
@@ -60,7 +60,7 @@ class AniobGrillMeEngine(
                     }
                     .map(::sanitizeQuestionOptions)
                 if (filtered.isEmpty()) AniobGrillMeResult(needsClarification = false)
-                else res.copy(questions = filtered)
+                else res.copy(questions = filtered.take(1))
             } catch (e: CancellationException) {
                 throw e // Stop must stop; swallowing it here turned a cancelled run into a "fallback questions" run
             } catch (e: Exception) {
@@ -95,7 +95,11 @@ class AniobGrillMeEngine(
         val words = AniobTextFold.tokens(taskPrompt).toSet()
         val isQuestion = words.firstOrNull() in setOf("what", "why", "how", "who", "when", "where", "which", "explain", "define")
         val isRide = !isQuestion && words.any { it in setOf("cab", "ride", "taxi", "uber", "lyft") }
-        val isMessage = !isQuestion && words.any { it in setOf("message", "text", "send", "sms", "whatsapp") }
+        val isSocial = !isQuestion && (words.any { it in setOf("linkedin", "connect", "connection", "invite", "twitter", "instagram", "facebook", "github", "follow") } || lower.contains("connection request"))
+        val isMessage = !isQuestion && !isSocial && (
+            words.any { it in setOf("message", "text", "sms", "whatsapp", "telegram") } ||
+            (words.contains("send") && !lower.contains("connection") && !lower.contains("request") && !lower.contains("money") && !lower.contains("payment"))
+        )
         val isAlarm = !isQuestion && words.any { it in setOf("alarm", "timer") }
         val questions = mutableListOf<GrillQuestion>()
 

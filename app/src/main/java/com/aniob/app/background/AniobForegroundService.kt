@@ -397,7 +397,7 @@ class AniobForegroundService : Service() {
             }
 
             val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_CONFIRMATIONS)
-                .setContentTitle("Grill me")
+                .setContentTitle("Clarification Needed")
                 .setContentText(question.question)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(question.question))
                 .setSmallIcon(R.drawable.ic_stat_aniob)

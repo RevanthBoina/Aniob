@@ -34,4 +34,11 @@ class AniobGrillMeEngineTest {
         assertTrue("Only installed ride apps may be offered", providerQuestion.options.isEmpty())
         assertTrue(providerQuestion.allowFreeText)
     }
+
+    @Test
+    fun testSocialConnectionNeedsNoClarificationQuestions() = runBlocking {
+        val result = engine.evaluateTask("open LinkedIn, find Bill Gates, send a connection request")
+        assertFalse("Social connection must not ask messaging questions", result.needsClarification)
+        assertTrue(result.questions.isEmpty())
+    }
 }

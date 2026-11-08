@@ -13,3 +13,6 @@
 ## Related issue
 
 <!-- Link an issue if applicable; otherwise write "None". -->
+## Contribution terms
+
+- [ ] I confirm that this contribution is submitted under the terms described in [CONTRIBUTING.md](CONTRIBUTING.md).

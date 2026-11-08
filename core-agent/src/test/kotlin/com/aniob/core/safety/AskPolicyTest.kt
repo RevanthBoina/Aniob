@@ -103,4 +103,29 @@ class AskPolicyTest {
         assertTrue(preview.contains("without ordinary-action prompts"))
         assertTrue(preview.contains("payments, secrets, or deletion"))
     }
+
+    @Test
+    fun nonDestructiveActionsDoNotTriggerFalseAlarmApprovals() {
+        val nonDestructive = listOf(
+            AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "pin the tab"),
+            AniobAction.Tap(SemanticTarget.SomIndex(2), thought = "format the table"),
+            AniobAction.Tap(SemanticTarget.SomIndex(3), thought = "remove filter")
+        )
+        nonDestructive.forEach { action ->
+            val resultOff = evaluateAt(AskLevel.OFF, action)
+            assertFalse("OFF must not require confirmation for ${action.thought}", resultOff.requiresConfirmation)
+            val resultBalanced = evaluateAt(AskLevel.BALANCED, action)
+            assertFalse("BALANCED must not require confirmation for ${action.thought}", resultBalanced.requiresConfirmation)
+        }
+    }
+
+    @Test
+    fun socialConnectActionsRequireConfirmationAtBalancedOnly() {
+        val connectAction = AniobAction.Tap(SemanticTarget.SomIndex(1))
+        val target = button("Connect")
+
+        assertFalse(evaluateAt(AskLevel.OFF, connectAction, target).requiresConfirmation)
+        assertTrue(evaluateAt(AskLevel.BALANCED, connectAction, target).requiresConfirmation)
+        assertTrue(evaluateAt(AskLevel.CAREFUL, connectAction, target).requiresConfirmation)
+    }
 }

@@ -409,6 +409,7 @@ object UniversalPlanner {
     /** Lexical repair only — never target rewriting. */
     internal fun normalize(raw: String): String =
         raw.lowercase()
+            .replace(Regex("""\[[^\]]+\]"""), "")
             .replace(Regex("""\bflash\s*light\b"""), "flashlight")
             .replace(Regex("""\btourch\b"""), "torch")
             .replace(Regex("""\s+"""), " ")

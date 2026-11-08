@@ -12,7 +12,7 @@ import com.aniob.core.text.AniobTextFold
 object AniobPromptUnderstanding {
 
     enum class SpeechAct { QUESTION, COMMAND, MIXED, UNCLEAR }
-    enum class Verb { OPEN, CALL, SEND, SET, TOGGLE, MEDIA, PACKAGE, SEARCH, TRANSACT, NAVIGATE, INFO }
+    enum class Verb { OPEN, CALL, SEND, SOCIAL, SET, TOGGLE, MEDIA, PACKAGE, SEARCH, TRANSACT, NAVIGATE, INFO }
 
     data class Goal(val verb: Verb, val verbWord: String, val rest: String)
 
@@ -30,6 +30,7 @@ object AniobPromptUnderstanding {
     private val VERBS: Map<String, Verb> = buildMap {
         listOf("open", "launch", "start", "run").forEach { put(it, Verb.OPEN) }
         listOf("call", "dial", "phone", "ring").forEach { put(it, Verb.CALL) }
+        listOf("connect", "invite", "follow", "comment").forEach { put(it, Verb.SOCIAL) }
         listOf("send", "text", "message", "whatsapp", "email", "reply").forEach { put(it, Verb.SEND) }
         listOf("set", "create", "schedule", "add").forEach { put(it, Verb.SET) }
         listOf("turn", "switch", "enable", "disable", "toggle").forEach { put(it, Verb.TOGGLE) }
@@ -75,7 +76,8 @@ object AniobPromptUnderstanding {
             if (goals.any { it.verb == Verb.TRANSACT }) add("spends money")
             if (tokens.any { it in DESTRUCTIVE } && goals.any { it.verb == Verb.PACKAGE || it.verbWord in DESTRUCTIVE }) add("removes something")
             if (tokens.any { it in DESTRUCTIVE } && tokens.any { it in SWEEPING }) add("affects many items")
-            if (goals.any { it.verb == Verb.SEND }) add("sends a message")
+            if (goals.any { it.verb == Verb.SEND && !it.rest.contains("connection") && !it.rest.contains("request") && !it.rest.contains("invite") }) add("sends a message")
+            if (goals.any { it.verb == Verb.SOCIAL || (it.verb == Verb.SEND && (it.rest.contains("connection") || it.rest.contains("request") || it.rest.contains("invite"))) }) add("sends a request or invite")
         }
         var confidence = when {
             goals.isEmpty() -> 0.5

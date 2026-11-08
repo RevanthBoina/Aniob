@@ -36,7 +36,7 @@ fun AniobGrillMeSheet(
     val userAnswers = remember {
         mutableStateMapOf<String, String>().apply {
             grillResult.questions.forEach { q ->
-                put(q.id, q.defaultOption ?: q.options.firstOrNull().orEmpty())
+                put(q.id, q.defaultOption ?: "")
             }
         }
     }
@@ -69,7 +69,7 @@ fun AniobGrillMeSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Grill me",
+                text = "Clarification Needed",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )

@@ -31,13 +31,13 @@ object AskPolicy {
         "(?i)\\b(pay(?:ment)?|purchase|buy|checkout|place\\s+order|send\\s+money|transfer\\s+(?:funds|money)|upi)\\b"
     )
     private val secretPattern = Regex(
-        "(?i)\\b(password|passcode|pin|otp|one[- ]time(?:[- ]password|[- ]code)?|verification[- ]code|security[- ]code|cvv|cvc|secret)\\b"
+        "(?i)\\b(password|passcode|otp|one[- ]time(?:[- ]password|[- ]code)?|verification[- ]code|security[- ]code|security[- ]pin|pin[- ]code|sim[- ]pin|atm[- ]pin|cvv|cvc|secret)\\b|\\benter\\s+(?:your\\s+)?pin\\b"
     )
     private val deletePattern = Regex(
-        "(?i)\\b(delete|remove|erase|wipe|factory\\s+reset|reset\\s+(?:the\\s+)?(?:device|phone|account)|format|clear\\s+all|discard|deactivate|close\\s+account|uninstall)\\b"
+        "(?i)(?!.*\\b(?:filter|tag|selection|highlight|table|column|row|text|code)\\b)\\b(delete|remove|erase|wipe|factory\\s+reset|reset\\s+(?:the\\s+)?(?:device|phone|account)|format\\s+(?:disk|drive|storage|card|phone|device)|clear\\s+all|discard|deactivate|close\\s+account|uninstall)\\b"
     )
     private val sendPattern = Regex(
-        "(?i)\\b(send(?:\\s+(?:now|message|reply))?|post|publish|share|forward|call|dial|reply\\s+all|place\\s+a\\s+call)\\b"
+        "(?i)\\b(send(?:\\s+(?:now|message|reply))?|post|publish|share|forward|call|dial|reply\\s+all|place\\s+a\\s+call|connect|invite|follow|comment)\\b"
     )
     private val readOnlyHistoryPattern = Regex(
         "(?i)\\b(?:payment|purchase|transaction|billing|order)\\s+history\\b|\\b(?:view|read|open)\\s+(?:past\\s+)?(?:payments|transactions|receipts|statements)\\b"
