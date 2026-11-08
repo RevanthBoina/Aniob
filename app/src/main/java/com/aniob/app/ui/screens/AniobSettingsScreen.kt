@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.aniob.app.AniobBuild
 import com.aniob.app.provider.AniobProviderConfig
 import com.aniob.app.research.AblationMode
 import com.aniob.app.research.StudyPass
@@ -41,7 +42,6 @@ fun AniobSettingsScreen(
     onStudyPassChanged: (StudyPass) -> Unit = {},
     onSeedRememberCache: () -> Unit = {},
     onFastPathChanged: (Boolean) -> Unit = {},
-    onSafetyGateChanged: (Boolean) -> Unit = {},
     onBack: () -> Unit = {},
     onNavigateToModels: () -> Unit = {},
     onNavigateToStats: () -> Unit = {},
@@ -135,8 +135,9 @@ fun AniobSettingsScreen(
                     }
                 }
             }
-            // Research ablation selector: the condition the next measured task runs under.
-            Card(modifier = Modifier.fillMaxWidth().testTag("card_ablation_mode")) {
+            // Experimental switches and benchmark controls do not ship in release builds.
+            if (AniobBuild.isDeveloperBuild(context)) {
+                Card(modifier = Modifier.fillMaxWidth().testTag("card_ablation_mode")) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -222,6 +223,7 @@ fun AniobSettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
             }
 
             // Quick Navigation Shortcuts Card
@@ -515,22 +517,6 @@ fun AniobSettingsScreen(
                             checked = uiState.fastPathEnabled,
                             onCheckedChange = { onFastPathChanged(it) },
                             modifier = Modifier.testTag("switch_fastpath")
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Ask before actions", fontWeight = FontWeight.SemiBold)
-                            Text("Require approval before sensitive or high-risk actions", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Switch(
-                            checked = uiState.safetyGateEnabled,
-                            onCheckedChange = { onSafetyGateChanged(it) },
-                            modifier = Modifier.testTag("switch_safety")
                         )
                     }
 

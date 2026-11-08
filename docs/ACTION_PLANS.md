@@ -40,8 +40,9 @@ This document describes the contract as implemented. The relevant code:
   about the plan should not lose the step over a quoting habit.
 * `input` may omit `id` when the screen has exactly one text field, and the typed value must appear
   in the user's request (see §4).
-* The array is capped at three actions. A longer reply is refused **whole**: truncating it would run
-  a sequence whose later members the earlier ones were planned around.
+* A non-empty multi-action array contains 2–8 actions. A one-action array is refused as a burst and
+  falls back to the ordinary single-step parser. A longer reply is refused **whole**: truncating it
+  would run a sequence whose later members the earlier ones were planned around.
 
 ## 2. The plan spans more than one screen — that is the point
 
@@ -62,7 +63,7 @@ describes a screen that does not exist yet.
 
 Two rules keep this safe rather than merely permissive:
 
-1. **Completion never survives truncation.** `is_complete` describes the three actions the model
+1. **Completion never survives truncation.** `is_complete` describes the full plan the model
    wrote; closing the run after the first of them would report a finished task the screen does not
    show. A plan with a deferred tail is never complete.
 2. **A target must be able to receive the action.** Grounding answers "which element is this";
@@ -76,19 +77,26 @@ Two rules keep this safe rather than merely permissive:
 
 ```
 for each member:
-    if not the first:  re-capture the screen
-                       BurstTargetGuard.check(member, origin, live)   # package + element identity
-                       target gone / navigated  → close the plan, hand the live screen back
-    re-ground the member on the live screen (view id → text → desc → bounds)
-    StepPipeline.executeStep(...)            # safety, gate, dispatch, settle, verify, reflect, record
-    FAIL                                     → hard stop (safety block is final)
-    SUCCESS                                  → the plan finished the task
+    if the first member targets an element, or a later member is due:
+        re-capture the screen
+        BurstTargetGuard.check(member, origin, live)  # package + stable element identity
+        target gone / navigated → close the plan, hand the live screen back
+    re-ground the member on the live screen (view id → text → description → bounds)
+    StepPipeline.executeStep(...)  # safety, approval, gate, dispatch, settle, verify, reflect, record
+    FAIL                           → hard stop (safety block is final)
+    SUCCESS                        → the plan finished the task
 ```
 
 Every member goes through the **same** pipeline as a single-action step: no safety shortcut, no
-skipped verification, no second dispatch path. The last member keeps the real confirmation gate; an
-earlier member never prompts, because a plan stops and re-plans instead of parking the user in the
-middle of a half-executed sequence.
+skipped verification, no second dispatch path. `StepPipeline` compares the planning node with the
+fresh node before dispatch; a recycled accessibility index is a grounding miss, not a new target.
+Each member also uses the real approval gate; a sensitive member can pause for the user's decision
+even when it is early in the plan. Silence leaves the action pending, and denial stops the rest of
+the plan.
+
+The separate `AniobObservationPolicy` default of three counts consecutive planning passes that may
+reuse a recent verified observation in an ablation. It does not limit burst length or bypass these
+live dispatch checks.
 
 A closed plan is not a failure. The actions that ran really happened, they are already recorded and
 verified, and the loop plans the next step from the screen they revealed. Two consecutive plans that
@@ -119,7 +127,8 @@ for its remaining steps.
 
 * `core-agent/src/test/…/BurstPlanScopeTest.kt` — the spellings models emit, the screen-boundary
   split, the completion rule, the single-field typing rule, and the fallbacks.
-* `core-agent/src/test/…/execution/ActionBurstRunnerTest.kt` — re-capture between members, target
-  vanished, package navigated, lookalike id refused, safety block, user stop, failed capture,
-  context hand-off.
-* `core-agent/src/test/…/ActionBurstTest.kt` — the prompt contract and the parser.
+* `core-agent/src/test/…/execution/ActionBurstRunnerTest.kt` — re-capture before the first targeted
+  member and between members, unnamed-field grounding, target vanished, package navigation,
+  recycled/lookalike ids, safety stop, user stop, failed capture, context hand-off.
+* `core-agent/src/test/…/ActionBurstTest.kt` — the prompt contract, the 2–8 parser bounds, and the
+  production fallback from a one-action array to the ordinary action contract.

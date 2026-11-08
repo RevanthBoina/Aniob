@@ -22,7 +22,7 @@ exception: it names the gateway the user is asked to connect, so the Cloud AI ca
 | See how it works | See how it works |
 | Demo caption | Watch it do a task — no permissions needed yet |
 | Accessibility why | To tap buttons for you — only while a task runs |
-| Overlay why | Shows a small status pill and approvals while you watch |
+| Overlay why | Allows visual target highlights on top of other apps |
 | Notifications why | So you can pause or stop a task from anywhere |
 | Battery why | Stops the system from killing Aniob mid-task |
 | Brain why | Aniob needs a brain: on-device (private) or cloud (fast) |
@@ -54,11 +54,8 @@ exception: it names the gateway the user is asked to connect, so the Cloud AI ca
 
 | Slot | Copy |
 |---|---|
-| Ticker running | Working on '%1$s' — step %2$d |
+| Ticker running fallback | Step %1$d · %2$s |
 | Ticker paused | Paused — do this step yourself, then Resume |
-| Pill failure | Stuck — tap to help |
-| Takeover offer | Learn what you just did? |
-| Jump to live | Jump to live |
 
 ## Trust & Safety (UX-4)
 
@@ -74,10 +71,10 @@ exception: it names the gateway the user is asked to connect, so the Cloud AI ca
 | Evidence failure | Couldn't finish — here's why |
 | Stopped outcome | Stopped by you at step %1$d — nothing was undone |
 | Trust center title | Trust Center |
-| Safety standard | Standard |
-| Safety strict | Strict |
-| Disable safety | I UNDERSTAND |
-| Safety off banner | Safety checks are off — they turn back on next task |
+| Safety standard | Balanced |
+| Safety strict | Careful |
+| Disable safety | Let it work |
+| Safety off banner | Skip ordinary-action prompts; still ask before money, secrets, and deletion. |
 
 ## Cloud AI / Settings (UX-7)
 
@@ -153,9 +150,9 @@ they appear only in the CSV, the log tag and the bracketed HUD prefix, never as 
 | Stats override fail | Mark fail |
 | Stats clear | Clear saved runs |
 
-End-of-task HUD (Stats line and the one-shot Toast), format fixed for the paper:
-
-`[MODE] Latency: 12.35s | LLM Calls: 2 | Success Rate: 66.7%`
+Developer-only research metrics remain in the research statistics surface. They do not appear as a
+completion Toast. Task completion uses one result notification; verified success does not pull Aniob
+back over the app being operated, while failure or unverified completion opens chat for follow-up.
 
 ## Learning & Progress (UX-5)
 
@@ -205,9 +202,9 @@ End-of-task HUD (Stats line and the one-shot Toast), format fixed for the paper:
 | expected text … not present | Expected to see '…', but it wasn't there |
 | expected package … not foreground | '…' didn't open |
 | watchdog loop_detected | Aniob got stuck repeating an action |
-| payment blocked | Aniob doesn't do payments |
+| payment route blocked | Aniob stopped this payment route for safety |
 | destructive blocked | That action could erase your data, so Aniob stopped |
-| sensitive blocked | That field holds a secret Aniob never reads |
+| protected value blocked | Aniob stopped before using a protected value |
 | network unavailable | No internet connection |
 | accessibility disabled | Accessibility access is turned off |
 | timeout | The app took too long to respond |

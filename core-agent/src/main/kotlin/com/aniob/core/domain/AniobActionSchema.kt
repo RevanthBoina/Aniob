@@ -52,6 +52,12 @@ Set "submit": true when the text is a query or a phone number and the field must
     /** Fields that would smuggle pixel coordinates into the action vocabulary. */
     private val COORDINATE_FIELDS = listOf("x", "y", "startx", "starty", "endx", "endy", "bounds", "target_node_id", "targetnodeid", "node_id")
     private val COORDINATE_FIELD_REGEXES = COORDINATE_FIELDS.associateWith { Regex("\"$it\"\\s*:") }
+    private val BURST_COORDINATE_FIELDS = listOf(
+        "x", "y", "startx", "starty", "endx", "endy", "bounds", "target_node_id", "targetnodeid"
+    )
+    private fun hasBurstCoordinateFields(json: String): Boolean = BURST_COORDINATE_FIELDS.any { field ->
+        Regex("\"${Regex.escape(field)}\"\\s*:", RegexOption.IGNORE_CASE).containsMatchIn(json)
+    }
 
     private val TOOL_OBJECT = Regex("\\{(?:[^{}]|\\{[^{}]*\\})*\"tool\"\\s*:\\s*\"[^\"]+\"(?:[^{}]|\\{[^{}]*\\})*\\}", RegexOption.DOT_MATCHES_ALL)
     private val ARGS_BLOCK_REGEX = Regex("\"args\"\\s*:\\s*\\{([^{}]*)\\}")
@@ -200,9 +206,11 @@ Set "submit": true when the text is a query or a phone number and the field must
      * - leading prose or a markdown fence around the object (the streaming reader already returns a
      *   bare object, but a non-streaming gateway may not).
      *
-     * Element ids are the sequential ids of the observation, never pixels. The list is capped at
-     * [ActionBurst.MAX_ACTIONS]: a longer reply is refused as a whole, because silently truncating
-     * it would execute a plan whose earlier actions were written assuming a later one runs.
+     * Element ids are the sequential ids of the observation, never pixels. A non-empty plan must
+     * contain [ActionBurst.MIN_ACTIONS] through [ActionBurst.MAX_ACTIONS] actions: a one-action
+     * array is sent through the ordinary single-action parser, and a longer reply is refused as a
+     * whole because silently truncating it would execute a plan whose earlier actions assumed a
+     * later one runs.
      *
      * Returns null when the payload is not a bundled plan at all, so the caller falls back to the
      * single-action parser and its repair path instead of failing the step.
@@ -213,11 +221,13 @@ Set "submit": true when the text is a query or a phone number and the field must
     fun parseActionBurstOrNull(json: String): ActionBurst? {
         val body = boundedObject(json)
         val array = arrayAfter(body, "actions") ?: return null
+        if (hasBurstCoordinateFields(body)) return null
         val thought = str(body, "thought").orEmpty().take(120)
         val isComplete = bool(body, "is_complete") ?: bool(body, "isComplete") ?: false
 
         val elements = splitObjects(array)
         if (elements.size > ActionBurst.MAX_ACTIONS) return null
+        if (elements.isNotEmpty() && elements.size < ActionBurst.MIN_ACTIONS) return null
 
         val actions = ArrayList<AniobAction>(elements.size)
         for (element in elements) {
@@ -231,6 +241,22 @@ Set "submit": true when the text is a query or a phone number and the field must
             }
         }
         return ActionBurst(thought, isComplete, actions)
+    }
+
+    /**
+     * Production fallback for a provider that uses the burst wrapper for exactly one action.
+     *
+     * It deliberately lives beside the burst grammar so that action uses the same aliases and
+     * validation as a normal burst member. The burst parser still rejects one-item plans; this
+     * helper unwraps that one action for the ordinary StepPipeline contract.
+     */
+    private fun parseSingleActionArrayOrNull(json: String): AniobAction? {
+        val body = boundedObject(json)
+        val array = arrayAfter(body, "actions") ?: return null
+        if (hasBurstCoordinateFields(body)) return null
+        val elements = splitObjects(array)
+        if (elements.size != 1) return null
+        return burstAction(elements.single(), str(body, "thought").orEmpty().take(120))
     }
 
     /**
@@ -404,7 +430,7 @@ Set "submit": true when the text is a query or a phone number and the field must
         try {
             parseActionJson(json)
         } catch (_: ActionSchemaException) {
-            null
+            parseSingleActionArrayOrNull(json)
         }
 
     /** Serializes back to the wire shape (used by tests and repair prompts). */

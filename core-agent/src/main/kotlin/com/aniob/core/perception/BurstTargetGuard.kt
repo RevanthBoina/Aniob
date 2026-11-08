@@ -68,8 +68,8 @@ object BurstTargetGuard {
     fun retarget(action: AniobAction, node: AniobNode): AniobAction {
         val target = when {
             node.viewId.isNotBlank() -> SemanticTarget.ResourceId(node.viewId)
-            node.text.isNotBlank() -> SemanticTarget.Text(node.text)
-            node.contentDescription.isNotBlank() -> SemanticTarget.ContentDesc(node.contentDescription)
+            node.text.isNotBlank() -> SemanticTarget.Text(node.text, exact = true)
+            node.contentDescription.isNotBlank() -> SemanticTarget.ContentDesc(node.contentDescription, exact = true)
             else -> SemanticTarget.BoundingBox(
                 left = node.bounds.left,
                 top = node.bounds.top,

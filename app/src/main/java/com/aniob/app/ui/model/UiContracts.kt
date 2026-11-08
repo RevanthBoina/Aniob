@@ -26,10 +26,15 @@ data class ConfirmRequest(
     val why: String,
     val risk: Risk,
     val details: String,
-    val timeoutSec: Int = 60,
+    /** No automatic timeout: the task waits until the user decides or explicitly stops it. */
+    val timeoutSec: Int = 0,
     val taskId: String = "",
+    /** Opaque payload fingerprint/input used only to bind approval identity; never rendered. */
     val payload: String = "",
+    /** Safe display label for the destination or control. */
     val target: String = "",
+    /** Stable destination identity used for approval binding; defaults to the display target. */
+    val identityTarget: String = target,
     val createdAt: Long = System.currentTimeMillis()
 ) {
     enum class Risk { LOW, MEDIUM, HIGH }
@@ -62,15 +67,16 @@ enum class ConfirmDecision { APPROVE_ONCE, APPROVE_FOR_TASK, DENY, TIMEOUT_DENY 
 
 /** How aggressively Aniob asks before acting (UX-4 §2). Safety is never silently off. */
 enum class SafetyLevel {
+    // Keep the original persisted ordinals for upgrade compatibility.
     STANDARD,
     STRICT,
     OFF;
 
     val displayName: String
         get() = when (this) {
-            STANDARD -> "Standard"
-            STRICT -> "Strict"
-            OFF -> "Off"
+            STANDARD -> "Balanced"
+            STRICT -> "Careful"
+            OFF -> "Let it work"
         }
 }
 
@@ -88,12 +94,5 @@ data class ConfirmationRecord(
     val what: String,
     val risk: ConfirmRequest.Risk,
     val decision: ConfirmDecision,
-    val at: Long
-)
-
-/** One hard-blocked action fingerprint (UX-4 Trust Center). */
-data class BlockedRecord(
-    val fingerprint: String,
-    val rule: String,
     val at: Long
 )

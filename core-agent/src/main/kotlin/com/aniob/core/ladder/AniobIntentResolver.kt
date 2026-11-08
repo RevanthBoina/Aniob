@@ -152,7 +152,10 @@ object AniobIntentResolver {
      * task. A **non-null result is never a promise that the goal is met**: check
      * [ResolvedIntentShortcut.requiresObservation] before finishing on it.
      */
-    fun resolve(command: String): ResolvedIntentShortcut? {
+    fun resolve(
+        command: String,
+        isAppLaunchable: (String) -> Boolean = { true }
+    ): ResolvedIntentShortcut? {
         val raw = command.trim()
         if (raw.isEmpty()) return null
         // Lexical repair first ("flash light" -> "flashlight"), so every rung below — the legacy
@@ -172,10 +175,10 @@ object AniobIntentResolver {
             ?: AniobReflexResolver.resolve(raw, lower)
             ?: capabilityPlan(lower)
             ?: installViaStore(lower)
-            ?: appViaRegistry(raw)
-            ?: webFallback(raw)
-            ?: clockOrAlarm(lower)
-            ?: appCategory(lower)
+            ?: appViaRegistry(raw, isAppLaunchable)
+            ?: webFallback(raw, isAppLaunchable)
+            ?: clockOrAlarm(lower, isAppLaunchable)
+            ?: appCategory(lower, isAppLaunchable)
     }
 
     // ------------------------------------------------------------------ #
@@ -342,8 +345,8 @@ object AniobIntentResolver {
      * cache degrades to "ask the platform", not to "no idea what Clock means". The caller still
      * confirms the package is launchable, so a wrong seed can never dispatch.
      */
-    private fun appViaRegistry(raw: String): ResolvedIntentShortcut? {
-        val plan = AniobLaunchHub.plan(raw, AniobAppRegistry.getInstance()) ?: return null
+    private fun appViaRegistry(raw: String, isAppLaunchable: (String) -> Boolean): ResolvedIntentShortcut? {
+        val plan = AniobLaunchHub.plan(raw, AniobAppRegistry.getInstance(), isAppLaunchable) ?: return null
         return appShortcut(plan)
     }
 
@@ -365,7 +368,10 @@ object AniobIntentResolver {
      * still returned, marked unobservable, so the caller can decide to escalate instead of claiming
      * success.
      */
-    private fun clockOrAlarm(lower: String): ResolvedIntentShortcut? {
+    private fun clockOrAlarm(
+        lower: String,
+        isAppLaunchable: (String) -> Boolean
+    ): ResolvedIntentShortcut? {
         val alarmPhrases = listOf("set alarm", "set an alarm", "set the alarm", "add an alarm")
         val clockPhrases = listOf("clock", "show clock", "open clock app")
         val isAlarm = alarmPhrases.any { lower == it || lower.startsWith("$it ") }
@@ -373,10 +379,10 @@ object AniobIntentResolver {
         if (!isAlarm && !isClock) return null
 
         val registry = AniobAppRegistry.getInstance()
-        val clock = registry.appForRole(AniobAppRegistry.ROLE_CLOCK) ?: when (val found = registry.resolveWithSeed("clock")) {
+        val clock = (registry.appForRole(AniobAppRegistry.ROLE_CLOCK) ?: when (val found = registry.resolve("clock")) {
             is AppLookup.Match -> found.app
             else -> null
-        }
+        })?.takeIf { isAppLaunchable(it.packageName) }
         if (clock != null) {
             return ResolvedIntentShortcut(
                 action = ACTION_MAIN,
@@ -397,7 +403,10 @@ object AniobIntentResolver {
     }
 
     /** Last resort for the platform's own app categories: name a package, never a bare category. */
-    private fun appCategory(lower: String): ResolvedIntentShortcut? {
+    private fun appCategory(
+        lower: String,
+        isAppLaunchable: (String) -> Boolean
+    ): ResolvedIntentShortcut? {
         val role = when {
             lower == "open calculator" || lower == "calculator" || lower == "launch calculator" -> AniobAppRegistry.ROLE_CALCULATOR
             lower == "open calendar" || lower == "calendar" || lower == "launch calendar" -> AniobAppRegistry.ROLE_CALENDAR
@@ -409,10 +418,10 @@ object AniobIntentResolver {
         } ?: return null
 
         val registry = AniobAppRegistry.getInstance()
-        val app = registry.appForRole(role) ?: when (val found = registry.resolveWithSeed(role)) {
+        val app = (registry.appForRole(role) ?: when (val found = registry.resolve(role)) {
             is AppLookup.Match -> found.app
             else -> null
-        }
+        })?.takeIf { isAppLaunchable(it.packageName) }
         if (app != null) {
             return ResolvedIntentShortcut(
                 action = ACTION_MAIN,
@@ -542,8 +551,8 @@ object AniobIntentResolver {
      * `open linkedin` with nothing installed under that name: its web page, in the default browser.
      * Runs after the app lookup, so an installed app (or an ambiguity) always keeps priority.
      */
-    private fun webFallback(raw: String): ResolvedIntentShortcut? {
-        val plan = AniobLaunchHub.planWeb(raw, AniobAppRegistry.getInstance()) ?: return null
+    private fun webFallback(raw: String, isAppLaunchable: (String) -> Boolean): ResolvedIntentShortcut? {
+        val plan = AniobLaunchHub.planWeb(raw, AniobAppRegistry.getInstance(), isAppLaunchable) ?: return null
         return webShortcut(plan)
     }
 

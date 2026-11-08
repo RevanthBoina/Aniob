@@ -52,16 +52,6 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
         reducedMotion = AniobMotion.isReducedMotionEnabled(context)
     }
 
-    // Research HUD: one toast per finished task, fired by the sequence counter so recomposition
-    // cannot repeat it. The line is produced by ResearchTelemetryManager, not composed here.
-    LaunchedEffect(uiState.researchRunSequence) {
-        if (uiState.researchRunSequence > 0L) {
-            uiState.researchStatusLine?.let { line ->
-                Toast.makeText(context, line, Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
     // UX-0: BackHandler only pops the stack; double-back exits only when already at root CHAT.
     BackHandler {
         if (viewModel.navigateBack()) {
@@ -258,7 +248,6 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onStudyPassChanged = { pass -> viewModel.setStudyPass(pass) },
                 onSeedRememberCache = { viewModel.seedRememberPresets() },
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },
-                onSafetyGateChanged = { viewModel.setSafetyGateEnabled(it) },
                 onBack = { viewModel.navigateBack() },
                 onNavigateToModels = { viewModel.navigateTo(AniobRoute.MODELS) },
                 onNavigateToStats = { viewModel.navigateTo(AniobRoute.STATS) },
@@ -295,12 +284,6 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onBack = { viewModel.navigateBack() },
                 safetyLevel = uiState.safetyLevel,
                 onSafetyLevelChanged = { viewModel.setSafetyLevel(it) },
-                fastPathEnabled = viewModel.isFastPathEnabled(),
-                onFastPathChanged = { viewModel.setFastPathEnabled(it) },
-                gateEnabled = viewModel.isSafetyGateEnabled(),
-                onGateChanged = { viewModel.setSafetyGateEnabled(it) },
-                blockedEntries = uiState.blockedActions,
-                onClearBlocked = { fp -> viewModel.clearBlockedFingerprint(fp) },
                 confirmationHistory = uiState.confirmationHistory,
                 vaultEntries = { viewModel.vaultEntries() },
                 onForgetVault = { key -> viewModel.forgetVaultEntry(key) },

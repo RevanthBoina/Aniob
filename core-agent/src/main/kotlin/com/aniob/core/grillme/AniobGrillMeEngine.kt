@@ -1,6 +1,7 @@
 package com.aniob.core.grillme
 
 import com.aniob.core.text.AniobTextFold
+import com.aniob.core.knowledge.AniobAppRegistry
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -53,9 +54,11 @@ class AniobGrillMeEngine(
             if (!worthAsking) return AniobGrillMeResult(needsClarification = false)
             return try {
                 val res = llmClient.generateClarificationQuestions(trimmed)
-                val filtered = res.questions.filter { q ->
-                    !rememberedAnswers.containsKey(q.id) && !rememberedAnswers.containsKey("grill.${q.id}")
-                }
+                val filtered = res.questions
+                    .filter { q ->
+                        !rememberedAnswers.containsKey(q.id) && !rememberedAnswers.containsKey("grill.${q.id}")
+                    }
+                    .map(::sanitizeQuestionOptions)
                 if (filtered.isEmpty()) AniobGrillMeResult(needsClarification = false)
                 else res.copy(questions = filtered)
             } catch (e: CancellationException) {
@@ -104,7 +107,7 @@ class AniobGrillMeEngine(
                     AniobCalibratedAsking.Slot(
                         id = "destination",
                         questionAsAsked = "What is your destination?",
-                        options = listOf("Home", "Office", "Airport", "Downtown"),
+                        options = emptyList(),
                         changesBehaviour = true,
                         default = null,
                         consequential = true,
@@ -124,9 +127,9 @@ class AniobGrillMeEngine(
                     AniobCalibratedAsking.Slot(
                         id = "provider_app",
                         questionAsAsked = "Preferred provider app?",
-                        options = listOf("Uber", "Lyft", "Auto-select cheapest"),
+                        options = installedAppOptions(AppOptionCategory.RIDE),
                         changesBehaviour = true,
-                        default = "Auto-select cheapest",
+                        default = null,
                         consequential = false
                     )
                 )
@@ -135,7 +138,7 @@ class AniobGrillMeEngine(
                     AniobCalibratedAsking.Slot(
                         id = "recipient",
                         questionAsAsked = "Who would you like to message?",
-                        options = listOf("Mom", "Work Group", "Recent Contact"),
+                        options = emptyList(),
                         changesBehaviour = true,
                         default = null,
                         consequential = true,
@@ -157,9 +160,9 @@ class AniobGrillMeEngine(
                     AniobCalibratedAsking.Slot(
                         id = "app",
                         questionAsAsked = "Which messaging app?",
-                        options = listOf("SMS / Messages", "WhatsApp", "Telegram"),
+                        options = installedAppOptions(AppOptionCategory.MESSAGING),
                         changesBehaviour = true,
-                        default = "SMS / Messages",
+                        default = null,
                         consequential = false,
                         deviceFact = AniobCalibratedAsking.DeviceFact.DEFAULT_MESSAGING_APP
                     )
@@ -215,7 +218,7 @@ class AniobGrillMeEngine(
                     GrillQuestion(
                         id = "destination",
                         question = "What is your destination?",
-                        options = listOf("Home", "Office", "Airport", "Downtown"),
+                        options = emptyList(),
                         allowFreeText = true,
                         defaultOption = null
                     )
@@ -237,9 +240,9 @@ class AniobGrillMeEngine(
                     GrillQuestion(
                         id = "provider_app",
                         question = "Preferred provider app?",
-                        options = listOf("Uber", "Lyft", "Auto-select cheapest"),
-                        allowFreeText = false,
-                        defaultOption = "Auto-select cheapest"
+                        options = installedAppOptions(AppOptionCategory.RIDE),
+                        allowFreeText = true,
+                        defaultOption = null
                     )
                 )
             }
@@ -253,7 +256,7 @@ class AniobGrillMeEngine(
                     GrillQuestion(
                         id = "recipient",
                         question = "Who would you like to message?",
-                        options = listOf("Mom", "Work Group", "Recent Contact"),
+                        options = emptyList(),
                         allowFreeText = true,
                         defaultOption = null
                     )
@@ -278,9 +281,9 @@ class AniobGrillMeEngine(
                     GrillQuestion(
                         id = "app",
                         question = "Which messaging app?",
-                        options = listOf("SMS / Messages", "WhatsApp", "Telegram"),
-                        allowFreeText = false,
-                        defaultOption = "SMS / Messages"
+                        options = installedAppOptions(AppOptionCategory.MESSAGING),
+                        allowFreeText = true,
+                        defaultOption = null
                     )
                 )
             }
@@ -306,5 +309,59 @@ class AniobGrillMeEngine(
         } else {
             AniobGrillMeResult(needsClarification = false)
         }
+    }
+
+    private enum class AppOptionCategory { RIDE, MESSAGING }
+
+    /**
+     * Do not surface model-proposed contacts or destinations as if they came from this phone.
+     * App choices are limited to launchable packages in the real registry; when none match, the
+     * question remains free-text instead of fabricating a provider.
+     */
+    fun sanitizeQuestion(question: GrillQuestion): GrillQuestion = sanitizeQuestionOptions(question)
+
+    private fun sanitizeQuestionOptions(question: GrillQuestion): GrillQuestion {
+        val id = question.id.lowercase()
+        val text = question.question.lowercase()
+        val isDestinationOrContact = id.contains("destination") || id.contains("recipient") ||
+            id.contains("contact") || id.contains("location") || text.contains("destination") ||
+            text.contains("recipient") || text.contains("contact") || text.contains("where should i") ||
+            text.contains("where do you want to go") || text.contains("who would you like to message")
+        if (isDestinationOrContact) return question.copy(options = emptyList(), allowFreeText = true)
+
+        val asksForApp = id.contains("app") || id.contains("provider") || id.contains("service") ||
+            text.contains(" app") || text.contains("provider") || text.contains("service")
+        if (!asksForApp) return question
+
+        val category = when {
+            id.contains("ride") || id.contains("provider") ||
+                text.contains("ride") || text.contains("taxi") || text.contains("cab") -> AppOptionCategory.RIDE
+            id.contains("message") || text.contains("message") || text.contains("sms") -> AppOptionCategory.MESSAGING
+            else -> null
+        }
+        return question.copy(
+            options = category?.let(::installedAppOptions).orEmpty(),
+            allowFreeText = true
+        )
+    }
+
+    private fun installedAppOptions(category: AppOptionCategory): List<String> {
+        val cues = when (category) {
+            AppOptionCategory.RIDE -> setOf("uber", "lyft", "ola", "rapido", "taxi", "cab", "ride")
+            AppOptionCategory.MESSAGING -> setOf(
+                "message", "messages", "messaging", "sms", "whatsapp", "telegram", "signal", "messenger", "imessage"
+            )
+        }
+        return AniobAppRegistry.getInstance().all()
+            .filter { app ->
+                val searchable = (listOf(app.label, app.packageName) + app.aliases)
+                    .joinToString(" ").lowercase()
+                val tokens = searchable.split(Regex("[^a-z0-9]+"))
+                tokens.any(cues::contains)
+            }
+            .map { it.label }
+            .distinctBy { it.lowercase() }
+            .sortedBy { it.lowercase() }
+            .take(8)
     }
 }

@@ -35,7 +35,7 @@ fun ConfirmSheet(
     }
 
     AlertDialog(
-        onDismissRequest = { /* blocking: a decision is required or the 60s timeout denies */ },
+        onDismissRequest = { /* The action stays paused until an explicit decision or Stop. */ },
         modifier = Modifier.testTag("confirm_sheet"),
         icon = { Icon(Icons.Default.Shield, contentDescription = null, tint = riskColor) },
         title = { Text(request.title, fontWeight = FontWeight.Bold) },
@@ -54,16 +54,8 @@ fun ConfirmSheet(
                 if (request.target.isNotBlank()) {
                     Text("Destination: ${request.target}", style = MaterialTheme.typography.bodyMedium)
                 }
-                if (request.payload.isNotBlank()) {
-                    Text("Payload: ${request.payload}", style = MaterialTheme.typography.bodySmall)
-                }
                 Text("Consequence: ${request.details.ifBlank { request.why }}", style = MaterialTheme.typography.bodyMedium)
                 Text("Why: ${request.why}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    text = "If you don't answer in ${request.timeoutSec}s, Aniob will deny this step.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 TextButton(
                     onClick = { detailsExpanded = !detailsExpanded },
                     modifier = Modifier.testTag("confirm_details_toggle")

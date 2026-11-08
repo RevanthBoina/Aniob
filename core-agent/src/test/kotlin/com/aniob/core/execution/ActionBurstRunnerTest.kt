@@ -63,6 +63,31 @@ class ActionBurstRunnerTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
+    fun `deferred proposals remain hints and are never dispatched by the runner`() = runBlocking {
+        val ran = mutableListOf<AniobAction>()
+        val runner = ActionBurstRunner(
+            capture = { list },
+            executeMember = { member, c, screen, _ ->
+                ran += member
+                stepResult(member, screen, ctx = c)
+            }
+        )
+        val outcome = runner.run(
+            ActionBurst(
+                thought = "only current-screen actions run",
+                isComplete = false,
+                actions = listOf(tap(1), tap(2)),
+                deferred = listOf(tap(3))
+            ),
+            origin = list,
+            ctx = ctx()
+        )
+
+        assertEquals(listOf(tap(1), tap(2)), ran)
+        assertEquals(ActionBurstRunner.Stop.NONE, outcome.stop)
+    }
+
+    @Test
     fun `a plan on one screen runs every member`() = runBlocking {
         val ran = mutableListOf<AniobAction>()
         val runner = ActionBurstRunner(
@@ -87,7 +112,8 @@ class ActionBurstRunnerTest {
     @Test fun `a recycled index never replaces the identity that the guard approved`() = runBlocking {
         val fresh = list.copy(nodes = listOf(row(2, "Wrong row"), row(20, "6:15 PM")))
         val ran = mutableListOf<AniobAction>()
-        val runner = ActionBurstRunner(capture = { fresh }, executeMember = { member, c, screen, target ->
+        var captures = 0
+        val runner = ActionBurstRunner(capture = { if (captures++ == 0) list else fresh }, executeMember = { member, c, screen, target ->
             ran += member
             if (ran.size == 2) {
                 assertEquals(20, target?.id)
@@ -101,7 +127,7 @@ class ActionBurstRunnerTest {
     }
 
     @Test
-    fun `the screen is re-read before every member after the first`() = runBlocking {
+    fun `the first target and each later member are revalidated against a live screen`() = runBlocking {
         var captures = 0
         val runner = ActionBurstRunner(
             capture = { captures++; list },
@@ -112,7 +138,7 @@ class ActionBurstRunnerTest {
             origin = list,
             ctx = ctx()
         )
-        assertEquals("one capture between members", 2, captures)
+        assertEquals("one live check for the first target plus one between each later member", 3, captures)
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -120,11 +146,32 @@ class ActionBurstRunnerTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
+    fun `a stale first target is rechecked before dispatch`() = runBlocking {
+        val ran = mutableListOf<AniobAction>()
+        val runner = ActionBurstRunner(
+            capture = { editor },
+            executeMember = { member, c, screen, _ -> ran += member; stepResult(member, screen, ctx = c) }
+        )
+
+        val outcome = runner.run(
+            ActionBurst(thought = "p", isComplete = true, actions = listOf(tap(1), tap(2))),
+            origin = list,
+            ctx = ctx()
+        )
+
+        assertTrue("A planned target that disappeared before dispatch must not run", ran.isEmpty())
+        assertEquals(ActionBurstRunner.Stop.TARGET_GONE, outcome.stop)
+        assertEquals(tap(1), outcome.missedAction)
+        assertFalse(outcome.isHardStop)
+    }
+
+    @Test
     fun `a member whose target vanished closes the plan instead of failing the task`() = runBlocking {
         val ran = mutableListOf<AniobAction>()
         // The first member opens the editor, so id 2 of the list no longer exists.
+        var captures = 0
         val runner = ActionBurstRunner(
-            capture = { editor },
+            capture = { if (captures++ == 0) list else editor },
             executeMember = { member, c, screen, _ ->
                 ran += member
                 stepResult(member, screen, ctx = c)
@@ -148,8 +195,9 @@ class ActionBurstRunnerTest {
     @Test
     fun `navigating to another package is a replan, not a failure`() = runBlocking {
         val elsewhere = editor.copy(packageName = "com.android.settings")
+        var captures = 0
         val runner = ActionBurstRunner(
-            capture = { elsewhere },
+            capture = { if (captures++ == 0) list else elsewhere },
             executeMember = { member, c, screen, _ -> stepResult(member, screen, ctx = c) }
         )
         val outcome = runner.run(
@@ -167,8 +215,9 @@ class ActionBurstRunnerTest {
         // editor is a text field. The guard matches the element the plan *meant* (class + text), so
         // the collision is detected and the plan closes instead of typing into whatever id 1 became.
         val ran = mutableListOf<AniobAction>()
+        var captures = 0
         val runner = ActionBurstRunner(
-            capture = { editor },
+            capture = { if (captures++ == 0) list else editor },
             executeMember = { member, c, screen, _ -> ran += member; stepResult(member, screen, ctx = c) }
         )
         val outcome = runner.run(
@@ -183,6 +232,62 @@ class ActionBurstRunnerTest {
         assertEquals(1, ran.size)
         assertEquals(ActionBurstRunner.Stop.TARGET_GONE, outcome.stop)
         assertTrue(outcome.shouldReplan)
+    }
+
+    @Test
+    fun `an unnamed input is grounded to the sole live editable field`() = runBlocking {
+        val input = AniobAction.InputText(
+            SemanticTarget.SomIndex(ActionBurst.UNNAMED_TARGET),
+            text = "7:30"
+        )
+        val ran = mutableListOf<AniobAction>()
+        val runner = ActionBurstRunner(
+            capture = { editor },
+            executeMember = { member, c, screen, target ->
+                ran += member
+                if (member is AniobAction.InputText) {
+                    assertEquals("the input placeholder must resolve to the actual field", 1, target?.id)
+                }
+                stepResult(member, screen, ctx = c)
+            }
+        )
+
+        val outcome = runner.run(
+            ActionBurst("type then confirm", true, listOf(input, tap(2))),
+            origin = editor,
+            ctx = ctx()
+        )
+
+        assertEquals(2, ran.size)
+        assertEquals(ActionBurstRunner.Stop.NONE, outcome.stop)
+    }
+
+    @Test
+    fun `unnamed input never targets a protected field`() = runBlocking {
+        val protectedScreen = editor.copy(
+            nodes = listOf(row(1, "Verification code", click = false, editable = true).copy(isPassword = true), row(2, "OK"))
+        )
+        val input = AniobAction.InputText(
+            SemanticTarget.SomIndex(ActionBurst.UNNAMED_TARGET),
+            text = "123456"
+        )
+        val ran = mutableListOf<AniobAction>()
+        val runner = ActionBurstRunner(
+            capture = { protectedScreen },
+            executeMember = { member, c, screen, _ ->
+                ran += member
+                stepResult(member, screen, ctx = c)
+            }
+        )
+        val outcome = runner.run(
+            ActionBurst("unnamed protected input", true, listOf(input, tap(2))),
+            origin = protectedScreen,
+            ctx = ctx()
+        )
+
+        assertTrue(ran.isEmpty())
+        assertEquals(ActionBurstRunner.Stop.TARGET_GONE, outcome.stop)
+        assertEquals(true, outcome.missedNode?.isPassword)
     }
 
     @Test
@@ -284,7 +389,7 @@ class ActionBurstRunnerTest {
             origin = list,
             ctx = ctx()
         )
-        assertEquals(1, ran.size)
+        assertTrue("The first target must not dispatch when its live revalidation fails", ran.isEmpty())
         assertEquals(ActionBurstRunner.Stop.NO_CAPTURE, outcome.stop)
     }
 

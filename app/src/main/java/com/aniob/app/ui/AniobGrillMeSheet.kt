@@ -69,7 +69,7 @@ fun AniobGrillMeSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Help me understand",
+                text = "Grill me",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )

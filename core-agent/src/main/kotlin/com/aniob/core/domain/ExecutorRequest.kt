@@ -39,13 +39,13 @@ data class ExecutorRequest(
         appendLine("TASK: $goal")
         appendLine(
             if (burstMode) {
-                "You are an autonomous UI agent. Output ONE compact JSON object that plans the next 1-${ActionBurst.MAX_ACTIONS} actions for the screen below."
+                "You are an autonomous UI agent. Output ONE compact JSON object that plans the next ${ActionBurst.MIN_ACTIONS}-${ActionBurst.MAX_ACTIONS} grounded actions for the screen below."
             } else {
                 "You are an autonomous UI agent. Output strictly ONE JSON action object to accomplish this task on the screen below."
             }
         )
         if (burstMode) {
-            appendLine("""Example: {"thought": "type the query then submit", "is_complete": false, "actions": [{"type": "input", "id": 4, "text": "pizza", "submit": true}]}""")
+            appendLine("""Example: {"thought": "focus search and submit the query", "is_complete": false, "actions": [{"type": "tap", "id": 4}, {"type": "input", "id": 4, "text": "pizza", "submit": true}]}""")
         } else {
             appendLine("""Example: {"thought": "Tap the target element", "tool": "TAP", "target": {"kind": "som_index", "value": "1"}}""")
         }
@@ -91,7 +91,7 @@ data class ExecutorRequest(
                     "{\"thought\": \"brief 10-word plan\", \"is_complete\": false, " +
                     "\"actions\": [{\"type\": \"tap|input|long_press|scroll|back|open_app|wait|device_control\", " +
                     "\"id\": 2, \"text\": \"only for input\", \"submit\": true}]}\n" +
-                    "Plan the next 1 to ${ActionBurst.MAX_ACTIONS} sequential actions of the task. " +
+                    "Plan the next ${ActionBurst.MIN_ACTIONS} to ${ActionBurst.MAX_ACTIONS} grounded sequential actions of the task. " +
                     "Put the actions whose elements are visible on THIS screen first, then the actions " +
                     "that follow on the screen they open (an alarm time field, a confirm button of the " +
                     "next page). Actions whose elements are not visible yet are held back and replayed " +
@@ -99,7 +99,7 @@ data class ExecutorRequest(
                     "appears above. Use the id= value of each element, never a pixel or a view id. " +
                     "For a field that is the only text box on screen you may omit \"id\". " +
                     "Set \"is_complete\": true only when these actions finish the goal. " +
-                    "Keep the whole reply under 80 tokens and output nothing else."
+                    "Keep the reply compact and output nothing else."
             )
         } else {
             // Compact observations carry `id=N` in the markup instead of the legacy `[N]` prefix, so

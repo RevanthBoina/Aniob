@@ -169,7 +169,7 @@ fun AniobSetupConciergeScreen(
             SetupCard(
                 index = 4,
                 title = "Overlay permission",
-                body = "Shows a small status pill and approvals while you watch.",
+                body = "Allows visual target highlights on top of other apps.",
                 done = systemState.overlayGranted,
                 actionLabel = "Allow overlay",
                 onAction = {

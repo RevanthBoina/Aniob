@@ -398,7 +398,7 @@ class ResearchTelemetryManager(
 
     fun allRuns(): List<ResearchRun> = synchronized(lock) { store.read() }
 
-    /** The exact line for the end-of-task toast; always available even if the CSV write failed. */
+    /** The exact research status line; always available even if the CSV write failed. */
     fun hudLine(run: ResearchRun): String =
         summaryFor(run.mode)?.hudLine() ?: fallbackHudLine(run)
 

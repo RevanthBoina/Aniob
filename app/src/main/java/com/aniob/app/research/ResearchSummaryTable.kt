@@ -18,7 +18,7 @@ data class ResearchSummaryRow(
     val speedupVsBaseline: String = ""
 ) {
     /**
-     * The line shown in the end-of-task toast and in `Log.i("RESEARCH_METRICS", ...)`:
+     * The line shown in the developer-only research status panel and in `Log.i("RESEARCH_METRICS", ...)`:
      * `[BASELINE] Latency: 12.34s | LLM Calls: 3 | Success Rate: 66.7%`
      *
      * The success rate is the running rate for the mode, so it moves with every finished task

@@ -13,7 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.aniob.app.ui.model.BlockedRecord
 import com.aniob.app.ui.model.ConfirmDecision
 import com.aniob.app.ui.model.ConfirmationRecord
 import com.aniob.app.ui.model.SafetyLevel
@@ -27,12 +26,6 @@ fun AniobTrustCenterScreen(
     onBack: () -> Unit,
     safetyLevel: SafetyLevel,
     onSafetyLevelChanged: (SafetyLevel) -> Unit,
-    fastPathEnabled: Boolean,
-    onFastPathChanged: (Boolean) -> Unit,
-    gateEnabled: Boolean,
-    onGateChanged: (Boolean) -> Unit,
-    blockedEntries: List<BlockedRecord>,
-    onClearBlocked: (String) -> Unit,
     confirmationHistory: List<ConfirmationRecord>,
     vaultEntries: () -> Map<String, String>,
     onForgetVault: (String) -> Unit,
@@ -60,7 +53,7 @@ fun AniobTrustCenterScreen(
                 Card(modifier = Modifier.fillMaxWidth().testTag("trust_safety_level_card")) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Safety Level", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
-                        listOf(SafetyLevel.STANDARD, SafetyLevel.STRICT).forEach { level ->
+                        listOf(SafetyLevel.OFF, SafetyLevel.STANDARD, SafetyLevel.STRICT).forEach { level ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
@@ -74,8 +67,11 @@ fun AniobTrustCenterScreen(
                                 Column {
                                     Text(level.displayName, fontWeight = FontWeight.SemiBold)
                                     Text(
-                                        if (level == SafetyLevel.STANDARD) "Ask before HIGH-risk steps"
-                                        else "Ask before MEDIUM and HIGH-risk steps, and cross-app navigation",
+                                        when (level) {
+                                            SafetyLevel.OFF -> "Skip ordinary-action prompts; still ask before money, secrets, and deletion."
+                                            SafetyLevel.STANDARD -> "Also ask before sending, posting, sharing, or calling."
+                                            SafetyLevel.STRICT -> "Also ask before other consequential, hard-to-reverse actions."
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -83,28 +79,6 @@ fun AniobTrustCenterScreen(
                             }
                         }
                     }
-                }
-            }
-
-            // Blocked actions
-            item {
-                Text(
-                    "Blocked Actions",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            if (blockedEntries.isEmpty()) {
-                item {
-                    Text(
-                        "No blocked actions",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                items(blockedEntries, key = { it.fingerprint }) { record ->
-                    BlockedRow(record = record, onClear = { onClearBlocked(record.fingerprint) })
                 }
             }
 
@@ -176,26 +150,6 @@ fun AniobTrustCenterScreen(
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun BlockedRow(record: BlockedRecord, onClear: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().testTag("blocked_row_${record.fingerprint}")) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(record.fingerprint.take(20), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
-                Text(record.rule, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(formatTime(record.at), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            TextButton(onClick = onClear, modifier = Modifier.testTag("blocked_clear_${record.fingerprint}")) {
-                Text("Clear")
             }
         }
     }

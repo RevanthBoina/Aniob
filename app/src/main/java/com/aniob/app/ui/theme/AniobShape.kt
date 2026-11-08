@@ -40,8 +40,6 @@ data class AniobComponentShapes(
     val userBubbleGrouped: CornerBasedShape = RoundedCornerShape(20.dp, 8.dp, 8.dp, 20.dp),
     /** The text composer. Fully rounded so it reads as an input, not a card. */
     val composer: CornerBasedShape = RoundedCornerShape(26.dp),
-    /** Floating overlay pill drawn on top of other apps. */
-    val overlayPill: CornerBasedShape = RoundedCornerShape(50),
     /** Bottom sheets. */
     val sheet: CornerBasedShape = RoundedCornerShape(30.dp, 30.dp, 0.dp, 0.dp),
     /** The task-result "proof" card. */

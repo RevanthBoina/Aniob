@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.core.workflow.Destination
+import com.aniob.core.workflow.DestinationCategory
 import com.aniob.core.workflow.WorkflowResult
 import com.aniob.core.workflow.WorkflowState
 
@@ -29,6 +30,7 @@ fun DestinationChooserCard(
     modifier: Modifier = Modifier
 ) {
     var customUrl by remember { mutableStateOf("") }
+    val selectingInstalledApp = candidates.isNotEmpty() && candidates.all { it.category == DestinationCategory.APP }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -37,7 +39,7 @@ fun DestinationChooserCard(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "Choose a destination service",
+                text = if (selectingInstalledApp) "Choose an installed app" else "Choose a destination service",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -45,8 +47,13 @@ fun DestinationChooserCard(
 
             candidates.forEach { destination ->
                 ListItem(
-                    headlineContent = { Text(destination.handler, fontWeight = FontWeight.SemiBold) },
-                    supportingContent = { destination.url?.let { Text(it, style = MaterialTheme.typography.bodySmall) } },
+                    headlineContent = { Text(destination.label ?: destination.handler, fontWeight = FontWeight.SemiBold) },
+                    supportingContent = {
+                        Text(
+                            destination.url ?: if (destination.category == DestinationCategory.APP) destination.handler else destination.category.name,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    },
                     trailingContent = {
                         FilledTonalButton(onClick = { onSelectDestination(destination) }) {
                             Text("Select")
@@ -57,31 +64,38 @@ fun DestinationChooserCard(
                 HorizontalDivider()
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-            OutlinedTextField(
-                value = customUrl,
-                onValueChange = { customUrl = it },
-                label = { Text("Or enter another URL") },
-                placeholder = { Text("https://...") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                TextButton(onClick = onCancel) {
-                    Text("Cancel")
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = {
-                        if (customUrl.isNotBlank()) onCustomUrlEntered(customUrl)
-                    },
-                    enabled = customUrl.isNotBlank()
+            if (!selectingInstalledApp) {
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = customUrl,
+                    onValueChange = { customUrl = it },
+                    label = { Text("Or enter another URL") },
+                    placeholder = { Text("https://...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Text("Open URL")
+                    TextButton(onClick = onCancel) {
+                        Text("Cancel")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (customUrl.isNotBlank()) onCustomUrlEntered(customUrl)
+                        },
+                        enabled = customUrl.isNotBlank()
+                    ) {
+                        Text("Open URL")
+                    }
+                }
+            } else {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onCancel) { Text("Cancel") }
                 }
             }
         }

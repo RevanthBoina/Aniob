@@ -875,6 +875,13 @@ fun TaskSummaryCard(
 ) {
     val isSuccess = summary.outcome == Outcome.SUCCESS
     val isStopped = summary.outcome == Outcome.STOPPED
+    val outcomeCopy = com.aniob.app.outcome.AniobOutcomeCopy.forTask(
+        outcome = summary.outcome,
+        reason = summary.reason,
+        taskLabel = summary.prompt,
+        completedChecks = summary.evidence.filter { it.met }.map { it.label },
+        outstandingChecks = summary.evidence.filter { !it.met }.map { it.label }
+    )
     val containerColor = when {
         isSuccess -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
         isStopped -> MaterialTheme.colorScheme.surfaceVariant
@@ -907,9 +914,8 @@ fun TaskSummaryCard(
                 )
                 Text(
                     text = when {
-                        isSuccess -> "Task Completed"
-                        isStopped -> "Stopped by you at step ${summary.steps}"
-                        else -> "Task Failed"
+                        isStopped -> "Stopped at step ${summary.steps}"
+                        else -> outcomeCopy.title
                     },
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleSmall
@@ -947,13 +953,12 @@ fun TaskSummaryCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            if (!isSuccess && !isStopped && !summary.reason.isNullOrBlank()) {
-                Text(
-                    text = FailureReasonCopy.humanize(summary.reason),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
+            Text(
+                text = outcomeCopy.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (summary.outcome == Outcome.FAILED) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

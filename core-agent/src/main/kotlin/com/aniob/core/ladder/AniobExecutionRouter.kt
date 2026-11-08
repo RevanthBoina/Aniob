@@ -87,6 +87,9 @@ class AniobExecutionRouter(
      */
     var appLaunchResolver: ((String) -> AppLaunchTarget?)? = null
 
+    /** Platform launchability check passed into the pure intent resolver to reject stale/seeded packages. */
+    var appIsLaunchable: ((String) -> Boolean)? = null
+
     /**
      * Mid-task app resolver: (goal) -> an app the goal names that this task has not opened yet.
      * Optional; when null, mid-task switches are simply not attempted and the ladder behaves as
@@ -165,7 +168,7 @@ class AniobExecutionRouter(
         if (intentShortcutsEnabled) {
             AniobLaunchHub.reset(taskSignature)
             val firstStep = stepIndex == 0
-            val intentShortcut = AniobIntentResolver.resolve(taskPrompt)
+            val intentShortcut = AniobIntentResolver.resolve(taskPrompt, appIsLaunchable ?: { true })
             // A shortcut that already answers part of the prompt (an alarm with its time, a
             // settings panel, a search URL, the alarm list) is cheaper than opening the app and
             // planning there, so it outranks the app-launch hook. A shortcut that merely names an

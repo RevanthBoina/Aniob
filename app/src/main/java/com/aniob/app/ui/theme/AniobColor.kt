@@ -17,8 +17,8 @@ import androidx.compose.ui.graphics.Color
  * Layer 2 exists because Aniob is not a content app; it is an agent that drives the
  * user's phone. At any instant the single most important question a user has is
  * "what is it doing right now, and does it need me?". That question must be
- * answerable from peripheral vision, from a 32dp overlay pill on top of another app,
- * and from a notification shade. A single `primary` colour cannot carry five states,
+ * answerable in the in-app task ticker and from a notification shade; no floating
+ * status pill is shown over the app being operated. A single `primary` colour cannot carry five states,
  * which is why the old build hardcoded 0xFF00C853, 0xFF1976D2, 0xFF2E7D32 and
  * 0xFFC62828 in four different files and still looked inconsistent.
  *

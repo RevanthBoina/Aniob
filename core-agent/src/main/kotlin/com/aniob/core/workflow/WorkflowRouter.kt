@@ -20,41 +20,16 @@ sealed class WorkflowDecision {
  */
 object WorkflowRouter {
 
-    val DEFAULT_BUILDER_OPTIONS: List<Destination> = listOf(
-        Destination(
-            handler = "lovable.dev",
-            url = "https://lovable.dev/",
-            category = DestinationCategory.BUILDER_SERVICE,
-            provenance = DestinationProvenance.BUILTIN
-        ),
-        Destination(
-            handler = "bolt.new",
-            url = "https://bolt.new/",
-            category = DestinationCategory.BUILDER_SERVICE,
-            provenance = DestinationProvenance.BUILTIN
-        ),
-        Destination(
-            handler = "replit.com",
-            url = "https://replit.com/",
-            category = DestinationCategory.BUILDER_SERVICE,
-            provenance = DestinationProvenance.BUILTIN
-        )
-    )
-
-    val DEFAULT_REASONING_DESTINATION: Destination = Destination(
-        handler = "chatgpt.com",
-        url = "https://chatgpt.com/",
-        category = DestinationCategory.REASONING_SERVICE,
-        provenance = DestinationProvenance.BUILTIN
-    )
-
     /**
      * Inspects natural language prompt and makes a routing decision.
      */
     fun route(
         prompt: String,
         taskId: String = "wf_${System.currentTimeMillis()}",
-        userPreferredDestination: Destination? = null
+        userPreferredDestination: Destination? = null,
+        isAppLaunchable: (String) -> Boolean = { packageName ->
+            com.aniob.core.knowledge.AniobAppRegistry.getInstance().isLaunchable(packageName)
+        }
     ): WorkflowDecision {
         val trimmed = prompt.trim()
         if (trimmed.isBlank()) {
@@ -103,32 +78,53 @@ object WorkflowRouter {
                 val appResolution = com.aniob.core.knowledge.AniobAppCatalog.getInstance().resolveApp(candidate)
                 when (appResolution) {
                     is com.aniob.core.knowledge.AniobAppCatalog.AppResolution.ExactMatch -> {
-                        val destination = Destination(
-                            handler = appResolution.entry.packageName,
-                            category = DestinationCategory.APP,
-                            provenance = DestinationProvenance.SYSTEM_RESOLVED
-                        )
-                        val action = WorkflowAction.OpenApp(
-                            actionId = "action_${System.currentTimeMillis()}",
-                            destination = destination
-                        )
-                        return WorkflowDecision.DirectAction(action)
-                    }
-                    is com.aniob.core.knowledge.AniobAppCatalog.AppResolution.Ambiguous -> {
-                        val candidates = appResolution.candidates.map {
-                            Destination(
-                                handler = it.packageName,
-                                category = DestinationCategory.APP,
-                                provenance = DestinationProvenance.SYSTEM_RESOLVED
+                        val entry = appResolution.entry
+                        if (!isAppLaunchable(entry.packageName)) {
+                            return WorkflowDecision.NeedsClarification(
+                                "I couldn't open '$candidate' because it is not available on this device. Which installed app or website should I use?"
                             )
                         }
-                        return WorkflowDecision.NeedsChooser(
-                            candidates = candidates,
-                            prompt = trimmed
+                        val destination = Destination(
+                            handler = entry.packageName,
+                            category = DestinationCategory.APP,
+                            label = entry.appName,
+                            provenance = DestinationProvenance.SYSTEM_RESOLVED
+                        )
+                        return WorkflowDecision.DirectAction(
+                            WorkflowAction.OpenApp(
+                                actionId = "action_${System.currentTimeMillis()}",
+                                destination = destination
+                            )
                         )
                     }
+                    is com.aniob.core.knowledge.AniobAppCatalog.AppResolution.Ambiguous -> {
+                        val candidates = appResolution.candidates
+                            .filter { isAppLaunchable(it.packageName) }
+                            .map {
+                                Destination(
+                                    handler = it.packageName,
+                                    category = DestinationCategory.APP,
+                                    provenance = DestinationProvenance.SYSTEM_RESOLVED,
+                                    label = it.appName
+                                )
+                            }
+                        when (candidates.size) {
+                            0 -> return WorkflowDecision.NeedsClarification(
+                                "I couldn't find an installed app called '$candidate'. Which installed app or website should I use?"
+                            )
+                            1 -> return WorkflowDecision.DirectAction(
+                                WorkflowAction.OpenApp(
+                                    actionId = "action_${System.currentTimeMillis()}",
+                                    destination = candidates.single()
+                                )
+                            )
+                            else -> return WorkflowDecision.NeedsChooser(candidates = candidates, prompt = trimmed)
+                        }
+                    }
                     com.aniob.core.knowledge.AniobAppCatalog.AppResolution.NotFound -> {
-                        return WorkflowDecision.DelegateToExisting(trimmed)
+                        return WorkflowDecision.NeedsClarification(
+                            "I couldn't find an installed app called '$candidate'. Which installed app or website should I use?"
+                        )
                     }
                 }
             }
@@ -136,7 +132,10 @@ object WorkflowRouter {
 
         // 3. Hosted reasoning requests
         if (isHostedReasoningRequest(normalized)) {
-            val destination = userPreferredDestination ?: DEFAULT_REASONING_DESTINATION
+            // Never silently select a hosted destination. The intent resolver has already tried
+            // installed apps and supported system/web intents; absent an explicit user choice,
+            // the existing task/answer path owns the request.
+            val destination = userPreferredDestination ?: return WorkflowDecision.DelegateToExisting(trimmed)
             val action = WorkflowAction.OpenWebsite(
                 actionId = "action_${System.currentTimeMillis()}",
                 destination = destination,
@@ -155,28 +154,66 @@ object WorkflowRouter {
                 )
                 return WorkflowDecision.DirectAction(action)
             }
-            return WorkflowDecision.NeedsChooser(
-                candidates = DEFAULT_BUILDER_OPTIONS,
-                prompt = trimmed,
-                briefText = trimmed
+            return WorkflowDecision.NeedsClarification(
+                "Which app or website would you like me to use? I won't choose a service for you."
             )
         }
 
         // 5. Note taking / editing requests
         if (isNoteCreationRequest(normalized)) {
             val noteText = extractNoteContent(normalized, trimmed)
-            val noteDestination = Destination(
-                handler = "com.google.android.keep",
-                category = DestinationCategory.APP,
-                provenance = DestinationProvenance.SYSTEM_RESOLVED
-            )
-            val action = WorkflowAction.OpenApp(
-                actionId = "action_${System.currentTimeMillis()}",
-                destination = noteDestination,
-                payload = null,
-                draftText = noteText
-            )
-            return WorkflowDecision.DirectAction(action)
+            return when (val notes = com.aniob.core.knowledge.AniobAppCatalog.getInstance().resolveApp("notes")) {
+                is com.aniob.core.knowledge.AniobAppCatalog.AppResolution.ExactMatch -> {
+                    if (!isAppLaunchable(notes.entry.packageName)) {
+                        WorkflowDecision.NeedsClarification(
+                            "I couldn't open a notes app on this device. Which installed app or website should I use?"
+                        )
+                    } else {
+                        WorkflowDecision.DirectAction(
+                            WorkflowAction.OpenApp(
+                                actionId = "action_${System.currentTimeMillis()}",
+                                destination = Destination(
+                                    handler = notes.entry.packageName,
+                                    category = DestinationCategory.APP,
+                                    provenance = DestinationProvenance.SYSTEM_RESOLVED,
+                                    label = notes.entry.appName
+                                ),
+                                payload = null,
+                                draftText = noteText
+                            )
+                        )
+                    }
+                }
+                is com.aniob.core.knowledge.AniobAppCatalog.AppResolution.Ambiguous -> {
+                    val candidates = notes.candidates
+                        .filter { isAppLaunchable(it.packageName) }
+                        .map {
+                            Destination(
+                                handler = it.packageName,
+                                category = DestinationCategory.APP,
+                                provenance = DestinationProvenance.SYSTEM_RESOLVED,
+                                label = it.appName
+                            )
+                        }
+                    when (candidates.size) {
+                        0 -> WorkflowDecision.NeedsClarification(
+                            "I couldn't find an installed notes app. Which app or website should I use?"
+                        )
+                        1 -> WorkflowDecision.DirectAction(
+                            WorkflowAction.OpenApp(
+                                actionId = "action_${System.currentTimeMillis()}",
+                                destination = candidates.single(),
+                                draftText = noteText
+                            )
+                        )
+                        else -> WorkflowDecision.NeedsChooser(candidates = candidates, prompt = trimmed)
+                    }
+                }
+                com.aniob.core.knowledge.AniobAppCatalog.AppResolution.NotFound ->
+                    WorkflowDecision.NeedsClarification(
+                        "I couldn't find an installed notes app. Which app or website should I use?"
+                    )
+            }
         }
 
         // Fallback: delegate to existing pipeline (Q&A or screen automation)

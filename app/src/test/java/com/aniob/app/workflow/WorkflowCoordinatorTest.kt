@@ -3,6 +3,8 @@ package com.aniob.app.workflow
 import androidx.test.core.app.ApplicationProvider
 import com.aniob.app.AniobApplication
 import com.aniob.core.workflow.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
@@ -61,6 +63,39 @@ class WorkflowCoordinatorTest {
         assertNotNull(persisted)
         assertEquals("WaitingForUser", persisted?.state)
         assertEquals("https://lovable.dev/", persisted?.destinationUrl)
+    }
+
+    @Test
+    fun sensitiveWebsiteBriefIsHiddenAndApprovalBindsExactContent() = runTest {
+        val taskId = "sensitive_brief_task"
+        val brief = "Use verification code: 123456 to finish setup"
+        val destination = Destination(
+            handler = "example.test",
+            url = "https://example.test/",
+            category = DestinationCategory.BUILDER_SERVICE,
+            isApproved = true
+        )
+        val action = WorkflowAction.OpenWebsite(
+            actionId = "sensitive_brief_action",
+            destination = destination,
+            briefText = brief
+        )
+        val pending = async {
+            coordinator.executeAction(action = action, taskId = taskId, generation = 7L)
+        }
+        runCurrent()
+
+        val request = app.approvalController.confirmRequest.value
+        assertNotNull("Sharing a brief must wait for an explicit decision", request)
+        request!!
+        val expectedHash = WorkflowPayloadStore.sha256(brief.toByteArray(Charsets.UTF_8))
+        assertEquals(expectedHash, request.payload)
+        assertEquals(destination.destinationKey, request.identityTarget)
+        assertTrue(request.details.contains("preview hidden"))
+        assertFalse("OTP plaintext must never appear in the approval preview", request.details.contains("123456"))
+
+        assertTrue(app.approvalController.resolveConfirmation(ConfirmDecision.DENY, taskId, request.id))
+        assertTrue(pending.await() is WorkflowResult.Cancelled)
     }
 
     @Test

@@ -8,36 +8,54 @@ import com.aniob.core.domain.AniobScreenState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 
 class AniobSafetyInterceptorTest {
+
+    @Before
+    fun resetPolicy() {
+        AniobSafetyInterceptor.askLevel = AskLevel.BALANCED
+    }
+
+    @After
+    fun restorePolicy() {
+        AniobSafetyInterceptor.askLevel = AskLevel.BALANCED
+    }
 
     private fun screen(pkg: String = "com.aniob.test", hash: String = "H1"): AniobScreenState =
         AniobScreenState(packageName = pkg, treeHash = hash)
 
     @Test
-    fun testPaymentActionBlocked() {
+    fun paymentAlwaysRequiresApprovalEvenWhenOrdinaryPromptsAreOff() {
+        AniobSafetyInterceptor.askLevel = AskLevel.OFF
         val result = AniobSafetyInterceptor.evaluateAction(
             action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "complete the payment now"),
             targetNode = null,
             screenState = screen(),
             screenFingerprint = "fp_pay"
         )
-        assertFalse(result.isAllowed)
+        assertTrue(result.isAllowed)
+        assertTrue(result.requiresConfirmation)
         assertEquals("HIGH", result.riskTier)
+        AniobSafetyInterceptor.askLevel = AskLevel.BALANCED
     }
 
     @Test
-    fun testDestructiveActionBlocked() {
+    fun destructiveActionRequiresApprovalRatherThanBypassingThePipeline() {
+        AniobSafetyInterceptor.askLevel = AskLevel.OFF
         val result = AniobSafetyInterceptor.evaluateAction(
             action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "confirm factory reset now"),
             targetNode = null,
             screenState = screen(),
             screenFingerprint = "fp_wipe"
         )
-        assertFalse(result.isAllowed)
+        assertTrue(result.isAllowed)
+        assertTrue(result.requiresConfirmation)
         assertEquals("HIGH", result.riskTier)
-        assertTrue(result.reason.contains("Destructive", ignoreCase = true))
+        assertTrue(result.reason.contains("delete", ignoreCase = true))
+        AniobSafetyInterceptor.askLevel = AskLevel.BALANCED
     }
 
     @Test
@@ -53,7 +71,8 @@ class AniobSafetyInterceptorTest {
     }
 
     @Test
-    fun testOtpOnEditableNodeBlocked() {
+    fun secretEntryAlwaysRequiresApproval() {
+        AniobSafetyInterceptor.askLevel = AskLevel.OFF
         val editable = AniobNode(id = 2, className = "EditText", bounds = AniobRect(0, 0, 10, 10), isEditable = true)
         val result = AniobSafetyInterceptor.evaluateAction(
             action = AniobAction.InputText(SemanticTarget.SomIndex(2), text = "my otp is 1234"),
@@ -61,8 +80,10 @@ class AniobSafetyInterceptorTest {
             screenState = screen(),
             screenFingerprint = "fp_otp"
         )
-        assertFalse(result.isAllowed)
-        assertTrue(result.reason.contains("Sensitive", ignoreCase = true))
+        assertTrue(result.isAllowed)
+        assertTrue(result.requiresConfirmation)
+        assertTrue(result.reason.contains("secret", ignoreCase = true))
+        AniobSafetyInterceptor.askLevel = AskLevel.BALANCED
     }
 
     @Test
@@ -123,7 +144,7 @@ class AniobSafetyInterceptorTest {
     }
 
     @Test
-    fun testVisiblePaymentControlBlockedDespiteInnocuousThought() {
+    fun visiblePaymentControlRequiresApprovalDespiteInnocuousThought() {
         // Model explanation is innocent ("view next screen"), but target node is a payment button ("Pay $50.00")
         val payNode = AniobNode(
             id = 10,
@@ -138,40 +159,14 @@ class AniobSafetyInterceptorTest {
             screenState = screen(),
             screenFingerprint = "fp_pay_control"
         )
-        assertFalse("Visible payment control cannot evade policy through innocuous thought", result.isAllowed)
+        assertTrue("A grounded payment must reach the approval gate", result.isAllowed)
+        assertTrue("An innocuous thought cannot remove the payment approval", result.requiresConfirmation)
         assertEquals("HIGH", result.riskTier)
     }
 
     @Test
-    fun testUnblockFingerprintOnlyRemovesTargetFingerprint() {
-        AniobSafetyInterceptor.clearBlockedFingerprints()
-        // Trigger two blocks
-        AniobSafetyInterceptor.evaluateAction(
-            action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "pay now"),
-            targetNode = null,
-            screenState = screen(),
-            screenFingerprint = "fp_1"
-        )
-        AniobSafetyInterceptor.evaluateAction(
-            action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "checkout order"),
-            targetNode = null,
-            screenState = screen(),
-            screenFingerprint = "fp_2"
-        )
-
-        assertTrue(AniobSafetyInterceptor.isFingerprintBlocked("fp_1"))
-        assertTrue(AniobSafetyInterceptor.isFingerprintBlocked("fp_2"))
-
-        // Unblock fp_1 only
-        AniobSafetyInterceptor.unblockFingerprint("fp_1")
-        assertFalse("fp_1 should be unblocked", AniobSafetyInterceptor.isFingerprintBlocked("fp_1"))
-        assertTrue("fp_2 should still be blocked", AniobSafetyInterceptor.isFingerprintBlocked("fp_2"))
-
-        AniobSafetyInterceptor.clearBlockedFingerprints()
-    }
-
-    @Test
-    fun testSkillRiskHighRequiresConfirmation() {
+    fun testSkillRiskHighRequiresConfirmationInCarefulMode() {
+        AniobSafetyInterceptor.askLevel = AskLevel.CAREFUL
         val result = AniobSafetyInterceptor.evaluateAction(
             action = AniobAction.Tap(SemanticTarget.Text("Export Data")),
             targetNode = null,

@@ -2,6 +2,7 @@ package com.aniob.core
 
 import com.aniob.core.knowledge.AniobAppCatalog
 import com.aniob.core.knowledge.AniobAppRegistry
+import com.aniob.core.knowledge.RegisteredApp
 import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import org.junit.After
@@ -152,6 +153,36 @@ class AniobIntentResolverTest {
         assertEquals("com.google.android.youtube", AniobIntentResolver.resolve("Open YouTube")?.targetPackage)
         assertEquals("org.telegram.messenger", AniobIntentResolver.resolve("launch telegram")?.targetPackage)
         assertEquals("com.spotify.music", AniobIntentResolver.resolve("Open Spotify")?.targetPackage)
+    }
+
+    @Test
+    fun staleRegistryAppIsRejectedByThePlatformLaunchabilityCheck() {
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(RegisteredApp(packageName = "com.sample.customapp", label = "Custom App"))
+        )
+
+        assertNull(
+            "A stale cached package must not become an app launch",
+            AniobIntentResolver.resolve("Open Custom App") { false }
+        )
+        val live = AniobIntentResolver.resolve("Open Custom App") { true }
+        assertEquals("com.sample.customapp", live?.targetPackage)
+    }
+
+    @Test
+    fun unavailableCachedNamedAppDoesNotFallBackToAWebsite() {
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(RegisteredApp(packageName = "com.sample.linkedin", label = "LinkedIn"))
+        )
+
+        assertNull(
+            "A stale installed-app record must clarify/fail, not change the destination to a website",
+            AniobIntentResolver.resolve("Open LinkedIn") { false }
+        )
+        assertEquals(
+            "com.sample.linkedin",
+            AniobIntentResolver.resolve("Open LinkedIn") { true }?.targetPackage
+        )
     }
 
     @Test

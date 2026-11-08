@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import com.aniob.app.MainActivity
 import com.aniob.app.R
 
@@ -19,9 +20,9 @@ import com.aniob.app.R
  * multi-step autonomous UI background tasks.
  * Uses Android 14+ FOREGROUND_SERVICE_SPECIAL_USE declaration.
  *
- * UX-6: three real channels (Progress low / Confirmations high / Done default), a progress bar
- * with narration, Pause/Stop actions, and a proper app icon. Completion is Quiet Return — a
- * notification with a deep link, never a background activity start.
+ * UX-6: progress, approval, and result channels, a progress bar with narration, Pause/Stop actions,
+ * and a proper app icon. Verified success stays in the background; failed or unverified runs may
+ * reopen chat so the user can inspect them.
  */
 class AniobForegroundService : Service() {
 
@@ -29,6 +30,7 @@ class AniobForegroundService : Service() {
         const val CHANNEL_PROGRESS = "aniob_progress"
         const val CHANNEL_CONFIRMATIONS = "aniob_confirmations"
         const val CHANNEL_DONE = "aniob_done"
+        const val CHANNEL_TASK_START = "aniob_task_start"
 
         private const val NOTIFICATION_ID = 8765
         private const val DONE_NOTIFICATION_ID = 8766
@@ -45,15 +47,28 @@ class AniobForegroundService : Service() {
 
         private const val CONFIRM_NOTIFICATION_ID = 8768
         private const val WAITING_NOTIFICATION_ID = 8769
+        private const val TASK_START_NOTIFICATION_ID = 8770
+        private const val GRILL_NOTIFICATION_ID = 8771
+
+        const val ACTION_GRILL_REPLY = "com.aniob.app.action.GRILL_REPLY"
+        const val ACTION_GRILL_CHOICE = "com.aniob.app.action.GRILL_CHOICE"
+        const val ACTION_GRILL_CANCEL = "com.aniob.app.action.GRILL_CANCEL"
+        const val EXTRA_GRILL_TASK_ID = "extra_grill_task_id"
+        const val EXTRA_GRILL_QUESTION_ID = "extra_grill_question_id"
+        const val EXTRA_GRILL_ANSWER = "extra_grill_answer"
+        private const val EXTRA_GRILL_REPLY_RESULT = "extra_grill_reply_result"
 
         /** Lets the ViewModel cancel the running task when the notification Stop action is tapped. */
         @Volatile var onStopRequestedFromNotification: (() -> Unit)? = null
 
-        /** Lets the ViewModel flip its cooperative pause flag from the notification/pill. */
+        /** Lets the ViewModel flip its cooperative pause flag from the notification. */
         @Volatile var onPauseToggleFromNotification: (() -> Unit)? = null
 
         /** Carries the user's approval decision back with mandatory task and request IDs to prevent stale approvals. */
         @Volatile var onConfirmDecisionWithIds: ((com.aniob.app.ui.model.ConfirmDecision, String?, String?) -> Unit)? = null
+        @Volatile var onGrillReplyWithIds: ((String, String, String) -> Unit)? = null
+        @Volatile var onGrillChoiceWithIds: ((String, String, String) -> Unit)? = null
+        @Volatile var onGrillCancelForTask: ((String) -> Unit)? = null
 
         @Volatile private var currentPrompt: String = ""
         @Volatile private var currentStep: Int = 0
@@ -67,6 +82,7 @@ class AniobForegroundService : Service() {
             currentStep = 0
             currentNarration = "Getting ready"
             isPaused = false
+            notifyTaskStarted(context, taskPrompt)
             val intent = Intent(context, AniobForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_TASK_PROMPT, taskPrompt)
@@ -82,6 +98,35 @@ class AniobForegroundService : Service() {
             }
         }
 
+        private fun notifyTaskStarted(context: Context, taskPrompt: String) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            ensureChannels(context, manager)
+            val open = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                data = Uri.parse("aniob://chat")
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val openPi = PendingIntent.getActivity(
+                context, 11, open,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(context, CHANNEL_TASK_START)
+                .setContentTitle("Aniob is starting")
+                .setContentText(taskPrompt)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(taskPrompt))
+                .setSmallIcon(R.drawable.ic_stat_aniob)
+                .setContentIntent(openPi)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .build()
+            manager.notify(TASK_START_NOTIFICATION_ID, notification)
+        }
+
+        private fun clearTaskStart(context: Context) {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.cancel(TASK_START_NOTIFICATION_ID)
+        }
+
         fun stopService(context: Context) {
             isStopRequested = true
             instances.forEach { service ->
@@ -94,29 +139,14 @@ class AniobForegroundService : Service() {
             }
         }
 
-        /** Pill/notification Stop action entry point. */
+        /** Notification Stop action entry point. */
         fun requestStop() {
             onStopRequestedFromNotification?.invoke()
         }
 
-        /** Pill/notification Pause (Resume) action entry point. */
+        /** Notification Pause (Resume) action entry point. */
         fun requestPauseToggle() {
             onPauseToggleFromNotification?.invoke()
-        }
-
-        /** Pill body tap: open the app on the tracker via the `aniob://tracker` deep link. */
-        fun requestOpenApp(context: Context) {
-            try {
-                context.startActivity(
-                    Intent(context, MainActivity::class.java).apply {
-                        action = Intent.ACTION_VIEW
-                        data = Uri.parse("aniob://tracker")
-                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                )
-            } catch (_: Exception) {
-                // OEM blocked the start; the user can always open Aniob from the launcher.
-            }
         }
 
         /** Mirrors narration + step progress into the live notification (UX-3 → UX-6). */
@@ -136,14 +166,19 @@ class AniobForegroundService : Service() {
             context: Context,
             summary: String,
             isSuccess: Boolean = true,
-            unverified: Boolean = false
+            unverified: Boolean = false,
+            wasStopped: Boolean = false,
+            resultTitle: String? = null
         ) {
+            clearTaskStart(context)
+            clearGrillQuestion(context)
             stopService(context)
             when {
-                isSuccess -> notifyFinished(context, summary)
+                isSuccess -> notifyFinished(context, summary, resultTitle ?: "Done: $currentPrompt")
                 // Not a failure: the steps ran, the outcome could not be machine-checked.
-                unverified -> notifyFinished(context, summary, "Done, not verified: $currentPrompt")
-                else -> notifyFailure(context, summary)
+                unverified -> notifyFinished(context, summary, resultTitle ?: "Done, not verified: $currentPrompt")
+                wasStopped -> notifyFinished(context, summary, resultTitle ?: "Stopped: $currentPrompt")
+                else -> notifyFailure(context, summary, resultTitle)
             }
         }
 
@@ -174,8 +209,8 @@ class AniobForegroundService : Service() {
             nm.notify(DONE_NOTIFICATION_ID, notification)
         }
 
-        /** Failure variant: amber "Needs attention" with [View] [Retry] (UX-6). */
-        fun notifyFailure(context: Context, summary: String) {
+        /** Failure variant: one result notification with a View affordance (UX-6). */
+        fun notifyFailure(context: Context, summary: String, title: String? = null) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             ensureChannels(context, nm)
             val view = Intent(context, MainActivity::class.java).apply {
@@ -188,7 +223,7 @@ class AniobForegroundService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val notification = NotificationCompat.Builder(context, CHANNEL_DONE)
-                .setContentTitle("Needs attention: $currentPrompt")
+                .setContentTitle(title ?: "Needs attention: $currentPrompt")
                 .setContentText(summary)
                 .setSmallIcon(R.drawable.ic_stat_aniob)
                 .setContentIntent(viewPi)
@@ -200,9 +235,8 @@ class AniobForegroundService : Service() {
         }
 
         /**
-         * UX-4 Seen Confirmations: the approval reaches a minimized user on the high-priority
-         * channel, with a full-screen intent that opens the same sheet, plus inline Approve/Deny.
-         * A timeout is handled by the ViewModel's gate (60s → DENY), never by silence here.
+         * Approval reaches a minimized user on the high-priority channel, with inline Approve/Deny.
+         * Silence leaves the action paused; only an explicit decision or Stop resolves the wait.
          */
         fun notifyConfirmation(context: Context, request: com.aniob.app.ui.model.ConfirmRequest) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
@@ -256,6 +290,128 @@ class AniobForegroundService : Service() {
         fun clearConfirmation(context: Context) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             nm.cancel(CONFIRM_NOTIFICATION_ID)
+        }
+
+        /**
+         * Keeps a clarification reachable while Aniob is backgrounded. Replies and quick choices
+         * carry task/question ids; the ViewModel validates both before resuming the paused task.
+         */
+        fun notifyGrillQuestion(
+            context: Context,
+            taskId: String,
+            question: com.aniob.core.grillme.GrillQuestion,
+            taskPrompt: String? = null
+        ) {
+            taskPrompt?.takeIf { it.isNotBlank() }?.let { currentPrompt = it }
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            ensureChannels(context, manager)
+
+            val openIntent = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                data = Uri.parse("aniob://chat")
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val openPi = PendingIntent.getActivity(
+                context, 12, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val replyIntent = Intent(context, AniobForegroundService::class.java).apply {
+                action = ACTION_GRILL_REPLY
+                putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
+            }
+            val replyFlags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_IMMUTABLE
+            }
+            val replyPi = PendingIntent.getService(context, 13, replyIntent, replyFlags)
+            val remoteInput = RemoteInput.Builder(EXTRA_GRILL_REPLY_RESULT)
+                .setLabel("Type your answer")
+                .build()
+            val replyAction = NotificationCompat.Action.Builder(0, "Reply", replyPi)
+                .addRemoteInput(remoteInput)
+                .setAllowGeneratedReplies(true)
+                .build()
+
+            val quickActions = when {
+                question.options.size >= 2 -> question.options.take(2).mapIndexed { index, answer ->
+                    val choiceIntent = Intent(context, AniobForegroundService::class.java).apply {
+                        action = ACTION_GRILL_CHOICE
+                        putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                        putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
+                        putExtra(EXTRA_GRILL_ANSWER, answer)
+                    }
+                    val choicePi = PendingIntent.getService(
+                        context, 14 + index, choiceIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    NotificationCompat.Action.Builder(0, answer, choicePi).build()
+                }
+                question.options.size == 1 -> {
+                    val answer = question.options.first()
+                    val choiceIntent = Intent(context, AniobForegroundService::class.java).apply {
+                        action = ACTION_GRILL_CHOICE
+                        putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                        putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
+                        putExtra(EXTRA_GRILL_ANSWER, answer)
+                    }
+                    val choicePi = PendingIntent.getService(
+                        context, 14, choiceIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    listOf(
+                        NotificationCompat.Action.Builder(0, answer, choicePi).build(),
+                        NotificationCompat.Action.Builder(0, "Open Aniob", openPi).build()
+                    )
+                }
+                else -> {
+                    val cancelIntent = Intent(context, AniobForegroundService::class.java).apply {
+                        action = ACTION_GRILL_CANCEL
+                        putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                    }
+                    val cancelPi = PendingIntent.getService(
+                        context, 16, cancelIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    listOf(
+                        NotificationCompat.Action.Builder(0, "Open Aniob", openPi).build(),
+                        NotificationCompat.Action.Builder(0, "Cancel task", cancelPi).build()
+                    )
+                }
+            }
+
+            val explicitActions = if (question.options.isNotEmpty()) {
+                val cancelIntent = Intent(context, AniobForegroundService::class.java).apply {
+                    action = ACTION_GRILL_CANCEL
+                    putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                }
+                val cancelPi = PendingIntent.getService(
+                    context, 17, cancelIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                quickActions + NotificationCompat.Action.Builder(0, "Cancel task", cancelPi).build()
+            } else {
+                quickActions
+            }
+
+            val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_CONFIRMATIONS)
+                .setContentTitle("Grill me")
+                .setContentText(question.question)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(question.question))
+                .setSmallIcon(R.drawable.ic_stat_aniob)
+                .setContentIntent(openPi)
+                .setAutoCancel(false)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .addAction(replyAction)
+            explicitActions.forEach { notificationBuilder.addAction(it) }
+            manager.notify(GRILL_NOTIFICATION_ID, notificationBuilder.build())
+        }
+
+        fun clearGrillQuestion(context: Context) {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.cancel(GRILL_NOTIFICATION_ID)
         }
 
         fun notifyWaitingForUser(context: Context, target: String) {
@@ -333,6 +489,12 @@ class AniobForegroundService : Service() {
             manager.createNotificationChannel(
                 NotificationChannel(CHANNEL_DONE, "Task results", NotificationManager.IMPORTANCE_DEFAULT).apply {
                     description = "Completed, failed, or interrupted tasks"
+                }
+            )
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_TASK_START, "Task start previews", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Shows the task Aniob is about to start"
+                    setShowBadge(false)
                 }
             )
         }
@@ -423,6 +585,31 @@ class AniobForegroundService : Service() {
                 if (taskId != null && reqId != null) {
                     onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.DENY, taskId, reqId)
                 }
+                return START_STICKY
+            }
+            ACTION_GRILL_REPLY -> {
+                val taskId = intent?.getStringExtra(EXTRA_GRILL_TASK_ID)
+                val questionId = intent?.getStringExtra(EXTRA_GRILL_QUESTION_ID)
+                val answer = RemoteInput.getResultsFromIntent(intent)
+                    ?.getCharSequence(EXTRA_GRILL_REPLY_RESULT)?.toString()?.trim()
+                if (!taskId.isNullOrBlank() && !questionId.isNullOrBlank() && !answer.isNullOrBlank()) {
+                    onGrillReplyWithIds?.invoke(taskId, questionId, answer)
+                }
+                return START_STICKY
+            }
+            ACTION_GRILL_CHOICE -> {
+                val taskId = intent?.getStringExtra(EXTRA_GRILL_TASK_ID)
+                val questionId = intent?.getStringExtra(EXTRA_GRILL_QUESTION_ID)
+                val answer = intent?.getStringExtra(EXTRA_GRILL_ANSWER)
+                if (!taskId.isNullOrBlank() && !questionId.isNullOrBlank() && !answer.isNullOrBlank()) {
+                    onGrillChoiceWithIds?.invoke(taskId, questionId, answer)
+                }
+                return START_STICKY
+            }
+            ACTION_GRILL_CANCEL -> {
+                val taskId = intent?.getStringExtra(EXTRA_GRILL_TASK_ID)
+                clearGrillQuestion(this)
+                if (!taskId.isNullOrBlank()) onGrillCancelForTask?.invoke(taskId)
                 return START_STICKY
             }
             else -> {

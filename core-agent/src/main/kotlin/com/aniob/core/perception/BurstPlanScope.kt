@@ -9,7 +9,7 @@ import com.aniob.core.domain.SemanticTarget
 /**
  * Splits a model's multi-action plan into the part this screen can execute and the part it cannot.
  *
- * A model asked for "2-3 sequential actions for everything visible" does not stop at the screen
+ * A model asked for "2-8 sequential actions for the task" does not stop at the screen
  * boundary. "Open Clock and set an alarm for 7:30" is answered with
  * `tap(Add alarm) → input(7:30) → tap(OK)`, and only the first of those targets exists on the
  * screen the plan was made on. Treating that reply as unusable is what made a model that had
@@ -52,7 +52,7 @@ object BurstPlanScope {
          * The plan reduced to what this screen can execute.
          *
          * Completion is only carried over when nothing was held back: the model's `is_complete`
-         * describes the three actions it wrote, and closing the run after the first of them would
+         * describes the actions it wrote, and closing the run after the first of them would
          * report a finished task the screen does not show.
          */
         val actionable: ActionBurst
