@@ -126,6 +126,22 @@ object AniobReflexResolver {
     private val OPEN_LATEST_REGEX = Regex(
         """^open\s+(?:the\s+|my\s+)?(?:latest|newest|last|most recent|recent)\s+(pdf|download|screenshot|photo|image|picture|file|document|bill|invoice|receipt|video)s?$"""
     )
+    private val OPEN_FROM_REGEX = Regex(
+        """^(?:open|show|read)\s+(?:my\s+|the\s+)?(?:latest|newest|most recent|recent)\s+(pdfs?|documents?|files?|invoices?|bills?|receipts?|spreadsheets?|presentations?)\s+(?:from|in|on)\s+(?:the\s+|my\s+)?(downloads?|documents?|drive)$""",
+        RegexOption.IGNORE_CASE
+    )
+    private val WHATSAPP_FILE_REGEX = Regex(
+        """^(?:find|open|read|show|summarize|summarise)\s+(?:my\s+|the\s+)?(.+?)\s+(?:that\s+)?(?:i\s+)?(?:received|got|was sent|sent to me|shared with me)?\s*on\s+whats\s?app$""",
+        RegexOption.IGNORE_CASE
+    )
+    private val DRIVE_OPEN_REGEX = Regex(
+        """^(?:open|show|read|summarize|summarise)\s+(?:my\s+|the\s+)?(presentation|slides?|deck|pdf|document|doc|spreadsheet|sheet|excel)(?:\s+(?:stored|saved|kept|that i have|i have))?\s+in\s+(?:google\s+)?drive$""",
+        RegexOption.IGNORE_CASE
+    )
+    private val CODE_FILE_REGEX = Regex(
+        """^(?:search|find|list|scan)\s+(?:my\s+)?(?:device|phone|storage|files|downloads)?\s*for\s+(python|java|kotlin|javascript|typescript|c\+\+|c|go|rust|text|markdown|csv)\s+files?$""",
+        RegexOption.IGNORE_CASE
+    )
     private val DISMISS_NOTIFICATION_REGEX = Regex("""^(?:dismiss|clear|remove)\s+(?:the\s+)?(.+?)\s+notifications?$""")
     private val REMIND_DAY_FIRST = Regex(
         """^remind\s+me\s+(?:(today|tonight|tomorrow)\s+)?(?:at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+)?(?:to|that|about)\s+(.+)$""",
@@ -359,6 +375,66 @@ object AniobReflexResolver {
         if (text in setOf("how much storage do i have left", "how much space do i have left", "how much free space do i have",
                 "check storage space", "check my storage", "check free space", "check phone storage")
         ) return shortcut(DeviceCommand.STORAGE_INFO)
+
+        // "open my latest pdf from downloads"
+        OPEN_FROM_REGEX.find(text)?.let { m ->
+            val noun = m.groupValues[1].lowercase().removeSuffix("s")
+            val place = m.groupValues[2].lowercase()
+            if (place.startsWith("drive")) {
+                val kind = when {
+                    noun.startsWith("presentation") -> "presentation"
+                    noun.startsWith("spreadsheet") -> "spreadsheet"
+                    noun == "pdf" -> "pdf"
+                    else -> "document"
+                }
+                return shortcut(DeviceCommand.DOC_PICK, mapOf("kind" to kind))
+            }
+            val kind = when {
+                noun.startsWith("pdf") || noun in setOf("invoice", "bill", "receipt") -> "pdf"
+                noun.startsWith("spreadsheet") -> "document"
+                noun.startsWith("presentation") -> "document"
+                noun == "file" -> "download"
+                else -> "document"
+            }
+            val query = if (noun in setOf("invoice", "bill", "receipt")) noun else ""
+            return shortcut(DeviceCommand.FILE_OPEN, mapOf("kind" to kind, "query" to query))
+        }
+        // "find the resume I received on WhatsApp"
+        WHATSAPP_FILE_REGEX.find(text)?.let { m ->
+            val what = m.groupValues[1].trim()
+            if (what.isBlank() || what.length > 60) return null
+            return shortcut(DeviceCommand.FILE_READ, mapOf("query" to what, "kind" to "document"))
+        }
+        // "open the presentation stored in Drive"
+        DRIVE_OPEN_REGEX.find(text)?.let { m ->
+            val noun = m.groupValues[1].lowercase()
+            val kind = when {
+                noun.startsWith("presentation") || noun.startsWith("slide") || noun == "deck" -> "presentation"
+                noun.startsWith("spreadsheet") || noun == "sheet" || noun == "excel" -> "spreadsheet"
+                noun == "pdf" -> "pdf"
+                else -> "document"
+            }
+            return shortcut(DeviceCommand.DOC_PICK, mapOf("kind" to kind))
+        }
+        // "search my device for python files"
+        CODE_FILE_REGEX.find(text)?.let { m ->
+            val ext = when (m.groupValues[1].lowercase()) {
+                "python" -> "py"
+                "java" -> "java"
+                "kotlin" -> "kt"
+                "javascript" -> "js"
+                "typescript" -> "ts"
+                "c++" -> "cpp"
+                "c" -> "c"
+                "go" -> "go"
+                "rust" -> "rs"
+                "markdown" -> "md"
+                "text" -> "txt"
+                "csv" -> "csv"
+                else -> m.groupValues[1].lowercase()
+            }
+            return shortcut(DeviceCommand.FILE_FIND, mapOf("extension" to ext))
+        }
 
         FIND_FILE_REGEX.find(text)?.let { m ->
             val kind = kindOf(m.groupValues[1])

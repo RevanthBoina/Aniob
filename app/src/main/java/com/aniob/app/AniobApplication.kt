@@ -43,7 +43,35 @@ class AniobApplication : Application(), ComponentCallbacks2 {
         com.aniob.app.workflow.PlatformTools(this)
     }
     val workflowActionHost: com.aniob.app.workflow.WorkflowActionHost by lazy {
-        com.aniob.app.workflow.WorkflowActionHost(platformTools)
+        com.aniob.app.workflow.WorkflowActionHost(platformTools).also { host ->
+            host.onAudit = { line ->
+                runCatching { eventLogger.info("WorkflowActionHost", line) }
+            }
+        }
+    }
+
+    /**
+     * The single authority that executes device actions (app launches, system intents, device
+     * commands). Holds the execution lock, dedupes near-simultaneous identical dispatches and keeps
+     * a bounded ledger so retries and audits are possible. Lazily created; [eventLogger] is already
+     * initialized in onCreate before any lazy is first touched.
+     */
+    val deviceActionGateway: com.aniob.core.execution.DeviceActionGateway by lazy {
+        com.aniob.core.execution.DeviceActionGateway(
+            logSink = { entry ->
+                val line = buildString {
+                    append("executionId=").append(entry.executionId)
+                    entry.taskId?.let { append(" taskId=").append(it) }
+                    append(" origin=").append(entry.originAgent)
+                    append(" action=").append(entry.requestedAction)
+                    append(" signature=").append(entry.signature)
+                    entry.resolvedApplication?.let { append(" resolvedApp=").append(it) }
+                    append(" state=").append(entry.state)
+                    append(" detail=").append(entry.detail.take(200))
+                }
+                runCatching { eventLogger.info("DeviceActionGateway", line) }
+            }
+        )
     }
     val incomingContentReader: com.aniob.app.workflow.IncomingContentReader by lazy {
         com.aniob.app.workflow.IncomingContentReader(this)

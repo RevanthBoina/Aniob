@@ -37,7 +37,7 @@ object AniobActionSchema {
   "distance_px": 600,
   "package_name": "for OPEN_APP",
   "key": "BACK|HOME|ENTER|RECENTS for SYSTEM_KEY",
-  "command": "for DEVICE_CONTROL, e.g. volume_set, torch_on, media_next, call, otp_copy, file_find",
+  "command": "for DEVICE_CONTROL, e.g. volume_set, torch_on, media_next, call, otp_copy, file_find, file_read, installed_apps",
   "args": {"name": "value for DEVICE_CONTROL"},
   "duration_ms": 1000,
   "summary": "for FINISH",

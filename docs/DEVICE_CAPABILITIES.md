@@ -37,6 +37,9 @@ forces the rest (the `when`s in `DeviceNarration` and `AniobDeviceControl` are e
    OTP vault); `notification_list/dismiss/reply/action`, `otp_status/copy/paste`; `AniobClipboardWatcher`
    + `clipboard_get/set/paste`.
 3. **Local data**: `AniobFileQuery` over `MediaStore.Files` (`file_find`, `file_open`), `storage_info`.
+4. **Documents**: `file_read` (text/Office/PDF text extraction, best-effort, honest about limits),
+   `file_shared` (files that arrived in Aniob), `doc_pick` (system picker → Google Drive & co.),
+   `installed_apps` / `GET_INSTALLED_APPS` (launchable apps). See `DEVICE_INTEGRATION_AND_EXECUTION.md`.
 
 ## Rules that keep it safe
 

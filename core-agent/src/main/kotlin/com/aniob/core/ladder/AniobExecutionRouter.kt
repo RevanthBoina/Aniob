@@ -152,7 +152,9 @@ class AniobExecutionRouter(
         isModelFileMissing: Boolean = false,
         previousProgress: TaskProgress? = null,
         userRoutingMode: String = "auto",
-        lastObservedResult: String? = null
+        lastObservedResult: String? = null,
+        /** Per-task provider lock; see [AniobAutoRouter.decideRoute]. */
+        taskStickyTarget: RouteTarget? = null
     ): ExecutionPlanResult {
         // ----------------------------------------------------------------------------------- //
         // Step 0 / app switch: opening an app is a LOOKUP, never a model call.
@@ -359,7 +361,8 @@ class AniobExecutionRouter(
             installedModelId = installedModelId,
             lastLocalFailCount = lastLocalFailCount,
             isModelFileMissing = isModelFileMissing,
-            userRoutingMode = userRoutingMode
+            userRoutingMode = userRoutingMode,
+            taskStickyTarget = taskStickyTarget
         )
 
         if (decision.target == RouteTarget.CANNOT_PROCEED) {

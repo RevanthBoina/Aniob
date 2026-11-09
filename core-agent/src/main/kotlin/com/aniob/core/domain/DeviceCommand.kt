@@ -166,12 +166,33 @@ enum class DeviceCommand(
     // ---- Files & storage ---------------------------------------------------------------------
     FILE_FIND(
         "file_find", DeviceCommandGroup.FILES,
-        "query MediaStore: kind=pdf|image|screenshot|download|audio|video|document",
-        optional = listOf("query", "kind", "within_hours", "older_than_days", "limit")
+        "query MediaStore: kind=pdf|image|screenshot|download|audio|video|document; extension=py|xlsx|... for file type",
+        optional = listOf("query", "kind", "within_hours", "older_than_days", "limit", "extension")
     ),
     FILE_OPEN(
         "file_open", DeviceCommandGroup.FILES, "open the newest match (or a uri) in its viewer",
         optional = listOf("query", "kind", "uri", "within_hours"), completesOnDispatch = false
+    ),
+    FILE_READ(
+        "file_read", DeviceCommandGroup.FILES,
+        "read the text of a file found by query/uri or picked from a cloud provider (Drive etc); " +
+            "pdf/docx/pptx/xlsx are extracted best-effort (pdf reports limits honestly)",
+        optional = listOf("query", "kind", "uri", "within_hours", "limit"), completesOnDispatch = false
+    ),
+    FILE_SHARED(
+        "file_shared", DeviceCommandGroup.FILES,
+        "list files received into or picked by Aniob (shared via WhatsApp, Drive picker, share sheet)",
+        optional = listOf("limit", "query")
+    ),
+    DOC_PICK(
+        "doc_pick", DeviceCommandGroup.FILES,
+        "open the system document picker for cloud/local files (Kind: pdf|document|presentation|spreadsheet|image|any)",
+        optional = listOf("kind", "mime"), completesOnDispatch = false
+    ),
+    INSTALLED_APPS(
+        "installed_apps", DeviceCommandGroup.HARDWARE,
+        "list launchable apps installed on the device (name and package)",
+        optional = listOf("limit", "query")
     ),
     STORAGE_INFO("storage_info", DeviceCommandGroup.FILES, "free and total storage"),
 
@@ -256,6 +277,11 @@ enum class DeviceCommand(
             "copy_otp" to "otp_copy", "paste_otp" to "otp_paste", "get_clipboard" to "clipboard_get",
             "set_clipboard" to "clipboard_set", "paste" to "clipboard_paste",
             "find_file" to "file_find", "open_file" to "file_open", "storage" to "storage_info",
+            "read_file" to "file_read", "summarize_file" to "file_read", "file_summary" to "file_read",
+            "list_shared_files" to "file_shared", "shared_files" to "file_shared", "received_files" to "file_shared",
+            "pick_file" to "doc_pick", "choose_file" to "doc_pick", "pick_document" to "doc_pick",
+            "choose_document" to "doc_pick", "file_picker" to "doc_pick",
+            "list_apps" to "installed_apps", "apps_installed" to "installed_apps", "apps" to "installed_apps",
             "phone_call" to "call", "dial" to "call", "reply_notification" to "notification_reply",
             "dismiss_notification" to "notification_dismiss", "read_notifications" to "notification_list",
             "dnd" to "dnd_on", "do_not_disturb" to "dnd_on", "hotspot" to "open_hotspot_settings"

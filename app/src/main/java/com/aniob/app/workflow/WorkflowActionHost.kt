@@ -14,8 +14,19 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class WorkflowActionHost(private val platformTools: PlatformTools) {
 
+    /**
+     * Optional one-line audit sink for launch decisions (claim/accept/fail). Set once by
+     * [com.aniob.app.AniobApplication]; purely diagnostic, never changes claim semantics.
+     */
+    @Volatile
+    var onAudit: ((String) -> Unit)? = null
+
     private var attachedActivity: Activity? = null
     private val claimedActionIds = ConcurrentHashMap.newKeySet<String>()
+
+    private fun audit(line: String) {
+        runCatching { onAudit?.invoke(line) }
+    }
 
     fun attach(activity: Activity) {
         attachedActivity = activity
@@ -42,6 +53,7 @@ class WorkflowActionHost(private val platformTools: PlatformTools) {
 
         // Exactly-once guarantee across recomposition
         if (!claimedActionIds.add(actionId)) {
+            audit("claim-rejected actionId=$actionId (already dispatched)")
             return false
         }
 
@@ -68,11 +80,14 @@ class WorkflowActionHost(private val platformTools: PlatformTools) {
                     onReceipt(WorkflowResult.LaunchAccepted(receiptId = "share_${actionId}"))
                 }
             }
+            audit("accepted actionId=$actionId")
             return true
         } catch (e: ActivityNotFoundException) {
+            audit("failed actionId=$actionId reason=activity-not-found")
             onReceipt(WorkflowResult.Failed("No compatible application or browser found to handle this action."))
             return false
         } catch (e: Exception) {
+            audit("failed actionId=$actionId reason=${e.javaClass.simpleName}")
             onReceipt(WorkflowResult.Failed("Launch failed: ${e.message}"))
             return false
         }
