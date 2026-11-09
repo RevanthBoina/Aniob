@@ -91,8 +91,8 @@ object AniobDocumentAccess {
         // Share-sheet grants are not persistable: Android only gives the picker a stable grant.
         // Copy the bytes into the app's private dir so the file stays readable after the
         // sending app dies, then record the private copy.
-        val copied = if (source == "share") copyToSharedDir(appContext, uri, nameBeforeCopy) else null
-        val effectiveUri: Uri = copied ?: uri
+        val copied: java.io.File? = if (source == "share") copyToSharedDir(appContext, uri, nameBeforeCopy) else null
+        val effectiveUri: Uri = copied?.let { Uri.fromFile(it) } ?: uri
         if (copied == null && takePersistable && source != "share") {
             runCatching {
                 appContext.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
