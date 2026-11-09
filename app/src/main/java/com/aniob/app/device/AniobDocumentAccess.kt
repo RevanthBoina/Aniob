@@ -344,7 +344,9 @@ object AniobDocumentAccess {
         // Resolve to a local file first; nothing below buffers the payload into the heap.
         val source = openSource(appContext, uri, display)
         if (source is ReadSource.Error) return ReadResult.Failed(source.message)
-        val file = source.file
+        // Sealed type: Kotlin does not negative-narrow after the is-check, so cast explicitly.
+        val ready = source as ReadSource.Ready
+        val file = ready.file
         try {
             val isTextLike = mime.startsWith("text/") || ext in TEXT_EXTENSIONS ||
                 ext == "json" || mime == "application/json"
@@ -382,7 +384,7 @@ object AniobDocumentAccess {
                 truncated = truncated
             )
         } finally {
-            if (source.deleteAfter) runCatching { file.delete() }
+            if (ready.deleteAfter) runCatching { file.delete() }
         }
     }
 
