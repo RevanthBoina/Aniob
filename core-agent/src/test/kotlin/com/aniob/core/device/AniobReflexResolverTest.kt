@@ -149,3 +149,47 @@ class AniobReflexResolverTest {
         assertFalse(AniobIntentResolver.resolve("add meeting 'Sprint Planning' to calendar")!!.completesOnDispatch)
     }
 }
+
+/** Requirement-2/4 phrases: find/read/open documents across local storage and cloud pickers. */
+class AniobSmartFileReflexTest {
+
+    private fun reflex(prompt: String) = AniobIntentResolver.resolve(prompt)?.let {
+        AniobReflexResolver.commandOf(it)?.let { cmd -> cmd to AniobReflexResolver.argsOf(it) }
+    }
+
+    @Test
+    fun openLatestPdfFromDownloads() {
+        val (cmd, args) = reflex("open my latest pdf from downloads")!!
+        assertEquals(DeviceCommand.FILE_OPEN, cmd)
+        assertEquals("pdf", args["kind"])
+    }
+
+    @Test
+    fun resumeReceivedOnWhatsAppReadsTheFile() {
+        val (cmd, args) = reflex("find the resume received on whatsapp")!!
+        assertEquals(DeviceCommand.FILE_READ, cmd)
+        assertEquals("resume", args["query"])
+    }
+
+    @Test
+    fun presentationStoredInDriveOpensPicker() {
+        val (cmd, args) = reflex("open the presentation stored in drive")!!
+        assertEquals(DeviceCommand.DOC_PICK, cmd)
+        assertEquals("presentation", args["kind"])
+    }
+
+    @Test
+    fun pythonFilesOnDeviceFoundByExtension() {
+        val (cmd, args) = reflex("search my device for python files")!!
+        assertEquals(DeviceCommand.FILE_FIND, cmd)
+        assertEquals("py", args["extension"])
+    }
+
+    @Test
+    fun summarizeOnDevicePdfStaysWithModel() {
+        // No reflex claims summarize; the model needs the file contents first (FILE_READ).
+        // The reflex layer must not hijack it into an unrelated action.
+        val resolved = reflex("summarize that pdf")
+        assertTrue(resolved == null || resolved.first == DeviceCommand.FILE_READ)
+    }
+}

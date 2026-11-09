@@ -1234,19 +1234,36 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         when (command.name) {
             "OPEN_APP" -> {
                 val packageName = command.argument.orEmpty()
-                val intent = buildOpenAppIntent(
-                    packageName = packageName,
-                    activityClass = command.component
-                        ?: com.aniob.core.knowledge.AniobAppRegistry.getInstance()
-                            .byPackage(packageName)?.launchActivity
-                            ?.substringAfter('/', "")
-                )
+                val activityClass = command.component
+                    ?: com.aniob.core.knowledge.AniobAppRegistry.getInstance()
+                        .byPackage(packageName)?.launchActivity
+                        ?.substringAfter('/', "")
+                val intent = buildOpenAppIntent(packageName = packageName, activityClass = activityClass)
                 if (intent != null) {
-                    startActivity(intent)
-                    // Ranking only: a package the user launches often wins a tie between two
-                    // equally plausible names. It never overrides an exact match.
-                    com.aniob.core.knowledge.AniobAppRegistry.getInstance().noteLaunch(packageName)
-                    callback(true)
+                    // The single execution authority decides whether this dispatch actually happens:
+                    // identical requests fired within the duplicate window are dropped, and the
+                    // launch is recorded against whoever asked for it.
+                    val gateway = (application as? com.aniob.app.AniobApplication)?.deviceActionGateway
+                    if (gateway == null) {
+                        startActivity(intent)
+                        com.aniob.core.knowledge.AniobAppRegistry.getInstance().noteLaunch(packageName)
+                        callback(true)
+                    } else {
+                        val outcome = gateway.execute(
+                            taskId = null,
+                            originAgent = "ACCESSIBILITY",
+                            signature = com.aniob.core.execution.DeviceActionGateway.openAppSignature(packageName, activityClass),
+                            requestedAction = "open_app",
+                            resolvedApplication = packageName
+                        ) {
+                            startActivity(intent)
+                            com.aniob.core.execution.DeviceActionGateway.DispatchResult(true, "launched $packageName")
+                        }
+                        if (outcome.ok) {
+                            com.aniob.core.knowledge.AniobAppRegistry.getInstance().noteLaunch(packageName)
+                        }
+                        callback(outcome.ok)
+                    }
                 } else {
                     callback(false)
                 }
@@ -1309,7 +1326,8 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                     callback(false)
                 }
             }
-            "GET_SCREEN_INFO", "GET_DEVICE_INFO", "GET_INSTALLED_APPS" -> {
+            "GET_INSTALLED_APPS" -> runDeviceCommand(DeviceCommand.INSTALLED_APPS, emptyMap(), callback)
+            "GET_SCREEN_INFO", "GET_DEVICE_INFO" -> {
                 Log.w(TAG, "Unsupported utility action: ${command.name}")
                 callback(false)
             }
@@ -1325,9 +1343,30 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      */
     private fun runDeviceCommand(command: DeviceCommand, args: Map<String, String>, callback: (Boolean) -> Unit) {
         val work = {
-            val result = com.aniob.app.device.AniobDeviceControl.execute(this, command, args, this)
-            lastDeviceResult = result
-            callback(result.ok)
+            val fingerprint = args.toSortedMap().entries.joinToString(",") { "${it.key}=${it.value}" }
+            var captured: com.aniob.app.device.DeviceControlResult? = null
+            val gateway = (application as? com.aniob.app.AniobApplication)?.deviceActionGateway
+            val executed = if (gateway != null) {
+                val outcome = gateway.execute(
+                    taskId = null,
+                    originAgent = "ACCESSIBILITY:DEVICE_COMMAND",
+                    signature = com.aniob.core.execution.DeviceActionGateway.deviceCommandSignature(command.wire, fingerprint),
+                    requestedAction = command.wire
+                ) {
+                    val result = com.aniob.app.device.AniobDeviceControl.execute(this, command, args, this)
+                    captured = result
+                    com.aniob.core.execution.DeviceActionGateway.DispatchResult(result.ok, result.message.take(300))
+                }
+                captured ?: com.aniob.app.device.DeviceControlResult(
+                    ok = outcome.ok,
+                    message = if (outcome.deduplicated) "That action was already dispatched moments ago." else outcome.record.detail,
+                    informational = true
+                )
+            } else {
+                com.aniob.app.device.AniobDeviceControl.execute(this, command, args, this)
+            }
+            lastDeviceResult = executed
+            callback(executed.ok)
         }
         if (command.needsAccessibility) mainHandler.post(work) else serviceScope.launch { work() }
     }

@@ -135,7 +135,7 @@ object AniobCapabilityManifest {
             notes += "Contacts permission is not granted: call/messages need a phone number, not a name."
         }
         if (!state.allFilesAccess) {
-            notes += "file_find sees photos, video and audio only; for PDFs/downloads use the Files app on screen if it finds nothing."
+            notes += "file_find: without All-files access only photos/video/audio are visible (extension= filters local names when visible); file_read extracts text from text/Office/pdf on a best-effort basis and says so honestly when it cannot; files in Google Drive or WhatsApp folders need doc_pick (system picker)."
         }
         if (notes.isEmpty()) return@buildString
         if (!brief) appendLine("Live status:")

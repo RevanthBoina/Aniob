@@ -154,6 +154,10 @@ object AniobDeviceControl {
 
         DeviceCommand.FILE_FIND -> fileFind(context, args)
         DeviceCommand.FILE_OPEN -> fileOpen(context, args)
+        DeviceCommand.FILE_READ -> fileRead(context, args)
+        DeviceCommand.FILE_SHARED -> fileShared(context, args)
+        DeviceCommand.DOC_PICK -> docPick(context, args)
+        DeviceCommand.INSTALLED_APPS -> installedApps(context, args)
         DeviceCommand.STORAGE_INFO -> storageInfo()
 
         DeviceCommand.TIMER_SET -> timer(context, args)
@@ -291,7 +295,9 @@ object AniobDeviceControl {
             if (withPackage && pkg != null) setPackage(pkg)
             addFlags(NEW_TASK)
         }
-        val started = tryStart(context, intent(true)) || (pkg != null && tryStart(context, intent(false)))
+        // A pinned music app that cannot take the search intent fails honestly; we do not
+        // spray the same search at an arbitrary, unverified app.
+        val started = tryStart(context, intent(true))
         return if (started) {
             ok("Searching \"$query\" in ${pkg?.let { appLabel(context, it) } ?: "your music app"}. Check the screen to confirm it is playing.")
         } else {
@@ -877,7 +883,8 @@ object AniobDeviceControl {
         query = args["query"].orEmpty(),
         withinHours = args["within_hours"]?.toLongOrNull(),
         olderThanDays = args["older_than_days"]?.toLongOrNull(),
-        limit = limit
+        limit = limit,
+        extension = args["extension"].orEmpty()
     )
 
     private fun noFilesHint(context: Context, args: Map<String, String>): DeviceControlResult {
@@ -909,11 +916,101 @@ object AniobDeviceControl {
                 .firstOrNull() ?: return noFilesHint(context, args)
         } else null
         val uri = explicit ?: hit!!.uri
-        val mime = hit?.mimeType ?: context.contentResolver.getType(uri) ?: "*/*"
-        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+        val mime = hit?.mimeType ?: runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "*/*"
+        // file:// URIs (private copies of share-sheet arrivals) must be served via FileProvider.
+        val viewUri = AniobDocumentAccess.viewableUri(context, uri)
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(viewUri, mime)
             .addFlags(NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
         return if (tryStart(context, view)) ok("Opened ${hit?.name ?: "the file"}.")
         else fail("No app can open ${hit?.name ?: "that file"} ($mime).")
+    }
+
+    private fun fileRead(context: Context, args: Map<String, String>): DeviceControlResult {
+        val explicit = args["uri"]?.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+        val query = args["query"].orEmpty()
+        val hit = if (explicit == null) {
+            runCatching { AniobFileQuery.find(context, fileRequest(args, 1)) }.getOrNull()?.firstOrNull()
+        } else null
+        val target: Uri? = explicit ?: hit?.uri
+            ?: AniobDocumentAccess.findShared(context, query)?.uri?.let { Uri.parse(it) }
+        if (target == null) {
+            val hint = if (query.isBlank()) {
+                "Nothing to read yet. Find a file first (file_find) or share one to Aniob."
+            } else {
+                "No file matching \"$query\" in the file index or in files shared with Aniob. " +
+                    "Ask me to pick it with the document picker — it can browse Google Drive and WhatsApp folders."
+            }
+            return fail(hint)
+        }
+        val mime = hit?.mimeType ?: runCatching { context.contentResolver.getType(target) }.getOrNull()
+        return when (val r = AniobDocumentAccess.readText(context, target, mime)) {
+            is AniobDocumentAccess.ReadResult.Ok -> ok(
+                buildString {
+                    append("Contents of ${r.name}")
+                    if (r.truncated) append(" (first ${AniobDocumentAccess.MAX_TEXT_CHARS} characters)")
+                    append(":\n")
+                    append(r.text)
+                },
+                informational = true
+            )
+            is AniobDocumentAccess.ReadResult.Unsupported -> fail(r.message)
+            is AniobDocumentAccess.ReadResult.Failed -> fail(r.message)
+        }
+    }
+
+    private fun fileShared(context: Context, args: Map<String, String>): DeviceControlResult {
+        val limit = args["limit"]?.toIntOrNull()?.coerceIn(1, AniobDocumentAccess.MAX_SHARED_RECORDS) ?: 10
+        val q = args["query"].orEmpty().trim().lowercase()
+        val all = AniobDocumentAccess.listShared(context, AniobDocumentAccess.MAX_SHARED_RECORDS)
+            .filter { q.isEmpty() || it.name.lowercase().contains(q) }
+        if (all.isEmpty()) {
+            return ok(
+                "No files shared with Aniob yet. Share one to Aniob, or ask me to pick a document.",
+                informational = true
+            )
+        }
+        val lines = all.take(limit).map { "${it.name} (${it.source}, ${AniobFileQuery.humanSize(it.sizeBytes)}) ${it.uri}" }
+        return ok("${lines.size} shared:\n" + lines.joinToString("\n"), informational = true)
+    }
+
+    private fun docPick(context: Context, args: Map<String, String>): DeviceControlResult {
+        val kind = args["kind"].orEmpty().ifBlank { args["mime"].orEmpty().ifBlank { "any" } }
+        val intent = Intent(context, com.aniob.app.workflow.AniobDocumentPickerActivity::class.java).apply {
+            addFlags(NEW_TASK)
+            putExtra(com.aniob.app.workflow.AniobDocumentPickerActivity.EXTRA_KIND, kind)
+        }
+        return if (tryStart(context, intent)) {
+            ok("Opening the document picker — choose the file you want me to use.", informational = true)
+        } else {
+            fail("Could not open the document picker.")
+        }
+    }
+
+    private fun installedApps(context: Context, args: Map<String, String>): DeviceControlResult {
+        val limit = args["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 40
+        val q = args["query"].orEmpty().trim().lowercase()
+        // Android 11+ package visibility: getInstalledApplications(0) under-reports launchable
+        // apps unless we hold broad package-query permissions. queryIntentActivities over the
+        // MAIN/LAUNCHER intents matches exactly the <queries> entry in the manifest, so it sees
+        // every launchable app without extra permission.
+        val pm = context.packageManager
+        val mainIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        @Suppress("DEPRECATION")
+        val resolves = pm.queryIntentActivities(mainIntent, 0)
+        val launchable = resolves.mapNotNull { resolve ->
+            val info = resolve.activityInfo?.applicationInfo ?: return@mapNotNull null
+            val label = runCatching { pm.getApplicationLabel(info).toString() }.getOrDefault(info.packageName)
+            label to info.packageName
+        }.distinctBy { it.second }.sortedBy { it.first.lowercase() }
+        val filtered = if (q.isEmpty()) launchable
+            else launchable.filter { (label, pkg) -> label.lowercase().contains(q) || pkg.lowercase().contains(q) }
+        if (filtered.isEmpty()) {
+            val msg = if (q.isEmpty()) "No launchable apps found." else "No installed app matches \"$q\"."
+            return ok(msg, informational = true)
+        }
+        val lines = filtered.take(limit).map { (label, pkg) -> "$label ($pkg)" }
+        val more = if (filtered.size > lines.size) "\n… and ${filtered.size - lines.size} more (raise limit to see them)." else ""
+        return ok("${filtered.size} launchable apps:\n" + lines.joinToString("\n") + more, informational = true)
     }
 
     private fun storageInfo(): DeviceControlResult {

@@ -196,3 +196,88 @@ class AniobAutoRouterTest {
         assertEquals(RouteTarget.CANNOT_PROCEED, decision.target)
     }
 }
+
+class AniobStickyRoutingTest {
+
+    private val power = DevicePowerState(batteryPercent = 90, isCharging = false, isNetworkAvailable = true)
+    private fun screen(nodes: Int) = AniobScreenState(
+        packageName = "com.test.app",
+        nodes = (1..nodes).map { id ->
+            AniobNode(id = id, className = "TextView", text = "row $id", contentDescription = "", isClickable = true, bounds = AniobRect(0, id * 40, 400, id * 40 + 38))
+        }
+    )
+
+    @Test
+    fun stickyLocalWinsOverDenseScreenHeuristic() {
+        // 50 text nodes: normally balanced mode would escalate to cloud; the sticky lock keeps local.
+        val decision = AniobAutoRouter.decideRoute(
+            "do the task", screen(50), power,
+            userRoutingMode = "balanced",
+            taskStickyTarget = RouteTarget.LOCAL_SLM
+        )
+        assertEquals(RouteTarget.LOCAL_SLM, decision.target)
+        assertTrue(decision.reason.contains("Sticky local", ignoreCase = true))
+    }
+
+    @Test
+    fun stickyCloudWinsOverSimpleScreenHeuristic() {
+        val decision = AniobAutoRouter.decideRoute(
+            "do the task", screen(10), power,
+            taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
+        )
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+        assertTrue(decision.reason.contains("Sticky cloud", ignoreCase = true))
+    }
+
+    @Test
+    fun stickyLocalNeedsModel() {
+        // Missing local model beats the sticky lock: we cannot run local without a model.
+        val decision = AniobAutoRouter.decideRoute(
+            "do the task", screen(10), power,
+            isModelFileMissing = true,
+            taskStickyTarget = RouteTarget.LOCAL_SLM
+        )
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+    }
+
+    @Test
+    fun stickyLocalYieldsToVisionScreen() {
+        // >=5 unlabelled clickable nodes on a vision-worded prompt: cloud vision wins, sticky does not pin local.
+        val nodes = (1..6).map { id ->
+            AniobNode(id = id, className = "ImageView", text = "", contentDescription = "", isClickable = true, bounds = AniobRect(id * 50, 0, id * 50 + 40, 100))
+        }
+        val visionScreen = AniobScreenState(packageName = "com.test.app", nodes = nodes)
+        val decision = AniobAutoRouter.decideRoute(
+            "look at the picture and tap", visionScreen, power,
+            taskStickyTarget = RouteTarget.LOCAL_SLM
+        )
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+        assertTrue(decision.requiresVision)
+    }
+
+    @Test
+    fun stickyUnlockedInStrictModes() {
+        // local-only still forbids cloud; cloud-only still forbids local; both win over sticky.
+        val localOnly = AniobAutoRouter.decideRoute(
+            "do the task", screen(10), power, userRoutingMode = "local-only",
+            installedModelId = "m", taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
+        )
+        assertEquals(RouteTarget.LOCAL_SLM, localOnly.target)
+        val cloudOnly = AniobAutoRouter.decideRoute(
+            "do the task", screen(10), power, userRoutingMode = "cloud-only",
+            taskStickyTarget = RouteTarget.LOCAL_SLM
+        )
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, cloudOnly.target)
+    }
+
+    @Test
+    fun stickyLocalYieldsToOfflineModelMissing() {
+        val offline = DevicePowerState(batteryPercent = 90, isNetworkAvailable = false)
+        val decision = AniobAutoRouter.decideRoute(
+            "do the task", screen(10), offline,
+            isModelFileMissing = true,
+            taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
+        )
+        assertEquals(RouteTarget.CANNOT_PROCEED, decision.target)
+    }
+}

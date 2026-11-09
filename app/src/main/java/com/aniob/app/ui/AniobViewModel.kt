@@ -304,6 +304,8 @@ class AniobViewModel(
     private val appSessionManager = AniobAppSessionManager()
     private val executionTracker = AniobExecutionTracker()
     private var localFailCount = 0
+    /** Per-task provider lock: once local or cloud has really worked for this task, stay there. */
+    private var taskStickyTarget: RouteTarget? = null
 
     // Tracker zero-capture guarantee: opening the sheet is a pure view over recorded state.
     private var trackerOpenCount = 0
@@ -527,6 +529,7 @@ class AniobViewModel(
         val researchSummaryRow = lastResearchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
         val savedQueued = prefs.getString("queued_prompt", null)
         localFailCount = 0 // Retry diagnostics are execution-scoped and never restored from disk.
+        taskStickyTarget = null
         disabledSkills = (prefs.getStringSet("disabled_skills", emptySet()) ?: emptySet()).toMutableSet()
         executionRouter.setDisabledSkills(disabledSkills)
         // Zero-LLM replay: the ladder asks this callback before any model rung. The cache object
@@ -1780,6 +1783,23 @@ class AniobViewModel(
     }
 
     fun handleIncomingShare(shared: com.aniob.app.workflow.ParsedIncomingContent) {
+        // Documents arrive as content URIs (pdf, docx, pptx, images…). Register each so later
+        // steps can find and read it: the bytes are copied into private storage because
+        // share-sheet grants are not persistable across process death.
+        if (shared.uris.isNotEmpty()) {
+            shared.uris.forEach { uri ->
+                runCatching {
+                    com.aniob.app.device.AniobDocumentAccess.register(app, uri, shared.mimeType, source = "share")
+                }.onFailure {
+                    app.eventLogger.warn("AniobViewModel", "Could not record shared file $uri: ${it.message}")
+                }
+            }
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Received ${shared.uris.size} file(s). Ask me to open, read or summarize them."
+                )
+            }
+        }
         val text = shared.text
         if (!text.isNullOrBlank()) {
             val bytes = text.toByteArray(Charsets.UTF_8)
@@ -2040,6 +2060,7 @@ class AniobViewModel(
         terminationStage.reset()
         pauseRequested = false
         localFailCount = 0
+        taskStickyTarget = null
         verifiedActions.clear()
 
         val userMessage = ChatMessage(
@@ -2914,7 +2935,8 @@ class AniobViewModel(
                         isModelFileMissing = isModelFileMissing,
                         previousProgress = taskProgress,
                         userRoutingMode = userRouting,
-                        lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null
+                        lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null,
+                        taskStickyTarget = taskStickyTarget
                     )
                 }
                 var ladderResult = planLadder()
@@ -3149,6 +3171,13 @@ class AniobViewModel(
                             RouteTarget.LOCAL_SLM -> "LOCAL_SLM"
                             else -> "NONE"
                         }
+                        // Lock the task onto the provider that is about to do the work, so the next
+                        // step does not bounce back to the other one. The lock only shapes routing
+                        // between the two model providers and never overrides strict policy or device
+                        // constraints (enforced inside decideRoute).
+                        if (decision.target == RouteTarget.LOCAL_SLM || decision.target == RouteTarget.OMNIROUTE_CLOUD) {
+                            taskStickyTarget = decision.target
+                        }
                         decisionReason = decision.reason
                         _uiState.update {
                             it.copy(
@@ -3282,6 +3311,7 @@ class AniobViewModel(
                                 )
                             }
                             primaryProvider = "LOCAL_SLM"
+                            taskStickyTarget = RouteTarget.LOCAL_SLM
                             decisionReason = "Downgraded to the on-device model after a cloud failure (${kind.name})"
                             _uiState.update {
                                 it.copy(
@@ -3456,6 +3486,7 @@ class AniobViewModel(
                             }
                         } else if (decision.target == RouteTarget.LOCAL_SLM && canEscalateToCloud) {
                             primaryProvider = "OMNIROUTE_CLOUD"
+                            taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
                             escalations++
                             decisionReason = "Escalated to OmniRoute Cloud (${localCaps?.reason ?: "local model not loaded"})"
                             _uiState.update {
@@ -4521,7 +4552,23 @@ class AniobViewModel(
     /** Runs one direct device command on the thread it needs (accessibility calls: main; queries: IO). */
     private suspend fun runDeviceCommand(command: DeviceCommand, args: Map<String, String>): DeviceControlResult =
         withContext(if (command.needsAccessibility) Dispatchers.Main else Dispatchers.IO) {
-            AniobDeviceControl.execute(app, command, args, AniobAccessibilityService.instance)
+            val fingerprint = args.toSortedMap().entries.joinToString(",") { "${it.key}=${it.value}" }
+            var captured: DeviceControlResult? = null
+            val outcome = app.deviceActionGateway.execute(
+                taskId = _uiState.value.activeTask?.id,
+                originAgent = "DEVICE_COMMAND:${_uiState.value.lastProviderUsed.ifBlank { "UNKNOWN" }}",
+                signature = com.aniob.core.execution.DeviceActionGateway.deviceCommandSignature(command.wire, fingerprint),
+                requestedAction = command.wire
+            ) {
+                val result = AniobDeviceControl.execute(app, command, args, AniobAccessibilityService.instance)
+                captured = result
+                com.aniob.core.execution.DeviceActionGateway.DispatchResult(result.ok, result.message.take(300))
+            }
+            captured ?: DeviceControlResult(
+                ok = outcome.ok,
+                message = if (outcome.deduplicated) "That action was already dispatched moments ago." else outcome.record.detail,
+                informational = true
+            )
         }
 
     /**
@@ -4638,31 +4685,60 @@ class AniobViewModel(
                         shortcut.dataType?.let { type = it }
                         shortcut.extras.forEach { (key, value) -> putShortcutExtra(this, key, value) }
                     }
-                    // "open linkedin in chrome": the browser is a preference. Try it pinned first; if it
-                    // cannot take the URL (not installed, disabled) the system default still can.
-                    val preferred = shortcut.preferredPackage
-                    if (preferred != null && shortcut.uriString != null) {
-                        if (startActivitySafely(launchCtx, Intent(intent).setPackage(preferred))) return true
-                        app.eventLogger.info(
-                            "AniobViewModel",
-                            "$preferred could not open the URL; using the system default browser"
+                    // One execution authority for the whole dispatch: near-simultaneous identical
+                    // requests are suppressed, and which agent fired which action is on record.
+                    val outcome = app.deviceActionGateway.execute(
+                        taskId = _uiState.value.activeTask?.id,
+                        originAgent = "VIEWMODEL:${_uiState.value.lastProviderUsed.ifBlank { "UNKNOWN" }}",
+                        signature = com.aniob.core.execution.DeviceActionGateway.systemIntentSignature(
+                            shortcut.action, shortcut.uriString, shortcut.targetPackage
+                        ),
+                        requestedAction = shortcut.action,
+                        resolvedApplication = shortcut.targetPackage
+                    ) {
+                        var launched = false
+                        var how = ""
+                        // "open linkedin in chrome": the browser is a preference. Try it pinned first; if it
+                        // cannot take the URL (not installed, disabled) the system default still can.
+                        val preferred = shortcut.preferredPackage
+                        if (preferred != null && shortcut.uriString != null) {
+                            if (startActivitySafely(launchCtx, Intent(intent).setPackage(preferred))) {
+                                launched = true; how = "preferred $preferred"
+                            } else {
+                                app.eventLogger.info(
+                                    "AniobViewModel",
+                                    "$preferred could not open the URL; using the system default browser"
+                                )
+                            }
+                        }
+                        if (!launched && startActivitySafely(launchCtx, intent)) {
+                            launched = true; how = "default handler"
+                        }
+                        // Play Store missing/disabled: open the web storefront so the install task
+                        // still lands on a terminal page instead of failing silently (BUG-05).
+                        if (!launched) {
+                            shortcut.extras[AniobIntentResolver.EXTRA_INSTALL_PACKAGE]?.let { installPkg ->
+                                val web = Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://play.google.com/store/apps/details?id=$installPkg")
+                                ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                                if (startActivitySafely(launchCtx, web)) { launched = true; how = "web storefront" }
+                            }
+                        }
+                        // Some launchers only resolve with the package's own launch intent.
+                        if (!launched) {
+                            val pkg = shortcut.targetPackage
+                            val relaunch = pkg?.let { app.packageManager.getLaunchIntentForPackage(it) }
+                            if (relaunch != null) {
+                                relaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                if (startActivitySafely(launchCtx, relaunch)) { launched = true; how = "package launch intent" }
+                            }
+                        }
+                        com.aniob.core.execution.DeviceActionGateway.DispatchResult(
+                            launched, how.ifBlank { "no handler could take the action" }
                         )
                     }
-                    if (startActivitySafely(launchCtx, intent)) return true
-                    // Play Store missing/disabled: open the web storefront so the install task
-                    // still lands on a terminal page instead of failing silently (BUG-05).
-                    shortcut.extras[AniobIntentResolver.EXTRA_INSTALL_PACKAGE]?.let { installPkg ->
-                        val web = Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse("https://play.google.com/store/apps/details?id=$installPkg")
-                        ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
-                        if (startActivitySafely(launchCtx, web)) return true
-                    }
-                    // Some launchers only resolve with the package's own launch intent.
-                    val pkg = shortcut.targetPackage ?: return false
-                    val relaunch = app.packageManager.getLaunchIntentForPackage(pkg) ?: return false
-                    relaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivitySafely(launchCtx, relaunch)
+                    outcome.ok
                 }
             }
         } catch (e: Exception) {

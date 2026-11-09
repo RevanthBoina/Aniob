@@ -51,7 +51,15 @@ object AniobAutoRouter {
         lastLocalFailCount: Int = 0,
         modelsDir: File? = null,
         isModelFileMissing: Boolean = false,
-        userRoutingMode: String = "auto"
+        userRoutingMode: String = "auto",
+        /**
+         * Per-task provider lock set by the caller once real work has run for the task.
+         * Honored only in auto/local-first/balanced, only between [RouteTarget.LOCAL_SLM] and
+         * [RouteTarget.OMNIROUTE_CLOUD], and never against strict policy, offline, battery,
+         * thermal, missing-model or vision constraints. Kills local<->cloud ping-pong when both
+         * per-step heuristics disagree even though one provider is making real progress.
+         */
+        taskStickyTarget: RouteTarget? = null
     ): RouteDecision {
         // 1. Intent Shortcut (0ms)
         if (isIntentShortcut) {
@@ -150,6 +158,34 @@ object AniobAutoRouter {
                 reason = "Local model file missing or not installed, using Omniroute",
                 requiresVision = false
             )
+        }
+
+        // 5b. Per-task provider lock (sticky). Applied only after strict policy, offline, battery,
+        // thermal and model-existence checks — those always win. Vision still wins too (checked next).
+        if (mode in setOf("auto", "local-first", "balanced") &&
+            (taskStickyTarget == RouteTarget.LOCAL_SLM || taskStickyTarget == RouteTarget.OMNIROUTE_CLOUD)
+        ) {
+            // Vision cannot be served by the local model: a stuck LOCAL lock must not pin a
+            // screen that genuinely needs cloud vision. The vision check below still runs for that.
+            val unlabelledPeek = screenState.nodes.count { it.isClickable && it.text.isBlank() && it.contentDescription.isBlank() }
+            val canvasPeek = screenState.nodes.any { it.className.contains("Canvas") || it.className.contains("SurfaceView") }
+            val taskNeedsVisionPeek = taskPrompt.contains("icon", true) || taskPrompt.contains("image", true) ||
+                taskPrompt.contains("canvas", true) || taskPrompt.contains("picture", true)
+            val stickyNeedsVision = (unlabelledPeek >= 5) || (unlabelledPeek >= 2 && taskNeedsVisionPeek) ||
+                (canvasPeek && taskNeedsVisionPeek)
+            if (taskStickyTarget == RouteTarget.OMNIROUTE_CLOUD || !stickyNeedsVision) {
+                val target = taskStickyTarget!!
+                return RouteDecision(
+                    target = target,
+                    reason = if (target == RouteTarget.LOCAL_SLM) {
+                        "Sticky local: task already progressing on-device -> stay local"
+                    } else {
+                        "Sticky cloud: task already escalated to cloud -> stay on cloud"
+                    },
+                    requiresVision = false,
+                    modelId = if (target == RouteTarget.LOCAL_SLM) installedModelId else null
+                )
+            }
         }
 
         // FIXED: Less aggressive vision - was (unlabelled>=2 && taskNeedsVision) || (unlabelled>=5 && taskNeedsVision) redundant

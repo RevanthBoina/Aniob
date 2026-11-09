@@ -30,7 +30,9 @@ object AniobFileQuery {
         val query: String = "",
         val withinHours: Long? = null,
         val olderThanDays: Long? = null,
-        val limit: Int = 5
+        val limit: Int = 5,
+        /** Bare extension without the dot, e.g. "py", "xlsx". Validated or ignored. */
+        val extension: String = ""
     )
 
     private val DOCUMENT_MIMES = listOf(
@@ -72,6 +74,12 @@ object AniobFileQuery {
                 where += "${MediaStore.Files.FileColumns.MIME_TYPE} IN (${DOCUMENT_MIMES.joinToString(",") { "?" }})"
                 args += DOCUMENT_MIMES
             }
+        }
+        // Extension filter: files whose display name ends with .<ext>. Only a bare, safe extension is honoured.
+        val ext = request.extension.trim().lowercase()
+        if (ext.matches(Regex("[a-z0-9]{1,10}"))) {
+            where += "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
+            args += "%.$ext"
         }
         if (request.query.isNotBlank()) {
             where += "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
