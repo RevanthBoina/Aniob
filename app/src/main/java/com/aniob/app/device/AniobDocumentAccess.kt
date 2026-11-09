@@ -8,7 +8,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.zip.Inflater
-import java.util.zip.ZipInputStream
 
 /**
  * One honest implementation of "find, read and summarize a document anywhere it lives".
@@ -18,22 +17,38 @@ import java.util.zip.ZipInputStream
  *  1. **Discovery** — MediaStore (file index) for local files, or the system document picker for
  *     cloud providers (a signed-in Google Drive, OneDrive, …) and folders MediaStore can't see
  *     (Android 11+ scoped storage hides `Android/media/com.whatsapp/...`).
- *  2. **Read** — text-like formats are read directly; Office Open XML files (`.docx/.pptx/.xlsx/
- *     .odt/...`) are ZIP containers whose XML parts carry the real text, so we unzip in memory and
- *     strip the markup; PDFs are inflated stream-by-stream with the JDK's [Inflater] and the text
- *     operators are harvested best-effort.
+ *  2. **Read** — everything is resolved to a local file first (a `file://` confined to the shared
+ *     store is read in place; a `content://` URI is *streamed* into a bounded cache temp file) and
+ *     then parsed incrementally. Nothing materialises the whole payload in the heap more than
+ *     once, and ZIP/PDF readers cap every intermediate buffer.
+ *     - text-like formats are streamed;
+ *     - Office Open XML (`.docx/.pptx/.xlsx`) and ODF are ZIP containers whose XML parts carry the
+ *       real text — we walk entries and keep text nodes;
+ *     - PDFs are scanned stream-by-stream with the JDK's [Inflater] and the text operators are
+ *       harvested best-effort; larger or richer PDFs are declined honestly instead of risking an
+ *       OOM.
  *  3. **Summarize / act** — the extracted text is handed back through the step history, so the
  *     local or cloud model can summarize it or act on it like any other observation.
  *
- * Every reader is capped (bytes in, characters out) and honest: when local extraction is not
- * possible — a scanned PDF, a legacy binary `.doc`, a DRM'd file — the result says so explicitly
- * instead of inventing content, and points at opening the file externally.
+ * Every reader is capped and honest: when local extraction is impossible — a scanned PDF, a legacy
+ * binary `.doc`, an oversized file — the result says so explicitly instead of inventing content.
  */
 object AniobDocumentAccess {
 
-    const val MAX_READ_BYTES = 8 * 1024 * 1024
     const val MAX_TEXT_CHARS = 12_000
     const val MAX_SHARED_RECORDS = 20
+
+    /** Hard cap on bytes streamed into cache for one read. Larger files are declined. */
+    private const val MAX_FILE_BYTES = 24L * 1024 * 1024
+
+    /** PDFs are parsed from a single bounded byte array; bigger ones are declined. */
+    private const val MAX_PDF_BYTES = 6L * 1024 * 1024
+
+    /** Per-ZIP-entry cap (a pathological member cannot exhaust the heap). */
+    private const val MAX_ENTRY_BYTES = 2 * 1024 * 1024
+
+    /** Per-PDF-stream chunk cap; oversized streams are skipped, not buffered. */
+    private const val MAX_STREAM_CHUNK = 1024 * 1024
 
     data class SharedFile(
         val name: String,
@@ -52,6 +67,12 @@ object AniobDocumentAccess {
         data class Unsupported(val message: String) : ReadResult()
         /** An I/O failure talking to the provider. */
         data class Failed(val message: String) : ReadResult()
+    }
+
+    /** A local file the reader can work from without heap pressure. */
+    private sealed class ReadSource {
+        data class Ready(val file: java.io.File, val deleteAfter: Boolean) : ReadSource()
+        data class Error(val message: String) : ReadSource()
     }
 
     // ------------------------------------------------------------------------------------------
@@ -82,15 +103,14 @@ object AniobDocumentAccess {
 
     /**
      * Persists a read grant for [uri] (when it is persistable) and records it in the shared-file
-     * registry. Safe to call for both `ACTION_SEND` URIs and picker results. Never throws.
+     * registry. Share arrivals are copied into private storage (grants aren't persistable), and
+     * copies no longer referenced by the registry are deleted so disk usage stays bounded by the
+     * registry cap. Safe to call for both `ACTION_SEND` URIs and picker results. Never throws.
      */
     @Synchronized
     fun register(context: Context, uri: Uri, mime: String?, source: String, takePersistable: Boolean = true): SharedFile? {
         val appContext = context.applicationContext
         val (nameBeforeCopy, sizeBeforeCopy) = queryNameAndSize(appContext, uri)
-        // Share-sheet grants are not persistable: Android only gives the picker a stable grant.
-        // Copy the bytes into the app's private dir so the file stays readable after the
-        // sending app dies, then record the private copy.
         val copied: java.io.File? = if (source == "share") copyToSharedDir(appContext, uri, nameBeforeCopy) else null
         val effectiveUri: Uri = copied?.let { Uri.fromFile(it) } ?: uri
         if (copied == null && takePersistable && source != "share") {
@@ -123,7 +143,22 @@ object AniobDocumentAccess {
             }
             storeFile(appContext).writeText(array.toString())
         }
+        evictOrphanedCopies(appContext, merged)
         return record
+    }
+
+    /** Delete share copies that the registry no longer references (bounded disk, bounded registry). */
+    private fun evictOrphanedCopies(context: Context, keep: List<SharedFile>) {
+        val dir = java.io.File(context.filesDir, "shared")
+        val keepPaths = keep.mapNotNull { shared ->
+            Uri.parse(shared.uri).takeIf { it.scheme == "file" }?.path
+        }.mapNotNull { runCatching { java.io.File(it).canonicalPath }.getOrNull() }.toSet()
+        dir.listFiles()?.forEach { f ->
+            if (f.name.startsWith("share_")) {
+                val canon = runCatching { f.canonicalPath }.getOrNull() ?: return@forEach
+                if (canon !in keepPaths) runCatching { f.delete() }
+            }
+        }
     }
 
     fun findShared(context: Context, query: String): SharedFile? {
@@ -133,8 +168,10 @@ object AniobDocumentAccess {
         return all.firstOrNull { it.name.lowercase().contains(q) }
     }
 
+    /** Delete the registry file and every private copy in the shared dir. */
     fun clearShared(context: Context) {
         runCatching { storeFile(context).delete() }
+        java.io.File(context.filesDir, "shared").listFiles()?.forEach { runCatching { it.delete() } }
     }
 
     private fun queryNameAndSize(context: Context, uri: Uri): Pair<String?, Long> {
@@ -202,7 +239,7 @@ object AniobDocumentAccess {
                         val n = input.read(buf)
                         if (n <= 0) break
                         total += n
-                        if (total > MAX_READ_BYTES) {
+                        if (total > MAX_FILE_BYTES) {
                             target.delete()
                             return@runCatching null
                         }
@@ -214,31 +251,13 @@ object AniobDocumentAccess {
         }.getOrNull()
     }
 
-    /** Canonical path of the private shared dir, used to confine file:// reads to it. */
+    /** Canonical path of the private shared dir, with separator-boundary comparison. */
     private fun sharedDirPath(context: Context): String =
         java.io.File(context.filesDir, "shared").canonicalPath
 
-    /** Reads at most MAX_READ_BYTES+1 bytes from a file:// URI confined to the shared dir. */
-    private fun readSharedFile(context: Context, uri: Uri): ByteArray? {
-        val path = uri.path ?: return null
-        val canon = runCatching { java.io.File(path).canonicalPath }.getOrNull() ?: return null
-        if (!canon.startsWith(sharedDirPath(context))) return null
-        val f = java.io.File(canon)
-        if (!f.isFile) return null
-        val limit = (MAX_READ_BYTES + 1).toLong()
-        val out = java.io.ByteArrayOutputStream()
-        f.inputStream().use { input ->
-            val buf = ByteArray(16 * 1024)
-            var total = 0L
-            while (total < limit) {
-                val n = input.read(buf, 0, minOf(buf.size.toLong(), limit - total).toInt())
-                if (n <= 0) break
-                out.write(buf, 0, n)
-                total += n
-            }
-        }
-        return out.toByteArray()
-    }
+    /** True only when [canon] is strictly inside the shared dir (sibling `shared_evil/` cannot match). */
+    private fun isInsideSharedDir(sharedDir: String, canon: String): Boolean =
+        canon.startsWith(sharedDir + java.io.File.separator)
 
     /**
      * A Uri a viewer app is allowed to see: file:// copies become FileProvider content URIs
@@ -248,7 +267,7 @@ object AniobDocumentAccess {
         if (uri.scheme != "file") return uri
         val path = uri.path ?: return uri
         val canon = runCatching { java.io.File(path).canonicalPath }.getOrNull() ?: return uri
-        if (!canon.startsWith(sharedDirPath(context))) return uri
+        if (!isInsideSharedDir(sharedDirPath(context), canon)) return uri
         return runCatching {
             androidx.core.content.FileProvider.getUriForFile(
                 context,
@@ -262,6 +281,52 @@ object AniobDocumentAccess {
     // reading
     // ------------------------------------------------------------------------------------------
 
+    /**
+     * Resolve [uri] to a local file without heap pressure:
+     *  - a `file://` URI confined to the shared dir is read in place (no copy);
+     *  - anything else is *streamed* into a bounded cache temp file ([MAX_FILE_BYTES] cap).
+     */
+    private fun openSource(context: Context, uri: Uri, display: String): ReadSource {
+        if (uri.scheme == "file") {
+            val canon = runCatching { uri.path?.let { java.io.File(it).canonicalPath } }.getOrNull()
+                ?: return ReadSource.Error("Could not resolve $display.")
+            return if (isInsideSharedDir(sharedDirPath(context), canon)) {
+                ReadSource.Ready(java.io.File(canon), deleteAfter = false)
+            } else {
+                ReadSource.Error("Refusing to read $display: it is outside Aniob's private shared store.")
+            }
+        }
+        val dir = java.io.File(context.cacheDir, "read_tmp").apply { mkdirs() }
+        val tmp = java.io.File(dir, "read_${System.currentTimeMillis()}_${(Math.random() * 1e9).toLong()}.tmp")
+        var total = 0L
+        val result = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                java.io.FileOutputStream(tmp).use { output ->
+                    val buf = ByteArray(32 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        total += n
+                        if (total > MAX_FILE_BYTES) {
+                            return@runCatching false
+                        }
+                        output.write(buf, 0, n)
+                    }
+                }
+                true
+            } ?: throw java.io.IOException("provider returned no stream")
+        }
+        if (result.getOrDefault(false) != true) {
+            tmp.delete()
+            return if (total > MAX_FILE_BYTES) {
+                ReadSource.Error("$display is larger than ${MAX_FILE_BYTES / (1024 * 1024)} MB; refusing to load it into memory.")
+            } else {
+                ReadSource.Error("Could not open $display.")
+            }
+        }
+        return ReadSource.Ready(tmp, deleteAfter = true)
+    }
+
     /** Read/extract [uri] as text. Never throws; always carries an honest explanation. */
     fun readText(context: Context, uri: Uri, mimeType: String?): ReadResult {
         val appContext = context.applicationContext
@@ -270,64 +335,55 @@ object AniobDocumentAccess {
         val mime = (mimeType ?: runCatching { appContext.contentResolver.getType(uri) }.getOrNull()).orEmpty().lowercase()
         val ext = display.substringAfterLast('.', "").lowercase()
 
-        val bytes = runCatching {
-            if (uri.scheme == "file") {
-                readSharedFile(appContext, uri)
-            } else {
-                appContext.contentResolver.openInputStream(uri)?.use { input ->
-                val out = ByteArrayOutputStream()
-                val buf = ByteArray(16 * 1024)
-                var total = 0
-                while (total < MAX_READ_BYTES + 1) {
-                    val n = input.read(buf, 0, minOf(buf.size, MAX_READ_BYTES + 1 - total))
-                    if (n <= 0) break
-                    out.write(buf, 0, n)
-                    total += n
-                }
-                out.toByteArray()
-                }
-            }
-        }.getOrElse { return ReadResult.Failed("Could not open $display (${it.javaClass.simpleName}).") }
-            ?: return ReadResult.Failed("Could not open $display.")
-
-        if (bytes.size > MAX_READ_BYTES) {
-            return ReadResult.Unsupported("$display is larger than ${MAX_READ_BYTES / (1024 * 1024)} MB; refusing to read it into memory. Open it instead.")
-        }
-
-        val isZipContainer = looksLikeZip(bytes)
-        val text: String? = when {
-            mime.startsWith("text/") || ext in TEXT_EXTENSIONS -> {
-                String(bytes, Charsets.UTF_8)
-            }
-            ext == "json" || mime == "application/json" -> String(bytes, Charsets.UTF_8)
-            isZipContainer -> extractFromZipContainer(bytes, display)
-            ext == "pdf" || mime == "application/pdf" -> extractPdfText(bytes)
-            ext in LEGACY_OFFICE_EXTENSIONS -> return ReadResult.Unsupported(
+        if (ext in LEGACY_OFFICE_EXTENSIONS) {
+            return ReadResult.Unsupported(
                 "$display is a legacy binary Office file, which this device build cannot read. Open it in Word/WPS instead, or share it to Aniob as .docx/.pdf."
             )
-            else -> null
         }
 
-        val cleaned = text?.let { collapseWhitespace(it) }?.trim().orEmpty()
-        if (cleaned.isEmpty()) {
-            return if (ext == "pdf" || mime == "application/pdf") {
-                ReadResult.Unsupported(
-                    "Could not extract text from $display on this device. The PDF may be scanned, encrypted or use embedded fonts. " +
-                        "Ask me to open it instead and I will hand it to a PDF app."
-                )
-            } else {
-                ReadResult.Unsupported(
-                    "Could not extract text from $display (type ${mime.ifBlank { ext.ifBlank { "unknown" } }}). Ask me to open it instead."
-                )
+        // Resolve to a local file first; nothing below buffers the payload into the heap.
+        val source = openSource(appContext, uri, display)
+        if (source is ReadSource.Error) return ReadResult.Failed(source.message)
+        val file = source.file
+        try {
+            val isTextLike = mime.startsWith("text/") || ext in TEXT_EXTENSIONS ||
+                ext == "json" || mime == "application/json"
+            val text: String? = when {
+                isTextLike -> readTextFileCapped(file)
+                looksLikeZipFile(file) -> extractFromZipContainer(file)
+                ext == "pdf" || mime == "application/pdf" -> {
+                    if (file.length() > MAX_PDF_BYTES) {
+                        return ReadResult.Unsupported(
+                            "$display is larger than ${MAX_PDF_BYTES / (1024 * 1024)} MB; refusing to parse it into memory. Open it instead."
+                        )
+                    }
+                    extractPdfText(file.readBytes())
+                }
+                else -> null
             }
+            val cleaned = text?.let { collapseWhitespace(it) }?.trim().orEmpty()
+            if (cleaned.isEmpty()) {
+                return if (ext == "pdf" || mime == "application/pdf") {
+                    ReadResult.Unsupported(
+                        "Could not extract text from $display on this device. The PDF may be scanned, encrypted or use embedded fonts. " +
+                            "Ask me to open it instead and I will hand it to a PDF app."
+                    )
+                } else {
+                    ReadResult.Unsupported(
+                        "Could not extract text from $display (type ${mime.ifBlank { ext.ifBlank { "unknown" } }}). Ask me to open it instead."
+                    )
+                }
+            }
+            val truncated = cleaned.length > MAX_TEXT_CHARS
+            return ReadResult.Ok(
+                name = display,
+                mime = mime.ifBlank { null },
+                text = if (truncated) cleaned.take(MAX_TEXT_CHARS) else cleaned,
+                truncated = truncated
+            )
+        } finally {
+            if (source.deleteAfter) runCatching { file.delete() }
         }
-        val truncated = cleaned.length > MAX_TEXT_CHARS
-        return ReadResult.Ok(
-            name = display,
-            mime = mime.ifBlank { null },
-            text = if (truncated) cleaned.take(MAX_TEXT_CHARS) else cleaned,
-            truncated = truncated
-        )
     }
 
     private val TEXT_EXTENSIONS = setOf(
@@ -337,18 +393,57 @@ object AniobDocumentAccess {
 
     private val LEGACY_OFFICE_EXTENSIONS = setOf("doc", "ppt", "xls", "wps")
 
-    internal fun looksLikeZip(bytes: ByteArray): Boolean =
-        bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() &&
-            (bytes[2] == 0x03.toByte() || bytes[2] == 0x05.toByte() || bytes[2] == 0x07.toByte())
+    private fun looksLikeZipFile(file: java.io.File): Boolean =
+        runCatching {
+            file.inputStream().use { input ->
+                val b = ByteArray(4)
+                val n = input.read(b)
+                n >= 4 && b[0] == 0x50.toByte() && b[1] == 0x4B.toByte() &&
+                    (b[2] == 0x03.toByte() || b[2] == 0x05.toByte() || b[2] == 0x07.toByte())
+            }
+        }.getOrDefault(false)
+
+    /** Stream a text file, keeping at most MAX_TEXT_CHARS+1 characters. Never loads the whole file. */
+    private fun readTextFileCapped(file: java.io.File): String {
+        val sb = StringBuilder()
+        var kept = 0
+        java.io.BufferedReader(file.reader(Charsets.UTF_8), 16 * 1024).use { reader ->
+            val buf = CharArray(8 * 1024)
+            while (kept <= MAX_TEXT_CHARS) {
+                val n = reader.read(buf)
+                if (n <= 0) break
+                val room = MAX_TEXT_CHARS + 1 - kept
+                sb.append(buf, 0, minOf(n, room))
+                kept += n
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun readCapped(input: java.io.InputStream, cap: Int): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n <= 0) break
+            total += n
+            if (total > cap) return null
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
+    }
 
     /** Extracts readable text from OOXML/ODF (ZIP) containers: strip tags, keep text nodes. */
-    internal fun extractFromZipContainer(bytes: ByteArray, display: String): String? {
-        val wanted = mutableMapOf<String, StringBuilder>()
+    internal fun extractFromZipContainer(file: java.io.File): String? {
+        val text = StringBuilder()
         var sawContainer = false
         runCatching {
-            ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
-                var entry = zip.nextEntry
-                while (entry != null) {
+            java.util.zip.ZipFile(file).use { zip ->
+                val entries = zip.entries()
+                val wanted = mutableListOf<java.util.zip.ZipEntry>()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
                     val name = entry.name.lowercase()
                     val isTextPart = when {
                         name == "word/document.xml" -> true                       // docx
@@ -358,33 +453,30 @@ object AniobDocumentAccess {
                         name == "content.xml" -> true                             // ODF (odt/ods/odp)
                         else -> false
                     }
-                    if (isTextPart) {
-                        sawContainer = true
-                        val entryText = StringBuilder()
-                        val buf = ByteArray(16 * 1024)
-                        while (true) {
-                            val n = zip.read(buf)
-                            if (n <= 0) break
-                            entryText.append(String(buf, 0, n, Charsets.UTF_8))
-                            if (entryText.length > 4 * 1024 * 1024) break
-                        }
-                        wanted.getOrPut(name) { StringBuilder() }.append(stripXml(entryText.toString())).append('\n')
+                    if (isTextPart) wanted += entry
+                }
+                if (wanted.isEmpty()) return@runCatching
+                sawContainer = true
+                val ordered = wanted.sortedBy { entry ->
+                    val name = entry.name.lowercase()
+                    when {
+                        name.contains("document.xml") || name == "content.xml" -> "0"
+                        name.contains("slides/") -> "1" + name.filter { it.isDigit() }.padStart(4, '0')
+                        name == "xl/sharedstrings.xml" -> "2"
+                        else -> "3" + name
                     }
-                    entry = zip.nextEntry
+                }
+                for (entry in ordered) {
+                    zip.getInputStream(entry).use { input ->
+                        readCapped(input, MAX_ENTRY_BYTES)?.let { bytes ->
+                            text.append(stripXml(String(bytes, Charsets.UTF_8))).append('\n')
+                        }
+                    }
+                    if (text.length >= MAX_TEXT_CHARS) break
                 }
             }
         }.getOrNull() ?: return null
-        if (!sawContainer) return null
-        // Reading order: document.xml alone, then slides in number order, then sheet strings.
-        val ordered = wanted.entries.sortedBy { (name, _) ->
-            when {
-                name.contains("document.xml") || name == "content.xml" -> "0"
-                name.contains("slides/") -> "1" + name.filter { it.isDigit() }.padStart(4, '0')
-                name == "xl/sharedstrings.xml" -> "2"
-                else -> "3" + name
-            }
-        }
-        return ordered.joinToString("\n") { it.value }
+        return if (sawContainer && text.isNotBlank()) text.toString() else null
     }
 
     internal fun stripXml(xml: String): String {
@@ -406,6 +498,7 @@ object AniobDocumentAccess {
      * Dependency-free PDF text harvest: inflate each content stream (zlib or raw deflate) and
      * pull the literal strings out of the text-showing operators. Works for a large class of
      * machine-generated PDFs; returns null when nothing legible was found (scanned/encrypted).
+     * Each stream chunk is capped at [MAX_STREAM_CHUNK] so the parse never buffers unbounded data.
      */
     internal fun extractPdfText(bytes: ByteArray): String? {
         val raw = String(bytes, Charsets.ISO_8859_1)
@@ -419,7 +512,12 @@ object AniobDocumentAccess {
             if (raw.startsWith("\r\n", contentStart)) contentStart += 2 else if (contentStart < raw.length && (raw[contentStart] == '\n' || raw[contentStart] == '\r')) contentStart += 1
             val endAt = raw.indexOf("endstream", contentStart)
             if (endAt < 0) break
-            val chunk = bytes.copyOfRange(contentStart, minOf(endAt, contentStart + MAX_READ_BYTES))
+            val chunkLen = minOf(endAt, contentStart + MAX_STREAM_CHUNK) - contentStart
+            if (chunkLen <= 0) {
+                idx = endAt + "endstream".length
+                continue
+            }
+            val chunk = bytes.copyOfRange(contentStart, contentStart + chunkLen)
             val inflated = inflate(chunk)
             val body = inflated ?: if (looksMostlyPrintable(chunk)) String(chunk, Charsets.ISO_8859_1) else null
             if (body != null && (body.contains("Tj") || body.contains("TJ") || body.contains("Tf"))) {
@@ -427,7 +525,7 @@ object AniobDocumentAccess {
                     val inner = match.value.substring(1, match.value.length - 1)
                     out.append(unescapePdfString(inner))
                     out.append(' ')
-                    if (out.length >= MAX_TEXT_CHARS) break
+                    if (out.length >= MAX_TEXT_CHARS + 1) break
                 }
                 out.append('\n')
             }
@@ -447,7 +545,7 @@ object AniobDocumentAccess {
                     val n = inflater.inflate(buf)
                     if (n == 0) break
                     sink.write(buf, 0, n)
-                    if (sink.size() > MAX_READ_BYTES) break
+                    if (sink.size() > MAX_STREAM_CHUNK) break
                 }
             } catch (_: Exception) {
                 // try the next flavour
@@ -492,5 +590,4 @@ object AniobDocumentAccess {
         // PDF text is often drawn with kerning gaps; collapse the worst of it.
         return out.toString().replace(Regex("[ ]{2,}"), " ")
     }
-
 }

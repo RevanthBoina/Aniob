@@ -989,9 +989,16 @@ object AniobDeviceControl {
     private fun installedApps(context: Context, args: Map<String, String>): DeviceControlResult {
         val limit = args["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 40
         val q = args["query"].orEmpty().trim().lowercase()
+        // Android 11+ package visibility: getInstalledApplications(0) under-reports launchable
+        // apps unless we hold broad package-query permissions. queryIntentActivities over the
+        // MAIN/LAUNCHER intents matches exactly the <queries> entry in the manifest, so it sees
+        // every launchable app without extra permission.
         val pm = context.packageManager
-        val launchable = pm.getInstalledApplications(0).mapNotNull { info ->
-            pm.getLaunchIntentForPackage(info.packageName) ?: return@mapNotNull null
+        val mainIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        @Suppress("DEPRECATION")
+        val resolves = pm.queryIntentActivities(mainIntent, 0)
+        val launchable = resolves.mapNotNull { resolve ->
+            val info = resolve.activityInfo?.applicationInfo ?: return@mapNotNull null
             val label = runCatching { pm.getApplicationLabel(info).toString() }.getOrDefault(info.packageName)
             label to info.packageName
         }.distinctBy { it.second }.sortedBy { it.first.lowercase() }

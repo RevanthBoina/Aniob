@@ -51,6 +51,27 @@ class AniobApplication : Application(), ComponentCallbacks2 {
     }
 
     /**
+     * File-backed ledger store for cross-process idempotency: the bounded gateway ledger survives
+     * process death so a retried executionId is never dispatched twice, and PENDING/EXECUTING
+     * leftovers are reconciled to INTERRUPTED instead of being read as success.
+     */
+    private inner class DeviceActionLedgerFileStore : com.aniob.core.execution.DeviceActionGateway.DeviceActionLedgerStore {
+        private val file = java.io.File(filesDir, "device_action_ledger.txt")
+        private val tmp = java.io.File(filesDir, "device_action_ledger.tmp")
+        override fun load(): String? = runCatching { if (file.exists()) file.readText() else null }.getOrNull()
+        override fun save(snapshot: String) {
+            // Write-temp-then-rename so a torn write never leaves a half-parsed ledger.
+            runCatching {
+                tmp.writeText(snapshot)
+                if (!tmp.renameTo(file)) {
+                    tmp.copyTo(file, overwrite = true)
+                    tmp.delete()
+                }
+            }
+        }
+    }
+
+    /**
      * The single authority that executes device actions (app launches, system intents, device
      * commands). Holds the execution lock, dedupes near-simultaneous identical dispatches and keeps
      * a bounded ledger so retries and audits are possible. Lazily created; [eventLogger] is already
@@ -58,6 +79,7 @@ class AniobApplication : Application(), ComponentCallbacks2 {
      */
     val deviceActionGateway: com.aniob.core.execution.DeviceActionGateway by lazy {
         com.aniob.core.execution.DeviceActionGateway(
+            ledgerStore = DeviceActionLedgerFileStore(),
             logSink = { entry ->
                 val line = buildString {
                     append("executionId=").append(entry.executionId)
