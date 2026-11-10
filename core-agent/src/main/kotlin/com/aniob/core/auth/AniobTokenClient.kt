@@ -29,10 +29,13 @@ class AniobTokenClient(
     private val clock: AniobClock = AniobClock.SYSTEM,
     private val idVerifier: AniobIdTokenVerifier = AniobIdTokenVerifier.REJECT
 ) {
-    suspend fun exchangeCode(code: String, codeVerifier: String, clientId: String, nonce: String): AniobTokenResult =
+    suspend fun exchangeCode(
+        code: String, codeVerifier: String, clientId: String, nonce: String,
+        redirectUri: String = config.redirectUri
+    ): AniobTokenResult =
         call(form(
             "grant_type" to "authorization_code", "client_id" to clientId,
-            "code" to code, "redirect_uri" to config.redirectUri,
+            "code" to code, "redirect_uri" to redirectUri,
             "code_verifier" to codeVerifier, "resource" to config.resource
         ), previous = null, clientId = clientId, nonce = nonce)
 

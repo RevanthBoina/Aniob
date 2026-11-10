@@ -15,6 +15,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -71,7 +72,8 @@ class AniobAccountModelClientTest {
 
     private fun client(repo: AniobAuthRepository, counter: IntArray = IntArray(1)) = AniobAccountModelClient(
         config = testConfig(base), repository = repo, model = "m-1", reasoningEffort = "low", sessionId = "sess-1",
-        onLlmRequest = { counter[0]++ }, health = AniobGatewayHealth(), clock = clock
+        onLlmRequest = { counter[0]++ }, health = AniobGatewayHealth(), clock = clock,
+        logger = { _, _ -> }
     )
 
     private fun failure(r: Result<String>) = r.exceptionOrNull() as AniobGatewayException
@@ -82,7 +84,7 @@ class AniobAccountModelClientTest {
         val out = client(r).generateStreaming("hello", "be brief") { deltas += it }
         assertEquals("hi", out); assertEquals(listOf("hi"), deltas)
         val s = seen.single()
-        assertEquals("Bearer acc-1", s.auth); assertEquals("acct-9", s.account)
+        assertEquals("Bearer acc-1", s.auth); assertNull(s.account)
         assertEquals("aniob-test", s.originator); assertEquals("responses=test", s.beta)
         assertTrue(s.body.contains("\"stream\":true")); assertTrue(s.body.contains("\"store\":false"))
         assertTrue(s.body.contains("\"model\":\"m-1\"")); assertTrue(s.body.contains("\"effort\":\"low\""))
@@ -146,6 +148,13 @@ class AniobAccountModelClientTest {
         handler = { ex, _ -> ex.reply(200, "text/html", "<!doctype html><html><title>Login</title></html>") }
         val (r, _) = repo()
         assertEquals(GatewayFailureKind.NOT_JSON, failure(client(r).getNextActionRaw("s", "o")).kind)
+    }
+
+    @Test fun `buffered json response is accepted and parsed`() = runBlocking<Unit> {
+        handler = { ex, _ -> ex.reply(200, "application/json", """{"response":{"output":[{"type":"message","content":[{"type":"output_text","text":"buffered ok"}]}]}}""") }
+        val (r, _) = repo()
+        val res = client(r).getNextActionRaw("s", "o")
+        assertEquals("buffered ok", res.getOrThrow())
     }
 
     @Test fun `a mid-stream disconnect is a failure, never a made-up answer`() = runBlocking<Unit> {

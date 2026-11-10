@@ -4,7 +4,6 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import androidx.browser.customtabs.CustomTabsIntent
 import com.aniob.app.MainActivity
 import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.core.auth.AniobAuthConfig
@@ -83,13 +82,18 @@ class AniobOkHttpJwksTransport : com.aniob.core.auth.AniobJwksTransport {
     }
 }
 
-/** Opens the authorize URL in a Custom Tab (the user's browser), never in an embedded web view. */
+/**
+ * Opens the authorize URL in the user's default full browser (never an embedded web view). A full
+ * browser keeps the user's Google account, password manager and passkeys, and can finish the
+ * provider's bot-check page and "Continue with Google" redirects, which Custom Tabs often cannot.
+ */
 class AniobCustomTabBrowserLauncher(private val context: Context) : AniobBrowserLauncher {
     override fun open(url: String): Boolean {
-        val tab = CustomTabsIntent.Builder().setShowTitle(true).build()
-        tab.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val view = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            .addCategory(Intent.CATEGORY_BROWSABLE)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return try {
-            tab.launchUrl(context, Uri.parse(url))
+            context.startActivity(view)
             true
         } catch (e: ActivityNotFoundException) {
             false

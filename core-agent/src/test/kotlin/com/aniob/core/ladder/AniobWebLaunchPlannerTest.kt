@@ -126,6 +126,13 @@ class AniobWebLaunchPlannerTest {
         val bare = AniobLaunchHub.planWeb("Search in YouTube")
         assertEquals("https://www.youtube.com", bare?.url)
         assertFalse(AniobIntentResolver.resolve("Search in YouTube")?.requiresObservation ?: true)
+
+        val inverted = AniobLaunchHub.planWeb("Search in YouTube for cat videos")
+        assertEquals("https://www.youtube.com/results?search_query=cat+videos", inverted?.url)
+        assertEquals(WebLaunchPlan.SOURCE_SEARCH, inverted?.source)
+
+        val direct = AniobLaunchHub.planWeb("search youtube for cat videos")
+        assertEquals("https://www.youtube.com/results?search_query=cat+videos", direct?.url)
     }
 
     @Test

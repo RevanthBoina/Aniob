@@ -1,6 +1,5 @@
 package com.aniob.app.auth
 
-import com.aniob.core.auth.AniobPortInUseException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -129,11 +128,22 @@ class AniobLoopbackCallbackListenerTest {
         try { assertNull(l.awaitCallback("/auth/callback", 600)) } finally { l.close() }
     }
 
-    @Test fun `a busy port is a typed error, not another port`() {
+    @Test fun `a busy preferred port falls back to a different free loopback port`() {
         val first = AniobLoopbackCallbackListener(0); first.bind()
+        val second = AniobLoopbackCallbackListener(first.boundPort)
         try {
-            val second = AniobLoopbackCallbackListener(first.boundPort)
-            try { second.bind(); fail("expected the port to be busy") } catch (e: AniobPortInUseException) { /* expected */ }
-        } finally { first.close() }
+            second.bind()
+            assertTrue(second.boundPort > 0)
+            assertFalse(second.boundPort == first.boundPort)
+            assertEquals("127.0.0.1", second.boundHost)
+        } finally { second.close(); first.close() }
+    }
+
+    @Test fun `a listener can rebind its port right after it was closed`() {
+        val first = AniobLoopbackCallbackListener(0); first.bind()
+        val port = first.boundPort
+        first.close()
+        val again = AniobLoopbackCallbackListener(port)
+        try { again.bind(); assertEquals(port, again.boundPort) } finally { again.close() }
     }
 }

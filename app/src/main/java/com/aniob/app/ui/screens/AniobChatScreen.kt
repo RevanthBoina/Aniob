@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -82,6 +83,8 @@ fun AniobChatScreen(
     onContinueInWebsite: (String) -> Unit = {},
     onConsumePendingPrefill: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onAskFinished: (Map<String, String>, Set<String>) -> Unit = { _, _ -> },
+    onAskCancel: () -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
@@ -170,6 +173,7 @@ fun AniobChatScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -356,7 +360,7 @@ fun AniobChatScreen(
                     promptInput = "Check battery status"
                     onSubmitTask("Check battery status")
                 }
-                ExampleTaskRow(title = "Book a cab to airport", subtitle = "Shows Grill-Me clarification") {
+                ExampleTaskRow(title = "Book a cab to airport", subtitle = "Asks a quick question first") {
                     promptInput = "Book a cab to airport"
                     onSubmitTask("Book a cab to airport")
                 }
@@ -489,6 +493,17 @@ fun AniobChatScreen(
                     }
                 }
             }
+        }
+
+        // 6b. One question at a time, directly above the chat bar (asked before the task starts).
+        val askResult = uiState.grillMeResult
+        if (uiState.showGrillMeSheet && askResult != null) {
+            com.aniob.app.ui.AniobAskCard(
+                result = askResult,
+                rememberedKeys = uiState.grillRememberedKeys,
+                onFinished = onAskFinished,
+                onCancel = onAskCancel
+            )
         }
 
         // 7. Horizontal Suggestion Rail (PROMPT 2)

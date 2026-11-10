@@ -97,7 +97,7 @@ class AniobReflectionAgent {
      */
     fun reflectFinish(
         criteria: com.aniob.core.domain.SuccessCriteria? = null,
-        finalScreen: AniobScreenState = AniobScreenState(),
+        finalScreen: AniobScreenState = AniobScreenState(packageName = ""),
         steps: Int = 1,
         deterministic: DeterministicVerifier.VerificationResult = DeterministicVerifier.VerificationResult(false, 0L, "provisional"),
         hasExecutedActions: Boolean = steps >= 1,

@@ -64,6 +64,23 @@ class RememberTemplateTest {
     }
 
     @Test
+    fun `an unquoted person name and phone number become NAME and NUM parameters`() {
+        val parsed1 = RememberTemplate.parse("Save Priya Raman as a contact, her number is +1 555 8842")
+        val parsed2 = RememberTemplate.parse("Save Gita Rao as a contact, her number is +1 555 0107")
+        assertEquals("save {NAME} as a contact her number is {NUM}", parsed1.template)
+        assertEquals(parsed1.template, parsed2.template)
+        assertEquals(listOf("Priya Raman", "+1 555 8842"), parsed1.params)
+        assertEquals(listOf("Gita Rao", "+1 555 0107"), parsed2.params)
+    }
+
+    @Test
+    fun `recipient in text message goal becomes NAME parameter`() {
+        val parsed = RememberTemplate.parse("Text Marcus Webb saying hello")
+        assertEquals("text {NAME} saying hello", parsed.template)
+        assertEquals(listOf("Marcus Webb"), parsed.params)
+    }
+
+    @Test
     fun `two prompts of the same shape share a template`() {
         assertEquals(
             RememberTemplate.parse("set alarm for 7:30").template,

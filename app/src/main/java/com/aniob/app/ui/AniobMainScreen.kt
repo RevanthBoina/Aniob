@@ -204,6 +204,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onContinueInWebsite = { taskId -> viewModel.onContinueInWebsite(taskId) },
                         onConsumePendingPrefill = { viewModel.consumePendingInputPrefill() },
                         onOpenSettings = { viewModel.navigateTo(AniobRoute.SETTINGS) },
+                        onAskFinished = { answers, rememberKeys -> viewModel.onGrillAnswersSubmitted(answers, rememberKeys) },
+                        onAskCancel = { viewModel.cancelGrillMe() },
                         renderWindow = { viewModel.renderWindow() }
                     )
                 }
@@ -295,16 +297,6 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
     // UX-2/UX-5: Remembered Moments + skill replay chips surface in chat, not logs.
     if (uiState.momentChips.isNotEmpty()) {
         MomentChipRow(chips = uiState.momentChips, onDismiss = { viewModel.clearMomentChips() })
-    }
-
-    // Grill-Me 2.0 (UX-2): remembers which questions were answered from the vault.
-    if (uiState.showGrillMeSheet && uiState.grillMeResult != null) {
-        AniobGrillMeSheet(
-            grillResult = uiState.grillMeResult!!,
-            rememberedKeys = uiState.grillRememberedKeys,
-            onConfirm = { answers, rememberKeys -> viewModel.onGrillAnswersSubmitted(answers, rememberKeys) },
-            onDismiss = { viewModel.cancelGrillMe() }
-        )
     }
 
     val confirmRequest = uiState.confirmRequest

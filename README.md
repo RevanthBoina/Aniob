@@ -12,7 +12,7 @@ Aniob is a **founder-led commercial Android app** for carrying out selected phon
 - Applies user confirmations, safety checks, and verification where implemented; permissions and capability checks are part of the flow.
 - Supports model download/import, configurable skills, settings, and task metrics.
 
-These are implemented areas, not guarantees that a particular task will work. Some features require the user to enable Android services or permissions. **This repository has no project-level open-source licence**; its public visibility does not grant reuse rights.
+These are implemented areas, not guarantees that a particular task will work. Some features require the user to enable Android services or permissions. **This repository is proprietary (All rights reserved)**; see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md). Its public visibility is for viewing and evaluation only, and does not grant reuse rights.
 
 ## Get started
 
@@ -20,7 +20,7 @@ These are implemented areas, not guarantees that a particular task will work. So
 
 - JDK 17.
 - Android SDK Platform 35; Aniob has `minSdk` 30, so a device or emulator must run Android 11/API 30 or newer to run it.
-- Gradle 9.3.1 installed separately. **No Gradle Wrapper is committed.** Android Studio is recommended for installing/configuring the SDK and opening the project.
+- Checked-in Gradle 9.3.1 wrapper with pinned SHA-256 (or Gradle 9.3.1 installed separately). Android Studio is recommended for installing/configuring the SDK and opening the project.
 
 ### Set up and build
 
@@ -83,3 +83,11 @@ The open issue list is the source for new tracked work: [open Aniob issues](http
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution paths, setup, review, and commercial-project terms. Regular changes come from forks and pull requests; Revanth Boina retains final review and merge control. For sensitive security reports, use [SECURITY.md](SECURITY.md), not a public issue. Aniob follows its [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Licence
+
+Copyright (c) 2026 Revanth Boina. All rights reserved.
+
+This repository is made available for viewing and evaluation only.
+No licence is granted to copy, modify, distribute or create derivative works.
+Contributions are accepted under the terms in [CONTRIBUTING.md](CONTRIBUTING.md). See [LICENSE](LICENSE).

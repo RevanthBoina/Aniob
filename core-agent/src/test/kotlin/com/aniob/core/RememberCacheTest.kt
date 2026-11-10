@@ -287,4 +287,61 @@ class RememberCacheTest {
         assertFalse(cache.contains("one", "pkg", "h1"))
         assertTrue(cache.contains("three", "pkg", "h3"))
     }
+
+    @Test
+    fun multiScreenTrajectoryLookupSucceedsOnHeadMatch() {
+        val cache = RememberCache()
+        // Step 1: tap "Go" on searchScreen
+        val step1 = RememberAction(kind = RememberAction.TAP, viewId = "com.example.app:id/go", text = "Go")
+        // Step 2: tap "Details" on a subsequent screen (not present on searchScreen)
+        val step2 = RememberAction(kind = RememberAction.TAP, viewId = "com.example.app:id/details", text = "Details")
+
+        cache.record(
+            goal = "search for pizza",
+            packageName = searchScreen.packageName,
+            preActionScreenHash = searchScreen.screenHash,
+            actions = listOf(step1, step2)
+        )
+
+        // Lookup on the initial searchScreen: step 1 resolves live, step 2 converts to AniobAction via toAction().
+        val actions = cache.lookup("search for pizza", searchScreen)
+        assertNotNull(actions)
+        assertEquals(2, actions!!.size)
+        assertTrue(actions[0] is AniobAction.Tap)
+        assertEquals(SemanticTarget.ResourceId("com.example.app:id/go"), (actions[0] as AniobAction.Tap).target)
+        assertTrue(actions[1] is AniobAction.Tap)
+        assertEquals(SemanticTarget.ResourceId("com.example.app:id/details"), (actions[1] as AniobAction.Tap).target)
+    }
+
+    @Test
+    fun parameterizedAnchorClearsViewIdPreventingWrongRowMatch() {
+        val cache = RememberCache()
+        // Template step with HomeLAN text and row_net_1 viewId
+        val step = RememberAction(
+            kind = RememberAction.TAP,
+            viewId = "com.example.app:id/row_net_1",
+            text = "HomeLAN"
+        )
+        cache.record(
+            goal = "connect to \"HomeLAN\"",
+            packageName = searchScreen.packageName,
+            preActionScreenHash = searchScreen.screenHash,
+            actions = listOf(step)
+        )
+
+        // Replay with OfficeLAN on a screen that has OfficeLAN on row 2
+        val netScreen = screen(
+            listOf(
+                node(10, viewId = "com.example.app:id/row_net_1", text = "HomeLAN"),
+                node(20, viewId = "com.example.app:id/row_net_2", text = "OfficeLAN")
+            ),
+            hash = searchScreen.screenHash
+        )
+
+        val actions = cache.lookup("connect to \"OfficeLAN\"", netScreen)
+        assertNotNull(actions)
+        assertEquals(1, actions!!.size)
+        // Since viewId was dropped during parameterization, it matched by text "OfficeLAN" -> row_net_2!
+        assertEquals(SemanticTarget.ResourceId("com.example.app:id/row_net_2"), (actions[0] as AniobAction.Tap).target)
+    }
 }

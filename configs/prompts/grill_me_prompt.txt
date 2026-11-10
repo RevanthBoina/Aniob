@@ -8,7 +8,10 @@ If the task is fully self-contained (e.g. "Open Settings", "Turn on flashlight",
 }
 
 If ambiguous (e.g. "Book a cab", "Send an email", "Set an alarm"):
-Return 2 or more concise questions with recommended options (chips/radio buttons) and free-text option:
+Return the FEWEST questions needed (at most 3, most important first), each with recommended options (tappable choices) and a free-text option.
+Ask only for values that change what the agent does and that the request, the device and the saved answers cannot supply.
+Do NOT ask for permission to pay, delete or enter passwords, PINs or codes: the app asks those itself, once, at the start.
+All questions are shown to the user one at a time before the task starts, never during it:
 {
   "needsClarification": true,
   "questions": [

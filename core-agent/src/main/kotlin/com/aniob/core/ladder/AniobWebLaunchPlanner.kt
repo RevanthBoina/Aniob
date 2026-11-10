@@ -72,6 +72,12 @@ object AniobWebLaunchPlanner {
         RegexOption.IGNORE_CASE
     )
 
+    private val SEARCH_INVERTED = Regex(
+        "^(?:please\\s+|kindly\\s+)?(?:search|find|look\\s*up)\\s+(?:(?:in|on|at|from|using)\\s+)?(?:the\\s+)?" +
+            "([a-z][a-z0-9 .]*?)\\s+(?:for|about)\\s+(.+?)(?:\\s+app)?$",
+        RegexOption.IGNORE_CASE
+    )
+
     private val PERSONAL_ITEM =
         Regex("^(?:please\\s+|kindly\\s+)?\\w+(?:\\s+to)?\\s+my\\s+", RegexOption.IGNORE_CASE)
 
@@ -169,8 +175,23 @@ object AniobWebLaunchPlanner {
         return WebLaunchPlan(url, labelFor(keyword), browser, WebLaunchPlan.SOURCE_COMPOUND)
     }
 
-    // "search for lofi in youtube" / "search in youtube" -> the site's own search page.
+    // "search for lofi in youtube" / "search in youtube" / "search in youtube for cat videos" -> the site's own search page.
     private fun siteSearch(text: String): WebLaunchPlan? {
+        if (CLAUSE_BREAK.containsMatchIn(text)) return null
+
+        SEARCH_INVERTED.find(text)?.let { match ->
+            val site = cleanName(match.groupValues[1])
+            val template = SEARCH_TEMPLATES[site]
+            if (template != null) {
+                val query = match.groupValues[2].trim()
+                if (query.isNotEmpty()) {
+                    val url = template.replace("%s", java.net.URLEncoder.encode(query, "UTF-8"))
+                    val label = "Search \"$query\" on ${labelFor(site)}"
+                    return WebLaunchPlan(url, label, browserPackage = null, source = WebLaunchPlan.SOURCE_SEARCH)
+                }
+            }
+        }
+
         val match = SEARCH.find(text) ?: return null
         val site = cleanName(match.groupValues[2])
         val template = SEARCH_TEMPLATES[site] ?: return null

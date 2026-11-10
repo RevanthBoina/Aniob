@@ -28,7 +28,7 @@ Follow the prerequisites, build/test commands, and Android Studio run steps in t
 
 ## Commercial project and contribution rights
 
-Aniob is not offered under an open-source licence. A public fork, issue discussion, or pull request does not transfer copyright or grant a licence to reuse Aniob. The founder's code, your pre-existing work, your contribution, and third-party materials remain distinct.
+Aniob is proprietary; see [LICENSE](LICENSE) (Copyright (c) 2026 Revanth Boina. All rights reserved). A public fork, issue discussion, or pull request does not transfer copyright or grant a licence to reuse Aniob. The founder's code, your pre-existing work, your contribution, and third-party materials remain distinct.
 
 If work is intended for commercial incorporation, the founder will explain the proposed terms **before that work starts**. Accepted work intended for incorporation may require a separate written agreement, including an agreed intellectual-property assignment, **before incorporation**. The pull request itself is not that agreement. You can review the terms, ask questions, and decline; your pre-existing intellectual property remains yours unless you separately agree otherwise in writing.
 

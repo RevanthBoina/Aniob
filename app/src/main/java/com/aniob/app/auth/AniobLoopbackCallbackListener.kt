@@ -44,22 +44,36 @@ class AniobLoopbackCallbackListener(
         catch (e: IOException) { lastCloseError = e.javaClass.simpleName }
     }
 
-    /** The actual port (useful when 0 is requested in tests). */
-    val boundPort: Int get() = server?.localPort ?: -1
+    /** The actual port (the preferred one, or a free one if that was busy). */
+    override val boundPort: Int get() = server?.localPort ?: -1
 
     /** The address the socket is bound to; always the IPv4 loopback address. */
     val boundHost: String? get() = server?.inetAddress?.hostAddress
 
     override fun bind() {
+        // Preferred port first; if another app or a lingering socket holds it, ask the OS for a free
+        // one. The authorize URL and token exchange use whichever port was really bound.
+        try {
+            server = open(port)
+        } catch (first: BindException) {
+            if (port == 0) throw AniobPortInUseException(first)
+            try {
+                server = open(0)
+            } catch (second: IOException) {
+                throw AniobPortInUseException(second)
+            }
+        }
+    }
+
+    private fun open(p: Int): ServerSocket {
         val socket = ServerSocket()
         try {
-            socket.reuseAddress = false
-            socket.bind(InetSocketAddress(InetAddress.getByAddress(LOOPBACK), port), 1)
+            // SO_REUSEADDR lets a retry bind right after a cancelled attempt (TIME_WAIT). On Linux it
+            // does not allow two live listeners on one port.
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(InetAddress.getByAddress(LOOPBACK), p), 4)
             socket.soTimeout = POLL_MS
-            server = socket
-        } catch (e: BindException) {
-            socket.close()
-            throw AniobPortInUseException(e)
+            return socket
         } catch (e: IOException) {
             socket.close()
             throw e

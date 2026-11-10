@@ -39,13 +39,13 @@ object AniobConsequenceClassifier {
     private val PATTERNS: List<Triple<Regex, Consequence, Reversibility>> = listOf(
         Triple(Regex("(?i)\\b(pay|pay now|place order|buy|purchase|checkout|confirm payment|subscribe)\\b"),
             Consequence.PAYS, Reversibility.IRREVERSIBLE),
-        Triple(Regex("(?i)\\b(delete|remove|erase|discard|clear all|unsend|deactivate|close account)\\b"),
+        Triple(Regex("(?i)(?!.*\\b(?:filter|tag|selection|highlight|table)\\b)\\b(delete|remove|erase|discard|clear all|unsend|deactivate|close account)\\b"),
             Consequence.DELETES, Reversibility.IRREVERSIBLE),
         Triple(Regex("(?i)\\b(send|send now|reply|reply all|submit)\\b"),
             Consequence.SENDS, Reversibility.HARD_TO_UNDO),
         Triple(Regex("(?i)\\b(post|publish|tweet|share now|go live|comment)\\b"),
             Consequence.POSTS, Reversibility.HARD_TO_UNDO),
-        Triple(Regex("(?i)\\b(share|send to|forward|invite)\\b"),
+        Triple(Regex("(?i)\\b(share|send to|forward|invite|connect|follow)\\b"),
             Consequence.SHARES, Reversibility.HARD_TO_UNDO),
         Triple(Regex("(?i)\\b(call|dial|video call|ring)\\b"),
             Consequence.CALLS, Reversibility.HARD_TO_UNDO)

@@ -395,16 +395,16 @@ fun ExpandableStepRow(
 }
 
 private fun formatActionSummary(action: AniobAction): String = when (action) {
-    is AniobAction.Tap -> "TAP(${action.target.describe()})"
-    is AniobAction.LongPress -> "LONG_PRESS(${action.target.describe()}, ${action.durationMs}ms)"
-    is AniobAction.OpenApp -> "OPEN_APP(${action.packageName})"
-    is AniobAction.InputText -> "TYPE(\"${action.text}\" -> ${action.target.describe()})"
-    is AniobAction.Swipe -> "SWIPE(${action.direction})"
-    is AniobAction.PressKey -> "KEY(${action.key})"
-    is AniobAction.SystemKey -> "SYS_KEY(${action.key})"
-    is AniobAction.Wait -> "WAIT(${action.durationMs}ms)"
-    is AniobAction.Finish -> "FINISH: ${action.summary}"
-    is AniobAction.Fail -> "FAIL: ${action.reason}"
-    is AniobAction.ConfirmWithUser -> "CONFIRM: ${action.message}"
-    else -> "${action.toolName}"
+    is AniobAction.Tap -> "Tap ${action.target.describe()}"
+    is AniobAction.LongPress -> "Long press ${action.target.describe()}"
+    is AniobAction.OpenApp -> "Open ${action.packageName.substringAfterLast('.')}"
+    is AniobAction.InputText -> "Type \"${action.text}\""
+    is AniobAction.Swipe -> "Swipe ${action.direction.name.lowercase()}"
+    is AniobAction.PressKey -> "Press ${action.key}"
+    is AniobAction.SystemKey -> "System ${action.key}"
+    is AniobAction.Wait -> "Wait for UI to settle"
+    is AniobAction.Finish -> "Finished: ${action.summary}"
+    is AniobAction.Fail -> "Stopped: ${action.reason}"
+    is AniobAction.ConfirmWithUser -> "Ask user: ${action.message}"
+    else -> action.toolName
 }

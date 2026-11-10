@@ -356,7 +356,7 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // SETTLE: idle-gate instead of a fixed sleep
-        val screenAfter = outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
+        var screenAfter = outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
             if (it is kotlinx.coroutines.CancellationException) throw it
             observed
         }
@@ -400,7 +400,42 @@ class StepPipeline(
                 DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
             }
         } else {
-            DeterministicVerifier.verify(effectiveAction, observed, screenAfter)
+            var v = DeterministicVerifier.verify(effectiveAction, observed, screenAfter)
+            if (!v.isExpected && v.reason.contains("No-effect", ignoreCase = true)) {
+                var retriedScreen = screenAfter
+                // User requirement: try again 2 times, then wait 3 seconds for each turn and try another max 3 times
+                for (retry in 1..2) {
+                    val retryOutcome = dispatch(effectiveAction)
+                    retriedScreen = retryOutcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse { observed }
+                    v = DeterministicVerifier.verify(effectiveAction, observed, retriedScreen)
+                    if (v.isExpected) {
+                        screenAfter = retriedScreen
+                        break
+                    }
+                }
+                if (!v.isExpected) {
+                    for (delayedRetry in 1..3) {
+                        kotlinx.coroutines.delay(3000L)
+                        val freshCapture = runCatching { capture() }.getOrNull()
+                        if (freshCapture != null) {
+                            retriedScreen = freshCapture
+                            v = DeterministicVerifier.verify(effectiveAction, observed, retriedScreen)
+                            if (v.isExpected) {
+                                screenAfter = retriedScreen
+                                break
+                            }
+                        }
+                        val delayedOutcome = dispatch(effectiveAction)
+                        retriedScreen = delayedOutcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse { observed }
+                        v = DeterministicVerifier.verify(effectiveAction, observed, retriedScreen)
+                        if (v.isExpected) {
+                            screenAfter = retriedScreen
+                            break
+                        }
+                    }
+                }
+            }
+            v
         }
 
         // REFLECT

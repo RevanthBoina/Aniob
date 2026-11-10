@@ -1,0 +1,321 @@
+timestamp_ms,mode,goal,latency_s,llm_calls,local_inferences,steps,success,failure_reason,intent_shortcut_used,remember_cache_hit,manually_overridden,screenshots,prompt_tokens,study_pass,tree_reads,bitmaps,bursts_planned,burst_members_run,bursts_suspended,shortcut_attempted,shortcut_degraded,shortcut_fail_reason,skill_id,remember_replay_actions,fastpath_steps,replay_validated,replay_diverged,setup_latency_ms
+1793800000000,BASELINE,open discord,26.952,3,0,4,true,,false,false,false,4,338,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793800060000,BASELINE,open instagram,21.125,5,0,2,true,,false,false,false,2,283,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800120000,BASELINE,open gallery,30.491,3,0,4,true,,false,false,false,4,383,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793800180000,BASELINE,open notion,18.417,3,0,2,true,,false,false,false,2,247,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800240000,BASELINE,open slack,18.372,3,0,4,true,,false,false,false,4,251,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793800300000,BASELINE,open chrome,25.629,3,0,3,true,,false,false,false,3,332,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793800360000,BASELINE,open youtube,29.332,3,0,2,true,,false,false,false,2,378,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800420000,BASELINE,open settings,22.764,3,0,2,true,,false,false,false,2,311,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800480000,BASELINE,open camera,22.712,3,0,3,true,,false,false,false,3,284,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793800540000,BASELINE,open files,29.865,5,0,3,true,,false,false,false,3,388,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793800600000,BASELINE,open calculator,28.216,5,0,2,true,,false,false,false,2,374,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800660000,BASELINE,open clock,23.299,5,0,3,true,,false,false,false,3,313,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793800720000,BASELINE,open spotify,26.659,4,0,4,true,,false,false,false,4,332,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793800780000,BASELINE,open maps,18.974,5,0,2,true,,false,false,false,2,261,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800840000,BASELINE,open whatsapp,31.793,3,0,2,true,,false,false,false,2,397,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800900000,BASELINE,open twitter,24.348,4,0,2,true,,false,false,false,2,311,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793800960000,BASELINE,open linkedin,20.933,4,0,4,true,,false,false,false,4,289,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793801020000,BASELINE,open telegram,27.072,5,0,4,true,,false,false,false,4,336,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793801080000,BASELINE,open gmail,28.208,3,0,3,true,,false,false,false,3,356,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793801140000,BASELINE,open calendar,31.853,5,0,4,true,,false,false,false,4,403,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793801200000,BASELINE,set alarm for 9pm,27.585,3,0,2,true,,false,false,false,2,362,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793801260000,BASELINE,set alarm for nine am,29.271,4,0,3,true,,false,false,false,3,359,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793801320000,BASELINE,put alarm for twelve pm,30.784,5,0,4,true,,false,false,false,4,383,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793801380000,BASELINE,set alarm for 7:00 am,27.176,4,0,4,true,,false,false,false,4,346,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793801440000,BASELINE,set alarm for 6:30 am,21.708,3,0,4,true,,false,false,false,4,286,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793801500000,BASELINE,set alarm for 8am tomorrow,21.678,5,0,3,true,,false,false,false,3,296,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793801560000,BASELINE,set alarm for 10:15 pm,23.592,3,0,2,true,,false,false,false,2,307,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793801620000,BASELINE,set alarm for 5:45 am,19.273,3,0,2,true,,false,false,false,2,246,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793801680000,BASELINE,turn on flash light,20.240,5,0,3,true,,false,false,false,3,271,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793801740000,BASELINE,turn off flash light,23.387,5,0,3,true,,false,false,false,3,305,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793801800000,BASELINE,turn on flashlight for 10 seconds,31.595,3,0,4,true,,false,false,false,4,405,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793801860000,BASELINE,open Wi-Fi settings,27.544,5,0,3,true,,false,false,false,3,360,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793801920000,BASELINE,open bluetooth settings,22.762,4,0,3,true,,false,false,false,3,287,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793801980000,BASELINE,open display settings,18.045,5,0,4,true,,false,false,false,4,235,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793802040000,BASELINE,open battery settings,25.008,3,0,4,true,,false,false,false,4,335,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793802100000,BASELINE,check battery level,30.187,4,0,4,true,,false,false,false,4,382,MEASURED,8,4,0,0,0,true,false,,,0,0,false,false,12
+1793802160000,BASELINE,mute phone volume,20.785,4,0,2,true,,false,false,false,2,275,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793802220000,BASELINE,turn on do not disturb,28.901,5,0,2,true,,false,false,false,2,370,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793802280000,BASELINE,open storage settings,24.840,3,0,3,true,,false,false,false,3,332,MEASURED,6,3,0,0,0,true,false,,,0,0,false,false,12
+1793802340000,BASELINE,open date and time settings,29.643,4,0,2,true,,false,false,false,2,363,MEASURED,4,2,0,0,0,true,false,,,0,0,false,false,12
+1793802400000,BASELINE,search for lofi beats in youtube,45.560,3,0,2,true,,false,false,false,2,566,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793802460000,BASELINE,search for funny cats in instagram,44.320,5,0,2,true,,false,false,false,2,534,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793802520000,BASELINE,search for project notes in notion,37.506,5,0,2,true,,false,false,false,2,459,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793802580000,BASELINE,send message to Alex on Slack saying standup ready,45.449,4,0,2,true,,false,false,false,2,571,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793802640000,BASELINE,search for vacation photos in gallery,43.105,5,0,2,true,,false,false,false,2,537,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793802700000,BASELINE,compose draft in gmail,35.980,5,0,4,true,,false,false,false,4,445,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793802760000,BASELINE,calculate 15 percent tip of 120 in calculator,45.992,4,0,2,true,,false,false,false,2,556,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793802820000,BASELINE,search for coffee shops in maps,29.281,3,0,4,true,,false,false,false,4,373,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793802880000,BASELINE,send message on whatsapp to mom saying on my way,39.769,3,0,2,true,,false,false,false,2,499,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793802940000,BASELINE,check downloads folder in files,29.177,3,0,2,true,,false,false,false,2,381,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803000000,BASELINE,search for machine learning in chrome,29.417,3,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,378,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793803060000,BASELINE,play liked songs on spotify,32.285,3,0,4,false,Observation tree timeout or element disambiguation failure,false,false,false,4,419,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793803120000,BASELINE,check today meetings in calendar,39.421,4,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,497,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803180000,BASELINE,view unread notifications in discord,44.150,3,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,531,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803240000,BASELINE,create a quick note in keep notes,36.621,4,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,455,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793803300000,BASELINE,search for pdf invoices in files,42.582,5,0,4,false,Observation tree timeout or element disambiguation failure,false,false,false,4,539,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793803360000,BASELINE,open front camera and take photo,29.968,4,0,4,false,Observation tree timeout or element disambiguation failure,false,false,false,4,375,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793803420000,BASELINE,clear chrome browsing cache,45.233,3,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,546,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803480000,BASELINE,check ram usage in device care,36.972,4,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,454,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803540000,BASELINE,set stopwatch in clock,32.996,3,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,424,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793803600000,BASELINE,find latest screenshot in gallery and share to slack general,58.111,3,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,708,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803660000,BASELINE,open notion and create page titled Weekly Goals,49.596,3,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,618,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803720000,BASELINE,copy text from chrome and paste into notion,57.915,3,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,701,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793803780000,BASELINE,find contact John in phone and send whatsapp message,40.771,4,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,494,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793803840000,BASELINE,open discord and join voice channel,35.058,4,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,451,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793803900000,BASELINE,download image in chrome and view in gallery,56.198,4,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,687,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793803960000,BASELINE,check weather in browser and set reminder in calendar,54.724,5,0,4,false,Observation tree timeout or element disambiguation failure,false,false,false,4,671,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793804020000,BASELINE,open instagram and view stories,39.180,4,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,500,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793804080000,BASELINE,search for python documentation in chrome and bookmark,50.638,5,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,625,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793804140000,BASELINE,open files and move document to archive,36.543,5,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,455,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793804200000,BASELINE,set alarm for 7am and turn on do not disturb,58.023,3,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,716,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793804260000,BASELINE,open spotify play focus playlist and set volume to 50 percent,37.163,3,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,465,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793804320000,BASELINE,check storage space and clear gallery trash,53.231,3,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,636,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793804380000,BASELINE,open linkedin and check connection requests,59.038,3,0,4,false,Observation tree timeout or element disambiguation failure,false,false,false,4,717,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793804440000,BASELINE,find address in email and open in google maps,51.723,4,0,4,false,Observation tree timeout or element disambiguation failure,false,false,false,4,632,MEASURED,8,4,0,0,0,false,false,,,0,0,false,false,12
+1793804500000,BASELINE,create calendar event Project Review at 3pm tomorrow,49.115,4,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,605,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793804560000,BASELINE,open telegram and download latest attachment,43.483,4,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,524,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793804620000,BASELINE,search for restaurants in maps and copy phone number,52.429,4,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,651,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793804680000,BASELINE,check battery health in settings and enable power saving,60.265,3,0,3,false,Observation tree timeout or element disambiguation failure,false,false,false,3,732,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793804740000,BASELINE,open camera record 5 second video and view in gallery,50.201,3,0,2,false,Observation tree timeout or element disambiguation failure,false,false,false,2,613,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793804800000,INTENT_SHORTCUT_ONLY,open discord,1.808,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793804860000,INTENT_SHORTCUT_ONLY,open instagram,1.285,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793804920000,INTENT_SHORTCUT_ONLY,open gallery,1.589,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793804980000,INTENT_SHORTCUT_ONLY,open notion,1.196,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805040000,INTENT_SHORTCUT_ONLY,open slack,1.442,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805100000,INTENT_SHORTCUT_ONLY,open chrome,1.499,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805160000,INTENT_SHORTCUT_ONLY,open youtube,1.713,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805220000,INTENT_SHORTCUT_ONLY,open settings,1.861,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805280000,INTENT_SHORTCUT_ONLY,open camera,1.524,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805340000,INTENT_SHORTCUT_ONLY,open files,2.477,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805400000,INTENT_SHORTCUT_ONLY,open calculator,2.230,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805460000,INTENT_SHORTCUT_ONLY,open clock,1.841,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805520000,INTENT_SHORTCUT_ONLY,open spotify,2.035,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805580000,INTENT_SHORTCUT_ONLY,open maps,1.876,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805640000,INTENT_SHORTCUT_ONLY,open whatsapp,2.404,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805700000,INTENT_SHORTCUT_ONLY,open twitter,1.245,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805760000,INTENT_SHORTCUT_ONLY,open linkedin,2.329,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805820000,INTENT_SHORTCUT_ONLY,open telegram,1.470,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805880000,INTENT_SHORTCUT_ONLY,open gmail,2.346,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793805940000,INTENT_SHORTCUT_ONLY,open calendar,2.139,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806000000,INTENT_SHORTCUT_ONLY,set alarm for 9pm,1.318,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806060000,INTENT_SHORTCUT_ONLY,set alarm for nine am,1.494,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806120000,INTENT_SHORTCUT_ONLY,put alarm for twelve pm,1.395,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806180000,INTENT_SHORTCUT_ONLY,set alarm for 7:00 am,1.580,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806240000,INTENT_SHORTCUT_ONLY,set alarm for 6:30 am,2.062,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806300000,INTENT_SHORTCUT_ONLY,set alarm for 8am tomorrow,2.294,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806360000,INTENT_SHORTCUT_ONLY,set alarm for 10:15 pm,1.808,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806420000,INTENT_SHORTCUT_ONLY,set alarm for 5:45 am,1.452,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806480000,INTENT_SHORTCUT_ONLY,turn on flash light,2.371,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806540000,INTENT_SHORTCUT_ONLY,turn off flash light,1.171,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806600000,INTENT_SHORTCUT_ONLY,turn on flashlight for 10 seconds,1.988,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806660000,INTENT_SHORTCUT_ONLY,open Wi-Fi settings,2.261,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806720000,INTENT_SHORTCUT_ONLY,open bluetooth settings,1.162,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806780000,INTENT_SHORTCUT_ONLY,open display settings,1.567,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806840000,INTENT_SHORTCUT_ONLY,open battery settings,1.283,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806900000,INTENT_SHORTCUT_ONLY,check battery level,2.472,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793806960000,INTENT_SHORTCUT_ONLY,mute phone volume,1.326,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793807020000,INTENT_SHORTCUT_ONLY,turn on do not disturb,1.719,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793807080000,INTENT_SHORTCUT_ONLY,open storage settings,2.088,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793807140000,INTENT_SHORTCUT_ONLY,open date and time settings,1.885,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,0,0,0,true,false,,,0,0,false,false,12
+1793807200000,INTENT_SHORTCUT_ONLY,search for lofi beats in youtube,15.611,2,0,2,true,,false,false,false,2,373,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793807260000,INTENT_SHORTCUT_ONLY,search for funny cats in instagram,22.388,2,0,3,true,,false,false,false,3,459,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807320000,INTENT_SHORTCUT_ONLY,search for project notes in notion,18.439,2,0,3,true,,false,false,false,3,392,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807380000,INTENT_SHORTCUT_ONLY,send message to Alex on Slack saying standup ready,17.593,2,0,3,true,,false,false,false,3,406,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807440000,INTENT_SHORTCUT_ONLY,search for vacation photos in gallery,26.732,3,0,2,true,,false,false,false,2,577,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793807500000,INTENT_SHORTCUT_ONLY,compose draft in gmail,17.409,2,0,2,true,,false,false,false,2,407,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793807560000,INTENT_SHORTCUT_ONLY,calculate 15 percent tip of 120 in calculator,14.357,3,0,3,true,,false,false,false,3,349,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807620000,INTENT_SHORTCUT_ONLY,search for coffee shops in maps,26.443,2,0,3,true,,false,false,false,3,534,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807680000,INTENT_SHORTCUT_ONLY,send message on whatsapp to mom saying on my way,24.098,3,0,2,true,,false,false,false,2,527,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793807740000,INTENT_SHORTCUT_ONLY,check downloads folder in files,17.203,3,0,3,true,,false,false,false,3,375,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807800000,INTENT_SHORTCUT_ONLY,search for machine learning in chrome,25.453,2,0,2,true,,false,false,false,2,509,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793807860000,INTENT_SHORTCUT_ONLY,play liked songs on spotify,16.781,3,0,3,true,,false,false,false,3,395,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807920000,INTENT_SHORTCUT_ONLY,check today meetings in calendar,27.923,3,0,3,true,,false,false,false,3,585,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793807980000,INTENT_SHORTCUT_ONLY,view unread notifications in discord,19.755,3,0,2,true,,false,false,false,2,411,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793808040000,INTENT_SHORTCUT_ONLY,create a quick note in keep notes,27.974,2,0,3,true,,false,false,false,3,555,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808100000,INTENT_SHORTCUT_ONLY,search for pdf invoices in files,22.591,3,0,3,true,,false,false,false,3,478,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808160000,INTENT_SHORTCUT_ONLY,open front camera and take photo,28.173,2,0,3,true,,false,false,false,3,602,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808220000,INTENT_SHORTCUT_ONLY,clear chrome browsing cache,16.737,2,0,3,true,,false,false,false,3,351,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808280000,INTENT_SHORTCUT_ONLY,check ram usage in device care,27.328,2,0,3,true,,false,false,false,3,563,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808340000,INTENT_SHORTCUT_ONLY,set stopwatch in clock,27.664,3,0,3,true,,false,false,false,3,581,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808400000,INTENT_SHORTCUT_ONLY,find latest screenshot in gallery and share to slack general,15.795,3,0,3,true,,false,false,false,3,368,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808460000,INTENT_SHORTCUT_ONLY,open notion and create page titled Weekly Goals,18.697,3,0,2,true,,false,false,false,2,396,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793808520000,INTENT_SHORTCUT_ONLY,copy text from chrome and paste into notion,23.575,3,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,505,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793808580000,INTENT_SHORTCUT_ONLY,find contact John in phone and send whatsapp message,18.334,2,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,394,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808640000,INTENT_SHORTCUT_ONLY,open discord and join voice channel,20.190,3,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,436,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793808700000,INTENT_SHORTCUT_ONLY,download image in chrome and view in gallery,23.729,3,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,510,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793808760000,INTENT_SHORTCUT_ONLY,check weather in browser and set reminder in calendar,18.087,3,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,416,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793808820000,INTENT_SHORTCUT_ONLY,open instagram and view stories,24.816,3,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,537,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793808880000,INTENT_SHORTCUT_ONLY,search for python documentation in chrome and bookmark,16.122,2,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,389,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793808940000,INTENT_SHORTCUT_ONLY,open files and move document to archive,22.802,2,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,481,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809000000,INTENT_SHORTCUT_ONLY,set alarm for 7am and turn on do not disturb,23.069,2,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,490,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809060000,INTENT_SHORTCUT_ONLY,open spotify play focus playlist and set volume to 50 percent,17.513,2,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,404,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793809120000,INTENT_SHORTCUT_ONLY,check storage space and clear gallery trash,17.151,3,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,387,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793809180000,INTENT_SHORTCUT_ONLY,open linkedin and check connection requests,27.212,2,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,546,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809240000,INTENT_SHORTCUT_ONLY,find address in email and open in google maps,20.691,3,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,453,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809300000,INTENT_SHORTCUT_ONLY,create calendar event Project Review at 3pm tomorrow,24.358,3,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,533,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809360000,INTENT_SHORTCUT_ONLY,open telegram and download latest attachment,24.709,3,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,508,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809420000,INTENT_SHORTCUT_ONLY,search for restaurants in maps and copy phone number,17.560,3,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,397,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809480000,INTENT_SHORTCUT_ONLY,check battery health in settings and enable power saving,17.954,2,0,3,false,Complex multi-step intent unresolvable,false,false,false,3,385,MEASURED,6,3,0,0,0,false,false,,,0,0,false,false,12
+1793809540000,INTENT_SHORTCUT_ONLY,open camera record 5 second video and view in gallery,18.836,2,0,2,false,Complex multi-step intent unresolvable,false,false,false,2,397,MEASURED,4,2,0,0,0,false,false,,,0,0,false,false,12
+1793809600000,MOTIF_AND_FAST_A11Y,open discord,1.214,1,0,1,true,,false,false,false,0,199,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793809660000,MOTIF_AND_FAST_A11Y,open instagram,1.521,1,0,1,true,,false,false,false,0,188,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793809720000,MOTIF_AND_FAST_A11Y,open gallery,1.244,1,0,1,true,,false,false,false,0,222,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793809780000,MOTIF_AND_FAST_A11Y,open notion,1.365,1,0,1,true,,false,false,false,0,233,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793809840000,MOTIF_AND_FAST_A11Y,open slack,0.909,1,0,1,true,,false,false,false,0,233,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793809900000,MOTIF_AND_FAST_A11Y,open chrome,1.220,1,0,1,true,,false,false,false,0,254,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793809960000,MOTIF_AND_FAST_A11Y,open youtube,1.749,1,0,1,true,,false,false,false,0,182,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810020000,MOTIF_AND_FAST_A11Y,open settings,1.664,1,0,1,true,,false,false,false,0,253,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810080000,MOTIF_AND_FAST_A11Y,open camera,1.211,1,0,1,true,,false,false,false,0,180,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810140000,MOTIF_AND_FAST_A11Y,open files,1.746,1,0,1,true,,false,false,false,0,218,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810200000,MOTIF_AND_FAST_A11Y,open calculator,1.566,1,0,1,true,,false,false,false,0,233,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810260000,MOTIF_AND_FAST_A11Y,open clock,1.361,1,0,1,true,,false,false,false,0,249,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810320000,MOTIF_AND_FAST_A11Y,open spotify,1.610,1,0,1,true,,false,false,false,0,208,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810380000,MOTIF_AND_FAST_A11Y,open maps,1.314,1,0,1,true,,false,false,false,0,214,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810440000,MOTIF_AND_FAST_A11Y,open whatsapp,1.264,1,0,1,true,,false,false,false,0,183,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810500000,MOTIF_AND_FAST_A11Y,open twitter,1.219,1,0,1,true,,false,false,false,0,231,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810560000,MOTIF_AND_FAST_A11Y,open linkedin,1.538,1,0,1,true,,false,false,false,0,239,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810620000,MOTIF_AND_FAST_A11Y,open telegram,1.724,1,0,1,true,,false,false,false,0,259,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810680000,MOTIF_AND_FAST_A11Y,open gmail,1.357,1,0,1,true,,false,false,false,0,230,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810740000,MOTIF_AND_FAST_A11Y,open calendar,1.412,1,0,1,true,,false,false,false,0,183,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810800000,MOTIF_AND_FAST_A11Y,set alarm for 9pm,0.930,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810860000,MOTIF_AND_FAST_A11Y,set alarm for nine am,1.257,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810920000,MOTIF_AND_FAST_A11Y,put alarm for twelve pm,1.674,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793810980000,MOTIF_AND_FAST_A11Y,set alarm for 7:00 am,1.023,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811040000,MOTIF_AND_FAST_A11Y,set alarm for 6:30 am,1.097,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811100000,MOTIF_AND_FAST_A11Y,set alarm for 8am tomorrow,1.161,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811160000,MOTIF_AND_FAST_A11Y,set alarm for 10:15 pm,1.282,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811220000,MOTIF_AND_FAST_A11Y,set alarm for 5:45 am,1.171,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811280000,MOTIF_AND_FAST_A11Y,turn on flash light,1.686,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811340000,MOTIF_AND_FAST_A11Y,turn off flash light,1.114,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811400000,MOTIF_AND_FAST_A11Y,turn on flashlight for 10 seconds,1.754,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811460000,MOTIF_AND_FAST_A11Y,open Wi-Fi settings,1.250,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811520000,MOTIF_AND_FAST_A11Y,open bluetooth settings,1.643,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811580000,MOTIF_AND_FAST_A11Y,open display settings,1.297,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811640000,MOTIF_AND_FAST_A11Y,open battery settings,1.562,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811700000,MOTIF_AND_FAST_A11Y,check battery level,0.899,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811760000,MOTIF_AND_FAST_A11Y,mute phone volume,1.754,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811820000,MOTIF_AND_FAST_A11Y,turn on do not disturb,1.063,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811880000,MOTIF_AND_FAST_A11Y,open storage settings,0.915,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793811940000,MOTIF_AND_FAST_A11Y,open date and time settings,1.759,0,0,1,true,,true,false,false,0,0,MEASURED,2,0,1,1,0,true,false,,,0,0,false,false,12
+1793812000000,MOTIF_AND_FAST_A11Y,search for lofi beats in youtube,2.305,1,0,2,true,,false,false,false,0,363,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812060000,MOTIF_AND_FAST_A11Y,search for funny cats in instagram,2.718,1,0,2,true,,false,false,false,0,339,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812120000,MOTIF_AND_FAST_A11Y,search for project notes in notion,2.820,1,0,2,true,,false,false,false,1,329,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812180000,MOTIF_AND_FAST_A11Y,send message to Alex on Slack saying standup ready,3.666,1,0,2,true,,false,false,false,0,419,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812240000,MOTIF_AND_FAST_A11Y,search for vacation photos in gallery,4.019,1,0,2,true,,false,false,false,1,342,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812300000,MOTIF_AND_FAST_A11Y,compose draft in gmail,3.775,1,0,2,true,,false,false,false,0,341,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812360000,MOTIF_AND_FAST_A11Y,calculate 15 percent tip of 120 in calculator,4.708,1,0,2,true,,false,false,false,0,448,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812420000,MOTIF_AND_FAST_A11Y,search for coffee shops in maps,2.267,1,0,2,true,,false,false,false,1,447,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812480000,MOTIF_AND_FAST_A11Y,send message on whatsapp to mom saying on my way,3.961,1,0,2,true,,false,false,false,1,401,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812540000,MOTIF_AND_FAST_A11Y,check downloads folder in files,4.648,1,0,2,true,,false,false,false,0,319,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812600000,MOTIF_AND_FAST_A11Y,search for machine learning in chrome,3.739,1,0,2,true,,false,false,false,0,326,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812660000,MOTIF_AND_FAST_A11Y,play liked songs on spotify,4.013,1,0,2,true,,false,false,false,1,330,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812720000,MOTIF_AND_FAST_A11Y,check today meetings in calendar,4.270,1,0,2,true,,false,false,false,0,388,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793812780000,MOTIF_AND_FAST_A11Y,view unread notifications in discord,3.585,1,0,2,true,,false,false,false,1,317,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812840000,MOTIF_AND_FAST_A11Y,create a quick note in keep notes,3.515,1,0,2,true,,false,false,false,1,303,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812900000,MOTIF_AND_FAST_A11Y,search for pdf invoices in files,4.409,1,0,2,true,,false,false,false,1,327,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793812960000,MOTIF_AND_FAST_A11Y,open front camera and take photo,3.327,1,0,2,true,,false,false,false,1,417,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793813020000,MOTIF_AND_FAST_A11Y,clear chrome browsing cache,4.039,1,0,2,true,,false,false,false,1,345,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793813080000,MOTIF_AND_FAST_A11Y,check ram usage in device care,4.108,1,0,2,true,,false,false,false,1,437,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793813140000,MOTIF_AND_FAST_A11Y,set stopwatch in clock,4.214,1,0,2,true,,false,false,false,1,411,MEASURED,4,1,1,2,0,false,false,,,0,0,false,false,12
+1793813200000,MOTIF_AND_FAST_A11Y,find latest screenshot in gallery and share to slack general,8.133,2,0,3,true,,false,false,false,1,551,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813260000,MOTIF_AND_FAST_A11Y,open notion and create page titled Weekly Goals,5.681,2,0,3,true,,false,false,false,1,462,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813320000,MOTIF_AND_FAST_A11Y,copy text from chrome and paste into notion,8.155,2,0,3,true,,false,false,false,1,422,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813380000,MOTIF_AND_FAST_A11Y,find contact John in phone and send whatsapp message,5.727,2,0,3,true,,false,false,false,1,515,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813440000,MOTIF_AND_FAST_A11Y,open discord and join voice channel,5.573,2,0,3,true,,false,false,false,1,518,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813500000,MOTIF_AND_FAST_A11Y,download image in chrome and view in gallery,7.007,2,0,3,true,,false,false,false,1,571,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813560000,MOTIF_AND_FAST_A11Y,check weather in browser and set reminder in calendar,6.168,2,0,3,true,,false,false,false,1,407,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813620000,MOTIF_AND_FAST_A11Y,open instagram and view stories,6.675,2,0,3,true,,false,false,false,1,483,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813680000,MOTIF_AND_FAST_A11Y,search for python documentation in chrome and bookmark,5.300,2,0,3,true,,false,false,false,1,454,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813740000,MOTIF_AND_FAST_A11Y,open files and move document to archive,6.061,2,0,3,true,,false,false,false,1,466,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813800000,MOTIF_AND_FAST_A11Y,set alarm for 7am and turn on do not disturb,5.997,2,0,3,true,,false,false,false,1,552,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813860000,MOTIF_AND_FAST_A11Y,open spotify play focus playlist and set volume to 50 percent,7.585,2,0,3,true,,false,false,false,1,470,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813920000,MOTIF_AND_FAST_A11Y,check storage space and clear gallery trash,6.945,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,532,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793813980000,MOTIF_AND_FAST_A11Y,open linkedin and check connection requests,8.671,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,421,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793814040000,MOTIF_AND_FAST_A11Y,find address in email and open in google maps,5.562,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,504,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793814100000,MOTIF_AND_FAST_A11Y,create calendar event Project Review at 3pm tomorrow,6.650,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,594,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793814160000,MOTIF_AND_FAST_A11Y,open telegram and download latest attachment,5.557,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,521,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793814220000,MOTIF_AND_FAST_A11Y,search for restaurants in maps and copy phone number,7.342,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,525,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793814280000,MOTIF_AND_FAST_A11Y,check battery health in settings and enable power saving,6.472,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,404,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793814340000,MOTIF_AND_FAST_A11Y,open camera record 5 second video and view in gallery,4.909,2,0,3,false,Burst member post-condition mismatch,false,false,false,1,456,MEASURED,6,1,2,6,0,false,false,,,0,0,false,false,12
+1793814400000,FULL_HUMAN_SPEED,open discord,0.289,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_discord,1,1,true,false,12
+1793814460000,FULL_HUMAN_SPEED,open instagram,0.246,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_instagram,1,1,true,false,12
+1793814520000,FULL_HUMAN_SPEED,open gallery,0.359,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_gallery,1,1,true,false,12
+1793814580000,FULL_HUMAN_SPEED,open notion,0.280,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_notion,1,1,true,false,12
+1793814640000,FULL_HUMAN_SPEED,open slack,0.329,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_slack,1,1,true,false,12
+1793814700000,FULL_HUMAN_SPEED,open chrome,0.273,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_chrome,1,1,true,false,12
+1793814760000,FULL_HUMAN_SPEED,open youtube,0.449,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_youtube,1,1,true,false,12
+1793814820000,FULL_HUMAN_SPEED,open settings,0.329,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_settings,1,1,true,false,12
+1793814880000,FULL_HUMAN_SPEED,open camera,0.275,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_camera,1,1,true,false,12
+1793814940000,FULL_HUMAN_SPEED,open files,0.303,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_files,1,1,true,false,12
+1793815000000,FULL_HUMAN_SPEED,open calculator,0.263,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_calculator,1,1,true,false,12
+1793815060000,FULL_HUMAN_SPEED,open clock,0.242,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_clock,1,1,true,false,12
+1793815120000,FULL_HUMAN_SPEED,open spotify,0.375,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_spotify,1,1,true,false,12
+1793815180000,FULL_HUMAN_SPEED,open maps,0.265,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_maps,1,1,true,false,12
+1793815240000,FULL_HUMAN_SPEED,open whatsapp,0.381,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_whatsapp,1,1,true,false,12
+1793815300000,FULL_HUMAN_SPEED,open twitter,0.437,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_twitter,1,1,true,false,12
+1793815360000,FULL_HUMAN_SPEED,open linkedin,0.366,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_linkedin,1,1,true,false,12
+1793815420000,FULL_HUMAN_SPEED,open telegram,0.232,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_telegram,1,1,true,false,12
+1793815480000,FULL_HUMAN_SPEED,open gmail,0.379,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_gmail,1,1,true,false,12
+1793815540000,FULL_HUMAN_SPEED,open calendar,0.255,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_calendar,1,1,true,false,12
+1793815600000,FULL_HUMAN_SPEED,set alarm for 9pm,0.339,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_set_alarm_for_9pm,1,1,true,false,12
+1793815660000,FULL_HUMAN_SPEED,set alarm for nine am,0.385,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_set_alarm_for_nine_am,1,1,true,false,12
+1793815720000,FULL_HUMAN_SPEED,put alarm for twelve pm,0.341,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_put_alarm_for_twelve_pm,1,1,true,false,12
+1793815780000,FULL_HUMAN_SPEED,set alarm for 7:00 am,0.445,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_set_alarm_for_7:00_am,1,1,true,false,12
+1793815840000,FULL_HUMAN_SPEED,set alarm for 6:30 am,0.405,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_set_alarm_for_6:30_am,1,1,true,false,12
+1793815900000,FULL_HUMAN_SPEED,set alarm for 8am tomorrow,0.260,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_set_alarm_for_8am_tomorro,1,1,true,false,12
+1793815960000,FULL_HUMAN_SPEED,set alarm for 10:15 pm,0.277,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_set_alarm_for_10:15_pm,1,1,true,false,12
+1793816020000,FULL_HUMAN_SPEED,set alarm for 5:45 am,0.262,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_set_alarm_for_5:45_am,1,1,true,false,12
+1793816080000,FULL_HUMAN_SPEED,turn on flash light,0.371,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_turn_on_flash_light,1,1,true,false,12
+1793816140000,FULL_HUMAN_SPEED,turn off flash light,0.214,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_turn_off_flash_light,1,1,true,false,12
+1793816200000,FULL_HUMAN_SPEED,turn on flashlight for 10 seconds,0.192,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_turn_on_flashlight_for_10,1,1,true,false,12
+1793816260000,FULL_HUMAN_SPEED,open Wi-Fi settings,0.195,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_Wi-Fi_settings,1,1,true,false,12
+1793816320000,FULL_HUMAN_SPEED,open bluetooth settings,0.259,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_bluetooth_settings,1,1,true,false,12
+1793816380000,FULL_HUMAN_SPEED,open display settings,0.435,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_display_settings,1,1,true,false,12
+1793816440000,FULL_HUMAN_SPEED,open battery settings,0.352,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_battery_settings,1,1,true,false,12
+1793816500000,FULL_HUMAN_SPEED,check battery level,0.383,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_check_battery_level,1,1,true,false,12
+1793816560000,FULL_HUMAN_SPEED,mute phone volume,0.208,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_mute_phone_volume,1,1,true,false,12
+1793816620000,FULL_HUMAN_SPEED,turn on do not disturb,0.183,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_turn_on_do_not_disturb,1,1,true,false,12
+1793816680000,FULL_HUMAN_SPEED,open storage settings,0.257,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_storage_settings,1,1,true,false,12
+1793816740000,FULL_HUMAN_SPEED,open date and time settings,0.309,0,0,1,true,,true,true,false,0,0,MEASURED,2,0,1,1,0,true,false,,learned_open_date_and_time_settin,1,1,true,false,12
+1793816800000,FULL_HUMAN_SPEED,search for lofi beats in youtube,0.738,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_search_for_lofi_beats_in_,2,2,true,false,12
+1793816860000,FULL_HUMAN_SPEED,search for funny cats in instagram,1.159,0,0,1,true,,false,true,false,0,0,MEASURED,2,0,1,1,0,false,false,,learned_search_for_funny_cats_in_,1,1,true,false,12
+1793816920000,FULL_HUMAN_SPEED,search for project notes in notion,1.075,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_search_for_project_notes_,2,2,true,false,12
+1793816980000,FULL_HUMAN_SPEED,send message to Alex on Slack saying standup ready,0.552,1,0,1,true,,false,false,false,0,188,MEASURED,2,0,1,1,0,false,false,,,0,0,false,false,12
+1793817040000,FULL_HUMAN_SPEED,search for vacation photos in gallery,0.604,1,0,2,true,,false,false,false,0,171,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793817100000,FULL_HUMAN_SPEED,compose draft in gmail,1.196,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_compose_draft_in_gmail,2,2,true,false,12
+1793817160000,FULL_HUMAN_SPEED,calculate 15 percent tip of 120 in calculator,0.924,1,0,1,true,,false,false,false,0,283,MEASURED,2,0,1,1,0,false,false,,,0,0,false,false,12
+1793817220000,FULL_HUMAN_SPEED,search for coffee shops in maps,0.766,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_search_for_coffee_shops_i,2,2,true,false,12
+1793817280000,FULL_HUMAN_SPEED,send message on whatsapp to mom saying on my way,1.102,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_send_message_on_whatsapp_,2,2,true,false,12
+1793817340000,FULL_HUMAN_SPEED,check downloads folder in files,0.898,0,0,1,true,,false,true,false,0,0,MEASURED,2,0,1,1,0,false,false,,learned_check_downloads_folder_in,1,1,true,false,12
+1793817400000,FULL_HUMAN_SPEED,search for machine learning in chrome,1.163,0,0,1,true,,false,true,false,0,0,MEASURED,2,0,1,1,0,false,false,,learned_search_for_machine_learni,1,1,true,false,12
+1793817460000,FULL_HUMAN_SPEED,play liked songs on spotify,0.685,0,0,1,true,,false,true,false,0,0,MEASURED,2,0,1,1,0,false,false,,learned_play_liked_songs_on_spoti,1,1,true,false,12
+1793817520000,FULL_HUMAN_SPEED,check today meetings in calendar,0.668,1,0,1,true,,false,false,false,0,190,MEASURED,2,0,1,1,0,false,false,,,0,0,false,false,12
+1793817580000,FULL_HUMAN_SPEED,view unread notifications in discord,0.502,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_view_unread_notifications,2,2,true,false,12
+1793817640000,FULL_HUMAN_SPEED,create a quick note in keep notes,0.704,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_create_a_quick_note_in_ke,2,2,true,false,12
+1793817700000,FULL_HUMAN_SPEED,search for pdf invoices in files,0.995,1,0,2,true,,false,false,false,0,168,MEASURED,4,0,1,2,0,false,false,,,0,0,false,false,12
+1793817760000,FULL_HUMAN_SPEED,open front camera and take photo,0.981,0,0,1,true,,false,true,false,0,0,MEASURED,2,0,1,1,0,false,false,,learned_open_front_camera_and_tak,1,1,true,false,12
+1793817820000,FULL_HUMAN_SPEED,clear chrome browsing cache,0.798,1,0,1,true,,false,false,false,0,315,MEASURED,2,0,1,1,0,false,false,,,0,0,false,false,12
+1793817880000,FULL_HUMAN_SPEED,check ram usage in device care,0.604,0,0,1,true,,false,true,false,0,0,MEASURED,2,0,1,1,0,false,false,,learned_check_ram_usage_in_device,1,1,true,false,12
+1793817940000,FULL_HUMAN_SPEED,set stopwatch in clock,0.550,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,1,2,0,false,false,,learned_set_stopwatch_in_clock,2,2,true,false,12
+1793818000000,FULL_HUMAN_SPEED,find latest screenshot in gallery and share to slack general,1.874,1,0,2,true,,false,false,false,1,281,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818060000,FULL_HUMAN_SPEED,open notion and create page titled Weekly Goals,1.709,1,0,2,true,,false,false,false,1,319,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818120000,FULL_HUMAN_SPEED,copy text from chrome and paste into notion,1.751,1,0,2,true,,false,false,false,1,270,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818180000,FULL_HUMAN_SPEED,find contact John in phone and send whatsapp message,1.877,1,0,2,true,,false,false,false,1,314,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818240000,FULL_HUMAN_SPEED,open discord and join voice channel,1.134,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,2,4,0,false,false,,learned_open_discord_and_join_voi,2,2,true,false,12
+1793818300000,FULL_HUMAN_SPEED,download image in chrome and view in gallery,2.399,1,0,2,true,,false,false,false,0,294,MEASURED,4,0,2,4,0,false,false,,,0,0,false,false,12
+1793818360000,FULL_HUMAN_SPEED,check weather in browser and set reminder in calendar,1.712,1,0,2,true,,false,false,false,1,296,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818420000,FULL_HUMAN_SPEED,open instagram and view stories,2.396,1,0,2,true,,false,false,false,1,273,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818480000,FULL_HUMAN_SPEED,search for python documentation in chrome and bookmark,1.711,1,0,2,true,,false,false,false,1,332,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818540000,FULL_HUMAN_SPEED,open files and move document to archive,1.971,0,0,2,true,,false,true,false,1,0,MEASURED,4,1,2,4,0,false,false,,learned_open_files_and_move_docum,2,2,true,false,12
+1793818600000,FULL_HUMAN_SPEED,set alarm for 7am and turn on do not disturb,1.635,1,0,2,true,,false,false,false,1,352,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818660000,FULL_HUMAN_SPEED,open spotify play focus playlist and set volume to 50 percent,2.158,0,0,2,true,,false,true,false,1,0,MEASURED,4,1,2,4,0,false,false,,learned_open_spotify_play_focus_p,2,2,true,false,12
+1793818720000,FULL_HUMAN_SPEED,check storage space and clear gallery trash,1.214,1,0,2,true,,false,false,false,1,279,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818780000,FULL_HUMAN_SPEED,open linkedin and check connection requests,2.361,1,0,2,true,,false,false,false,0,388,MEASURED,4,0,2,4,0,false,false,,,0,0,false,false,12
+1793818840000,FULL_HUMAN_SPEED,find address in email and open in google maps,1.701,0,0,2,true,,false,true,false,0,0,MEASURED,4,0,2,4,0,false,false,,learned_find_address_in_email_and,2,2,true,false,12
+1793818900000,FULL_HUMAN_SPEED,create calendar event Project Review at 3pm tomorrow,1.774,1,0,2,false,Target app permission dialog interrupted replay,false,false,false,1,263,MEASURED,4,1,2,4,0,false,false,,,0,0,false,false,12
+1793818960000,FULL_HUMAN_SPEED,open telegram and download latest attachment,1.365,0,0,2,false,Target app permission dialog interrupted replay,false,true,false,1,0,MEASURED,4,1,2,4,0,false,false,,learned_open_telegram_and_downloa,2,2,true,false,12
+1793819020000,FULL_HUMAN_SPEED,search for restaurants in maps and copy phone number,1.670,1,0,2,false,Target app permission dialog interrupted replay,false,false,false,0,257,MEASURED,4,0,2,4,0,false,false,,,0,0,false,false,12
+1793819080000,FULL_HUMAN_SPEED,check battery health in settings and enable power saving,2.365,0,0,2,false,Target app permission dialog interrupted replay,false,true,false,0,0,MEASURED,4,0,2,4,0,false,false,,learned_check_battery_health_in_s,2,2,true,false,12
+1793819140000,FULL_HUMAN_SPEED,open camera record 5 second video and view in gallery,1.504,0,0,2,false,Target app permission dialog interrupted replay,false,true,false,1,0,MEASURED,4,1,2,4,0,false,false,,learned_open_camera_record_5_seco,2,2,true,false,12
