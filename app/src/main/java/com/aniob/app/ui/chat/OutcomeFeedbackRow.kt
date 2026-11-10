@@ -43,12 +43,6 @@ fun OutcomeFeedbackRow(
         Text(label, style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             val chosen = outcome.userDecision
-            if ((outcome.outcome == RunOutcome.FAILED || outcome.outcome == RunOutcome.UNVERIFIED) && chosen == null) {
-                Button(
-                    onClick = { onDecision(UserDecision.YES) },
-                    modifier = Modifier.testTag("mark_correct_btn").semantics { contentDescription = "Mark as correct" }
-                ) { Text("Mark as correct") }
-            }
             OutlinedButton(
                 onClick = { onDecision(UserDecision.YES) },
                 enabled = chosen == null,

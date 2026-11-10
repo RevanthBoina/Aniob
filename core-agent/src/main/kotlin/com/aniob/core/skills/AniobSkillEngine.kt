@@ -48,16 +48,6 @@ class AniobSkillEngine {
         return count
     }
 
-    @Synchronized
-    fun loadSingleSkill(file: java.io.File): AniobSkill? {
-        if (!file.exists() || !file.isFile) return null
-        return runCatching {
-            val skill = parseYaml(file.readText())
-            registerSkill(skill)
-            skill
-        }.getOrNull()
-    }
-
     /**
      * Parses standard YAML/JSON skill v2.1 text via strict AniobSkillCodec.
      */

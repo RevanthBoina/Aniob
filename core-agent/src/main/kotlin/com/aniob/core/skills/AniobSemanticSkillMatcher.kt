@@ -32,17 +32,6 @@ class AniobSemanticSkillMatcher(
     }
 
     @Synchronized
-    fun loadAndIndexSingleSkill(file: java.io.File): Boolean {
-        val skill = skillEngine.loadSingleSkill(file) ?: return false
-        if (skill.status == SkillStatus.ACTIVE && !skill.isDraft) {
-            val text = "${skill.name} ${skill.description} ${skill.triggerKeywords.joinToString(" ")}"
-            val vec = if (embeddingProvider.isAvailable()) embeddingProvider.embed(text) else AniobEmbeddingStore.generatePseudoEmbedding(text)
-            embeddingStore.put(skill.name, text, vec, mapOf("skillName" to skill.name))
-        }
-        return true
-    }
-
-    @Synchronized
     fun removeSkill(name: String) {
         if (skillEngine.removeSkill(name)) {
             embeddingStore.clear()

@@ -191,25 +191,6 @@ object FastVerify {
             delay(pollMs)
         }
 
-        // On tier 1 timeout, take one final cheap capture and decide changed-or-not
-        val finalScreen = runCatching { capturePoll() }.getOrNull() ?: last
-        if (finalScreen != null) {
-            captures++
-            last = finalScreen
-            val finalDecision = evaluate(preIdentity, finalScreen, wantedTexts, prePackage)
-            if (finalDecision.passed) {
-                return Outcome(
-                    tier = finalDecision.tier,
-                    elapsedMs = elapsedMs(startedAt),
-                    polls = polls,
-                    screen = finalScreen,
-                    matchedText = finalDecision.matchedText,
-                    screenshotTaken = false,
-                    captures = captures
-                )
-            }
-        }
-
         val bitmap = runCatching { screenshot() }.getOrNull()
         return Outcome(
             tier = Tier.TIMEOUT,
