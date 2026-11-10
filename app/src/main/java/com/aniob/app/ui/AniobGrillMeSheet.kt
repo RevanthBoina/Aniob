@@ -55,18 +55,6 @@ fun AniobGrillMeSheet(
     }
 
     var generalNotes by remember { mutableStateOf("") }
-    var countdownSeconds by remember { mutableStateOf(10) }
-
-    LaunchedEffect(grillResult) {
-        while (countdownSeconds > 0) {
-            kotlinx.coroutines.delay(1000L)
-            countdownSeconds--
-        }
-        val finalAnswers = userAnswers.toMutableMap()
-        if (generalNotes.isNotBlank()) finalAnswers["notes"] = generalNotes
-        val remember = rememberToggles.filter { it.value }.keys
-        onConfirm(finalAnswers, remember)
-    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -209,7 +197,7 @@ fun AniobGrillMeSheet(
                         onConfirm(finalAnswers, remember)
                     },
                     modifier = Modifier.testTag("grill_me_confirm")
-                ) { Text(if (countdownSeconds > 0) "Continue (${countdownSeconds}s)" else "Continue") }
+                ) { Text("Continue") }
             }
 
             Spacer(modifier = Modifier.height(24.dp))

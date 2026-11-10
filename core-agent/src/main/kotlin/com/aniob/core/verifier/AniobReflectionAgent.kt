@@ -96,28 +96,33 @@ class AniobReflectionAgent {
      * Judges a provisional `Finish`.
      */
     fun reflectFinish(
-        criteria: com.aniob.core.domain.SuccessCriteria? = null,
-        finalScreen: AniobScreenState = AniobScreenState(),
-        steps: Int = 1,
-        deterministic: DeterministicVerifier.VerificationResult = DeterministicVerifier.VerificationResult(false, 0L, "provisional"),
-        hasExecutedActions: Boolean = steps >= 1,
-        hasDeviceEvidence: Boolean = false,
+        criteria: com.aniob.core.domain.SuccessCriteria,
+        finalScreen: AniobScreenState,
+        steps: Int,
+        deterministic: DeterministicVerifier.VerificationResult,
         llmJudge: (String) -> com.aniob.core.execution.ReflectionOutcome = {
-            com.aniob.core.execution.ReflectionOutcome.confirmed("Abstained toward acceptance: $it")
+            com.aniob.core.execution.ReflectionOutcome.rejected(it, it)
         }
     ): com.aniob.core.execution.ReflectionOutcome {
         if (deterministic.isExpected) {
             return com.aniob.core.execution.ReflectionOutcome.confirmed(deterministic.reason)
         }
-        if (hasDeviceEvidence) {
-            return com.aniob.core.execution.ReflectionOutcome.confirmed("Device command dispatch completed on previous step")
-        }
-        if (hasExecutedActions) {
-            return com.aniob.core.execution.ReflectionOutcome.confirmed(
-                "Completed after executed action(s); outcome unverified against criteria"
+        if (criteria.isFullyCheckable) {
+            return com.aniob.core.execution.ReflectionOutcome.rejected(
+                deterministic.reason,
+                "The screen does not satisfy the task criteria yet (${deterministic.reason})."
             )
         }
-        // Only a completion claim made with zero executed actions should go to a judge.
+        // Nothing on this screen can confirm *or* deny the claim: there is no criterion to check.
+        // Every such Finish used to go to a judge that rejects by default, so a task that was
+        // actually done kept asking the model for another step and ended as "Task terminated".
+        // Once at least one action has run, accept the claim; the caller still reports the run as
+        // UNVERIFIED rather than SUCCESS, so this is not a claim of proof.
+        if (steps >= 2) {
+            return com.aniob.core.execution.ReflectionOutcome.confirmed(
+                "No machine-checkable criteria; finished after ${steps - 1} action(s), outcome unverified"
+            )
+        }
         return llmJudge(deterministic.reason)
     }
 }

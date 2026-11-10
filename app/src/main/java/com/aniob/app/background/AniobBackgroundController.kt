@@ -12,9 +12,6 @@ object AniobBackgroundController {
     private var currentActivityRef: WeakReference<Activity>? = null
     val currentActivity: Activity? get() = currentActivityRef?.get()
 
-    /** Callback invoked when user requests stop via the floating overlay. */
-    var onStopCallback: (() -> Unit)? = null
-
     fun registerActivity(activity: Activity) {
         currentActivityRef = WeakReference(activity)
         CompletionReporter.registerActivity(activity)
@@ -27,13 +24,14 @@ object AniobBackgroundController {
 
     fun onTaskStarted(context: Context, prompt: String) {
         AniobForegroundService.startService(context, prompt)
-        com.aniob.app.service.AniobAccessibilityService.instance?.showFloatingOverlay(0, prompt)
+        currentActivityRef?.get()?.let { activity ->
+            activity.runOnUiThread { activity.moveTaskToBack(true) }
+        }
     }
 
-    /** Progress is carried by ongoing notification and the accessibility floating status overlay. */
+    /** Progress is carried by the ongoing notification; no floating overlay is created. */
     fun onStepNarrated(stepIndex: Int, narration: String) {
         AniobForegroundService.updateProgress(stepIndex, narration)
-        com.aniob.app.service.AniobAccessibilityService.instance?.updateFloatingOverlay(stepIndex, narration)
     }
 
     fun onTaskPaused(paused: Boolean) {
@@ -49,7 +47,6 @@ object AniobBackgroundController {
         wasStopped: Boolean = false,
         resultTitle: String? = null
     ) {
-        com.aniob.app.service.AniobAccessibilityService.instance?.hideFloatingOverlay()
         CompletionReporter.report(context, summary, isSuccess, unverified, openChat, wasStopped, resultTitle)
     }
 

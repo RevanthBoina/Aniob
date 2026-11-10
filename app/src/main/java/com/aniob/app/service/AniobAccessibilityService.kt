@@ -125,24 +125,6 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val spotlightOverlay by lazy { com.aniob.app.overlay.AniobSpotlightOverlay(this) }
-    private val floatingStatusOverlay by lazy {
-        com.aniob.app.overlay.AniobFloatingStatusOverlay(this) {
-            com.aniob.app.background.AniobBackgroundController.onStopCallback?.invoke()
-        }
-    }
-
-    fun showFloatingOverlay(stepIndex: Int, narration: String) {
-        floatingStatusOverlay.show(stepIndex, narration)
-    }
-
-    fun updateFloatingOverlay(stepIndex: Int, narration: String) {
-        floatingStatusOverlay.update(stepIndex, narration)
-    }
-
-    fun hideFloatingOverlay() {
-        floatingStatusOverlay.hide()
-    }
-
     private var bridgeServer: com.aniob.app.bridge.AniobBridgeServer? = null
     private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
     @Volatile private var contentChangedSinceLastStep: Boolean = true
@@ -277,7 +259,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 contentChangedSinceLastStep = true
-                com.aniob.core.policy.AniobWaitForIdle.onContentChanged(event.className)
+                com.aniob.core.policy.AniobWaitForIdle.onContentChanged()
             }
         }
     }
@@ -290,7 +272,6 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         super.onDestroy()
         recycleLatestRefs()
         com.aniob.app.device.AniobClipboardWatcher.stop()
-        floatingStatusOverlay.hide()
         instance = null
         isServiceConnected = false
         // Accessibility access dies mid-task: surface the loss so UX-6's recovery flow can react.
