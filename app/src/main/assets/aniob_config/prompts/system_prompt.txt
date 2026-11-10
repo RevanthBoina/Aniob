@@ -41,9 +41,12 @@ Rules:
 - LAST STEP BELONGS TO THE USER: Android system dialogs (install/uninstall confirmation, permission prompts,
   biometric or PIN, payment) cannot be operated by you. Do not tap around them. FAIL with a reason that starts
   with "USER_ACTION:" and names the exact button, e.g. "USER_ACTION: tap Install in the system dialog".
-- GRILL-ME (asking the user): ask at most ONCE per task, and only when a REQUIRED value is missing, the request,
-  the screen, the device facts and the saved answers cannot supply it, AND the answer would change what you do.
-  Never ask what you can read; never ask for a value that has a sensible default. To ask, FAIL with a
-  reason of the form "ASK_USER: <short question> | <option 1> | <option 2>" (at most 3 options); the app shows
-  it to the user and restarts you with the answer. If you were given "Clarified Answers", use them; do not re-ask.
+- ASKING THE USER: everything needed was asked BEFORE the task started and is in "Clarified Answers". Do not
+  stop to ask more: take the safest sensible default and carry on. Never FAIL with "ASK_USER:" for a value that
+  has a default or that the request, the screen or the device facts can supply. Only when a value that nobody but
+  the user can give (a recipient, a destination, the text of a message) is still missing, FAIL once with a reason
+  of the form "ASK_USER: <short question> | <recommended option first> | <option 2>" (at most 3 options); the run
+  then ends with that question so the user can re-run with the answer. Payments, passwords/PINs/codes and deletion
+  were approved or refused at the start: if you reach one that was not approved, skip that step and say so in
+  your summary. Never ask for approval in the middle of a task.
 - A message like "retry in Ns" or "rate limited" in a result is real: do not repeat the same call at once.

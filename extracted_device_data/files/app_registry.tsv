@@ -1,0 +1,86 @@
+#aniob-app-registry	v1	1794200065008
+role	clock	com.sec.android.app.clockpackage
+role	messages	com.google.android.apps.messaging
+role	camera	com.sec.android.app.camera
+role	settings	com.android.settings
+role	phone	com.samsung.android.dialer
+app	com.android.chrome	Chrome	1	com.android.chrome/com.google.android.apps.chrome.Main	chrome|browser|google chrome
+app	com.android.settings	Settings	1	com.android.settings/com.android.settings.Settings	settings|preferences|system settings
+app	com.android.vending	Play Store	1	com.android.vending/com.android.vending.AssetBrowserActivity	play store|playstore|google play|play
+app	com.google.android.apps.maps	Maps	1	com.google.android.apps.maps/com.google.android.maps.MapsActivity	maps|google maps|navigation
+app	com.google.android.apps.messaging	Messages	1	com.google.android.apps.messaging/com.google.android.apps.messaging.ui.ConversationListActivity	messages|sms|text
+app	com.google.android.gm	Gmail	1	com.google.android.gm/com.google.android.gm.ConversationListActivityGmail	gmail|mail|email
+app	com.google.android.youtube	YouTube	1	com.google.android.youtube/com.google.android.youtube.app.honeycomb.Shell$HomeActivity	youtube|yt
+app	com.samsung.android.app.contacts	Contacts	1	com.samsung.android.app.contacts/com.samsung.android.contacts.contactslist.PeopleActivity	contacts
+app	com.samsung.android.calendar	Calendar	1	com.samsung.android.calendar/com.samsung.android.app.calendar.activity.MainActivity	calendar
+app	com.samsung.android.dialer	Phone	1	com.samsung.android.dialer/com.samsung.android.dialer.DialtactsActivity	phone
+app	com.samsung.knox.securefolder	Secure Folder	1	com.samsung.knox.securefolder/com.samsung.knox.securefolder.presentation.switcher.view.SecureFolderShortcutActivity	secure folder|secure
+app	com.sec.android.app.camera	Camera	1	com.sec.android.app.camera/com.sec.android.app.camera.Camera	camera
+app	com.sec.android.gallery3d	Gallery	1	com.sec.android.gallery3d/com.samsung.android.gallery.app.activity.GalleryActivity	gallery
+app	com.Slack	Slack	0	com.Slack/slack.app.HomeActivity	slack
+app	com.brave.browser	Brave	0	com.brave.browser/com.google.android.apps.chrome.Main	brave
+app	com.canva.editor	Canva	0	com.canva.editor/com.canva.app.editor.splash.SplashActivity	canva
+app	com.google.android.apps.docs	Drive	0	com.google.android.apps.docs/com.google.android.apps.docs.app.NewMainProxyActivity	drive
+app	com.google.android.apps.docs.editors.docs	Docs	0	com.google.android.apps.docs.editors.docs/com.google.android.apps.docs.app.NewMainProxyActivity	docs
+app	com.google.android.apps.docs.editors.sheets	Sheets	0	com.google.android.apps.docs.editors.sheets/com.google.android.apps.docs.app.NewMainProxyActivity	sheets
+app	com.google.android.calendar	Calendar	0	com.google.android.calendar/com.android.calendar.AllInOneActivity	calendar|events
+app	com.google.android.contacts	Contacts	0	com.google.android.contacts/com.android.contacts.activities.PeopleActivity	contacts
+app	com.samsung.android.ardrawing	AR Doodle	0	com.samsung.android.ardrawing/com.samsung.android.ardrawing.main.ShortcutActivity	ar doodle
+app	com.sec.android.app.sbrowser	Browser	0	com.sec.android.app.sbrowser/com.sec.android.app.sbrowser.SBrowserMainActivity	browser
+app	com.truecaller	Truecaller	0	com.truecaller/com.truecaller.ui.TruecallerInit	truecaller
+app	com.android.stk	Airtel Services	1	com.android.stk/com.android.stk.StkLauncherActivity	airtel services|airtel
+app	com.google.android.apps.bard	Gemini	1	com.google.android.apps.bard/com.google.android.apps.bard.shellapp.BardEntryPointActivity	gemini
+app	com.google.android.googlequicksearchbox	Google	1	com.google.android.googlequicksearchbox/com.google.android.googlequicksearchbox.SearchActivity	google
+app	com.microsoft.skydrive	OneDrive	1	com.microsoft.skydrive/com.microsoft.skydrive.MainActivity	onedrive
+app	com.samsung.android.app.reminder	Reminder	1	com.samsung.android.app.reminder/com.samsung.android.app.reminder.ui.LaunchMainActivity	reminder
+app	com.samsung.android.forest	Digital Wellbeing	1	com.samsung.android.forest/com.samsung.android.forest.launcher.LauncherActivity	digital wellbeing|digital
+app	com.samsung.android.samsungpass	Samsung Pass	1	com.samsung.android.samsungpass/com.samsung.android.samsungpass.launcher.EntryLauncher	samsung pass|samsung
+app	com.samsung.android.visionintelligence	Bixby Vision	1	com.samsung.android.visionintelligence/com.samsung.android.visionintelligence.main.DummyActivity	bixby vision|bixby
+app	com.samsung.memorysaver	Zipped apps	1	com.samsung.memorysaver/com.samsung.memorysaver.zipunzipapps.ui.activities.ZipLauncherActivity	zipped
+app	com.sec.android.app.fm	Radio	1	com.sec.android.app.fm/com.sec.android.app.fm.MainActivity	radio
+app	com.sec.android.app.myfiles	My Files	1	com.sec.android.app.myfiles/com.sec.android.app.myfiles.ui.MainActivity	files
+app	com.sec.android.app.samsungapps	Store	1	com.sec.android.app.samsungapps/com.sec.android.app.samsungapps.SamsungAppsMainActivity	store
+app	ai.perplexity.app.android	Perplexity	0	ai.perplexity.app.android/ai.perplexity.app.android.ui.main.MainActivity	perplexity
+app	ai.x.grok	Grok	0	ai.x.grok/ai.x.grok.main.GrokActivity	grok
+app	com.adobe.spark.post	Adobe Express	0	com.adobe.spark.post/com.adobe.express.app.view.RoutingActivity	adobe express|adobe
+app	com.betafish.adblocksbrowser	AdBlock for Samsung Browser	0	com.betafish.adblocksbrowser/org.adblockplus.adblockplussbrowser.app.ui.LauncherActivity	adblock samsung browser|adblock
+app	com.camerasideas.instashot	InShot	0	com.camerasideas.instashot/com.camerasideas.instashot.MainActivity	inshot
+app	com.confirmtkt.lite	Confirmtkt	0	com.confirmtkt.lite/com.confirmtkt.lite.LaunchActivity	confirmtkt
+app	com.dare2compete.app	Unstop	0	com.dare2compete.app/com.dare2compete.app.MainActivity	unstop
+app	com.digilocker.android	Digilocker	0	com.digilocker.android/in.gov.digilocker.views.mainactivity.SplashScreenActivity	digilocker
+app	com.discord	Discord	0	com.discord/com.discord.main.MainDefault	discord
+app	com.fingersoft.hillclimb	Hill Climb Racing	0	com.fingersoft.hillclimb/com.fingersoft.game.MainActivity	hill climb racing|hill
+app	com.getsomeheadspace.android	Headspace	0	com.getsomeheadspace.android/com.getsomeheadspace.android.MainActivity	headspace
+app	com.github.android	GitHub	0	com.github.android/com.github.android.main.MainActivity	github
+app	com.google.android.apps.authenticator2	Authenticator	0	com.google.android.apps.authenticator2/com.google.android.apps.authenticator2.main.MainActivity	authenticator
+app	com.google.android.apps.classroom	Classroom	0	com.google.android.apps.classroom/com.google.android.apps.classroom.classroomflutter.MainActivity	classroom
+app	com.google.android.apps.googleassistant	Assistant	0	com.google.android.apps.googleassistant/com.google.android.apps.googleassistant.AssistantActivity	assistant
+app	com.ixigo.train.ixitrain	ixigo trains	0	com.ixigo.train.ixitrain/com.ixigo.train.ixitrain.SplashScreenActivity	ixigo trains|ixigo
+app	com.linkedin.android	LinkedIn	0	com.linkedin.android/com.linkedin.android.authenticator.LaunchActivityDefault	linkedin
+app	com.linkedin.android.learning	Learning	0	com.linkedin.android.learning/com.linkedin.android.learning.launchscreen.LaunchScreenActivity	learning
+app	com.media.bestrecorder.audiorecorder	Voice Recorder	0	com.media.bestrecorder.audiorecorder/com.media.bestrecorder.audiorecorder.NavigationActivity	voice recorder|voice
+app	com.microsoft.office.excel	Excel	0	com.microsoft.office.excel/com.microsoft.office.apphost.LaunchActivity	excel
+app	com.microsoft.office.officehubrow	Copilot	0	com.microsoft.office.officehubrow/com.microsoft.office.officesuite.OfficeSuiteActivity	copilot
+app	com.myairtelapp	Airtel	0	com.myairtelapp/com.myairtelapp.home.views.activities.SplashScreenActivity	airtel
+app	com.openai.chatgpt	ChatGPT	0	com.openai.chatgpt/com.openai.chatgpt.MainActivity	chatgpt
+app	com.openclaw.android	Claw	0	com.openclaw.android/com.openclaw.android.MainActivity	claw
+app	com.phonepe.app	PhonePe	0	com.phonepe.app/com.phonepe.app.launch.core.main.ui.MainActivity	phonepe
+app	com.poe.android	Poe	0	com.poe.android/com.poe.MainActivity	poe
+app	com.rapido.passenger	Rapido	0	com.rapido.passenger/com.rapido.passenger.DefaultAlias	rapido
+app	com.returngift.agent	ReturnGift	0	com.returngift.agent/com.returngift.agent.ui.splash.SplashActivity	returngift
+app	com.rnit.skill	Naipunyam	0	com.rnit.skill/com.rnit.apskilluniverse.SplashScreen	naipunyam
+app	com.samsung.android.app.notes	Notes	0	com.samsung.android.app.notes/com.samsung.android.app.notes.memolist.MemoListActivity	notes
+app	com.samsung.android.tvplus	TV	0	com.samsung.android.tvplus/com.samsung.android.tvplus.MainActivity	tv
+app	com.sbi.lotusintouch	YONO SBI	0	com.sbi.lotusintouch/com.sbi.lotusintouch.MainActivity	yono sbi|yono
+app	com.sec.android.app.clockpackage	Clock	0	com.sec.android.app.clockpackage/com.sec.android.app.clockpackage.ClockPackage	clock
+app	com.sec.android.app.popupcalculator	Calculator	0	com.sec.android.app.popupcalculator/com.sec.android.app.popupcalculator.Calculator	calculator
+app	com.smartbridge.skillwallet	Skill Wallet	0	com.smartbridge.skillwallet/com.smartbridge.skillwallet.MainActivity	skill wallet|skill
+app	com.termux	Termux	0	com.termux/com.termux.app.TermuxActivity	termux
+app	com.whatsapp	WhatsApp	0	com.whatsapp/com.whatsapp.Main	whatsapp|whats app|wa
+app	com.zoho.mail	Zoho Mail	0	com.zoho.mail/com.zoho.mail.android.activities.Login	zoho mail|zoho
+app	cris.org.in.prs.ima	IRCTC Rail Connect	0	cris.org.in.prs.ima/cris.org.in.prs.ima.MainActivity	irctc rail connect|irctc
+app	in.gov.swayam.app	Swayam	0	in.gov.swayam.app/in.gov.swayam.app.MainActivity	swayam
+app	net.one97.paytm	Paytm	0	net.one97.paytm/net.one97.paytm.landingpage.activity.AJRMainActivity	paytm
+app	notion.id	Notion	0	notion.id/notion.local.id.MainActivity	notion
+app	org.coursera.android	Coursera	0	org.coursera.android/org.coursera.android.splash.MainActivity	coursera
+app	org.telegram.messenger	Telegram	0	org.telegram.messenger/org.telegram.messenger.DefaultIcon	telegram|tg

@@ -144,6 +144,23 @@ object AskPolicy {
         return verdict.copy(reason = reason, riskTier = tier, requiresConfirmation = true)
     }
 
+    /**
+     * Read-only forecast of the consequence families a *request* is likely to touch, used to collect
+     * every approval once, before the task starts. It is a forecast, not a gate: the live action is
+     * still classified by [category] and a family that was not forecast is never auto-approved.
+     */
+    fun predictCategories(prompt: String): Set<AskCategory> {
+        val lower = prompt.lowercase()
+        return buildSet {
+            if (secretPattern.containsMatchIn(lower)) add(AskCategory.SECRET)
+            if (deletePattern.containsMatchIn(lower)) add(AskCategory.DELETE)
+            if (!readOnlyHistoryPattern.containsMatchIn(lower) && moneyPattern.containsMatchIn(lower)) {
+                add(AskCategory.MONEY)
+            }
+            if (sendPattern.containsMatchIn(lower)) add(AskCategory.SEND)
+        }
+    }
+
     /** Plain, deterministic heads-up shown before routing or dispatch. */
     fun taskStartPreview(prompt: String, level: AskLevel): String {
         val likely = buildList {

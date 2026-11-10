@@ -1,0 +1,15 @@
+name: "learned_open_settings"
+version: "2.1"
+description: "Open Settings"
+risk_tier: "LOW"
+confirmation_required: false
+triggers:
+  - "open settings"
+steps:
+  - step: 1
+    action: "open_app"
+    package: "com.android.settings"
+    description: "Opening application: com.android.settings"
+  - step: 2
+    action: "finish"
+    description: "Goal accomplished"

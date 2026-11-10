@@ -1,0 +1,4 @@
+Ablation_Mode,Mode_Code,Tasks_Evaluated,Tasks_Succeeded,Task_Success_Rate_Pct,Mean_End_to_End_Latency_Sec,Std_Latency_Sec,Mean_Latency_Per_Step_Sec,Mean_LLM_API_Calls_Per_Task,Mean_UI_Steps_Per_Task,Mean_Screenshots_Per_Task,Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline
+1. Baseline (full observation; one action per turn),BASELINE,1,0,0.00,7.27,0.00,7.27,1.00,1.00,2.00,6803.00,1.00x
+3. Burst and fast observe (+ compact tree folding + action bursts + event-driven verify),BURST_AND_FAST_OBSERVE,20,5,25.00,33.18,36.87,9.99,3.25,2.90,7.65,5323.22,0.22x
+4. Full human speed (+ online verified replay cache),FULL_HUMAN_SPEED,105,14,13.33,30.38,33.86,9.93,3.08,3.42,7.47,4971.72,0.24x

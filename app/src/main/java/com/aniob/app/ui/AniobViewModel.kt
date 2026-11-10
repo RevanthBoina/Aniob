@@ -345,8 +345,18 @@ class AniobViewModel(
 
     /** Retry/miss memory never outlives its task id. */
     private val targetMissLedger = com.aniob.core.execution.TaskTargetMissLedger()
-    private var pendingTargetClarificationKey: Pair<String, String>? = null
-    private val notificationGrillAnswers = mutableMapOf<String, MutableMap<String, String>>()
+
+    /**
+     * What the user approved when the current task started (payments, secrets, deletion, sending).
+     * Collected once, up front; the run never asks again. Not persisted and never sent to the model.
+     */
+    @Volatile private var taskConsent: com.aniob.core.safety.TaskConsent = com.aniob.core.safety.TaskConsent.NONE
+
+    /** Overlaps independent start-up work (engine, gateway) with the question stage. */
+    private var warmupJob: kotlinx.coroutines.Job? = null
+
+    /** Set once a mid-run question was answered by an assumption, so a second one ends the run. */
+    private var assumedMidRunAsk = false
 
     /**
      * On-device provider, wired to the real LiteRT-LM engine and to the model the downloader
@@ -671,15 +681,6 @@ class AniobViewModel(
             } else {
                 app.eventLogger.warn("AniobViewModel", "Ignored ID-less confirmation from notification")
             }
-        }
-        AniobForegroundService.onGrillReplyWithIds = { taskId, questionId, answer ->
-            resolveGrillAnswerFromNotification(taskId, questionId, answer, requireOption = false)
-        }
-        AniobForegroundService.onGrillChoiceWithIds = { taskId, questionId, answer ->
-            resolveGrillAnswerFromNotification(taskId, questionId, answer, requireOption = true)
-        }
-        AniobForegroundService.onGrillCancelForTask = { taskId ->
-            if (_uiState.value.activeTask?.id == taskId) cancelGrillMe()
         }
 
         viewModelScope.launch {
@@ -1332,6 +1333,37 @@ class AniobViewModel(
         val record = ConfirmationRecord(
             what = request.what,
             risk = request.risk,
+            decision = decision,
+            at = System.currentTimeMillis()
+        )
+        _uiState.update {
+            it.copy(confirmationHistory = (listOf(record) + it.confirmationHistory).take(CONFIRMATION_HISTORY_LIMIT))
+        }
+    }
+
+    /**
+     * When the user is asked about consequential steps. Defaults to once, at the start of the task;
+     * `ask_timing = MID_RUN` in `aniob_prefs` restores the old pause-and-wait behaviour.
+     */
+    private fun askTiming(): com.aniob.core.safety.AskTiming = runCatching {
+        com.aniob.core.safety.AskTiming.valueOf(
+            app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+                .getString("ask_timing", null) ?: com.aniob.core.safety.AskTiming.AT_START.name
+        )
+    }.getOrDefault(com.aniob.core.safety.AskTiming.AT_START)
+
+    /** An approval decided from the start-of-task consent is still audited in the confirmation history. */
+    private fun recordAutoResolution(
+        action: AniobAction,
+        node: AniobNode?,
+        verdict: InterceptResult,
+        decision: ConfirmDecision
+    ) {
+        val sensitive = AskPolicy.category(action, node) == AskCategory.SECRET || node?.isPassword == true
+        val what = if (sensitive) "Use a protected value" else StepNarration.narrate(action, node).take(80)
+        val record = ConfirmationRecord(
+            what = what,
+            risk = riskFromTier(verdict.riskTier, _uiState.value.safetyLevel),
             decision = decision,
             at = System.currentTimeMillis()
         )
@@ -2057,9 +2089,10 @@ class AniobViewModel(
         // Start task-scoped safety and retry ledgers. OFF is a persisted user choice and stays OFF.
         app.approvalController.clearAll()
         targetMissLedger.beginTask(taskId)
-        pendingTargetClarificationKey = null
-        notificationGrillAnswers.clear()
-        AniobForegroundService.clearGrillQuestion(app)
+        taskConsent = com.aniob.core.safety.TaskConsent.NONE
+        assumedMidRunAsk = false
+        warmupJob?.cancel()
+        warmupJob = null
         terminationStage.reset()
         pauseRequested = false
         localFailCount = 0
@@ -2307,31 +2340,45 @@ class AniobViewModel(
                             statusMessage = feasibility.whatUserMustDo
                         )
                     }
-                    AniobForegroundService.notifyGrillQuestion(app, task.id, feasibility.question, effectivePrompt)
                     return@launch
                 }
                 Feasibility.Feasible -> Unit
             }
 
-            // Step 1: Grill-Me Check with remembered vault preferences
-            val grillResult = grillMeEngine.evaluateTask(effectivePrompt, sharedKnowledgeStore.getAll())
-            if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
+            // Step 1: ask everything that is needed ONCE, before the task starts. A direct-intent task
+            // never thinks (no model call); payments, secrets and deletion are still asked, because
+            // that check is deterministic. Independent start-up work runs while the user answers.
+            val intentBased = resolvedShortcut != null
+            startRouteWarmups(intentBased)
+            val (plan, doctorAtStart) = com.aniob.core.concurrency.AniobParallel.both(
+                left = {
+                    com.aniob.core.grillme.AniobUpfrontPlanner.plan(
+                        prompt = effectivePrompt,
+                        level = AniobSafetyInterceptor.askLevel,
+                        rememberedAnswers = sharedKnowledgeStore.getAll(),
+                        intentBased = intentBased
+                    ) { p, remembered -> grillMeEngine.evaluateTask(p, remembered) }
+                },
+                right = { checkDoctorPreflight(effectivePrompt, resolvedShortcut) }
+            )
+            if (plan.needsAsk) {
+                // Questions arrive before any step runs, so the user is looking at the chat: one inline
+                // card above the chat bar, no notification, nothing is paused half-way.
                 setPhase(AgentPhase.ASKING)
+                taskConsent = com.aniob.core.safety.TaskConsent.fromAnswers(emptyMap(), plan.implicitConsent)
                 _uiState.update {
                     it.copy(
-                        grillMeResult = grillResult,
+                        grillMeResult = plan.toResult(),
                         showGrillMeSheet = true,
-                        statusMessage = "Awaiting clarification for '$effectivePrompt'"
+                        statusMessage = "A quick question before I start"
                     )
-                }
-                grillResult.questions.firstOrNull()?.let {
-                    AniobForegroundService.notifyGrillQuestion(app, task.id, it, effectivePrompt)
                 }
                 return@launch
             }
+            taskConsent = com.aniob.core.safety.TaskConsent.fromAnswers(emptyMap(), plan.implicitConsent)
 
-            // Step 1.5: Pre-flight Doctor Check
-            if (!runDoctorPreflight(effectiveTask, effectivePrompt, resolvedShortcut)) {
+            // Step 1.5: Doctor Check (computed in parallel with the planning above)
+            if (!runDoctorPreflight(effectiveTask, effectivePrompt, resolvedShortcut, doctorAtStart)) {
                 return@launch
             }
 
@@ -2339,12 +2386,17 @@ class AniobViewModel(
             // the pipeline is cancelled (Stop) or throws before its own endTask call.
             try {
                 executeTaskPipeline(effectiveTask, generation)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled // Stop is a real stop, not a crash
+            } catch (failure: Exception) {
+                ensureTaskTerminated(effectiveTask, generation, failure)
             } finally {
                 publishResearchRun(
                     app.researchTelemetry.endTaskIfActive(
                         failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
                     )
                 )
+                ensureTaskTerminated(effectiveTask, generation, null)
             }
         }
     }
@@ -2380,10 +2432,46 @@ class AniobViewModel(
         )
     }
 
-    private fun runDoctorPreflight(task: AniobTask, prompt: String, resolvedShortcut: ResolvedIntentShortcut?): Boolean {
+    /**
+     * Starts independent start-up work while the user reads and answers the questions, so the first
+     * model step does not pay for it. Best effort and cancellable: it never fails or delays a task.
+     * Direct-intent tasks need neither the gateway nor the on-device engine, so they skip it.
+     */
+    private fun startRouteWarmups(intentBased: Boolean) {
+        warmupJob?.cancel()
+        warmupJob = null
+        if (intentBased) return
+        warmupJob = viewModelScope.launch(Dispatchers.IO) {
+            com.aniob.core.concurrency.AniobParallel.both(
+                dispatcher = Dispatchers.IO,
+                left = { com.aniob.core.concurrency.AniobParallel.bestEffort(WARMUP_BUDGET_MS, Unit) { prewarmGateway() } },
+                right = { warmLocalEngineIfLikely() }
+            )
+        }
+    }
+
+    /**
+     * Loading an on-device model costs memory and battery, so it is only warmed when the router is
+     * likely to use it: local-only, or automatic with no cloud configured. `prepare` is idempotent
+     * and locked, so a task that needs the engine meanwhile simply waits for the same load.
+     */
+    private suspend fun warmLocalEngineIfLikely() {
+        val mode = _uiState.value.autoRouterMode
+        val likelyLocal = mode == "local-only" || (mode != "cloud-only" && !isCloudConfigured())
+        if (!likelyLocal || modelDownloader.getDefaultModelId() == null) return
+        runCatching { refreshLocalEngine() }
+            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+    }
+
+    private fun runDoctorPreflight(
+        task: AniobTask,
+        prompt: String,
+        resolvedShortcut: ResolvedIntentShortcut?,
+        precomputed: com.aniob.core.tools.DoctorResult? = null
+    ): Boolean {
         // Doctor is advisory: it describes unavailable routes but never blocks supported direct
         // intents, another model provider, or the ordinary StepPipeline.
-        val doctorResult = checkDoctorPreflight(prompt, resolvedShortcut)
+        val doctorResult = precomputed ?: checkDoctorPreflight(prompt, resolvedShortcut)
         val failures = doctorResult.checks.filterNot { it.passed }
         if (failures.isEmpty()) return true
 
@@ -2420,62 +2508,16 @@ class AniobViewModel(
         return true
     }
 
-    private fun resolveGrillAnswerFromNotification(
-        taskId: String,
-        questionId: String,
-        answer: String,
-        requireOption: Boolean
-    ) {
-        val state = _uiState.value
-        val currentTask = state.activeTask
-        if (currentTask?.id != taskId || !state.showGrillMeSheet) {
-            app.eventLogger.warn("AniobViewModel", "Ignored stale Grill notification answer for $taskId")
-            AniobForegroundService.clearGrillQuestion(app)
-            return
-        }
-        val question = state.grillMeResult?.questions?.firstOrNull { it.id == questionId }
-        if (question == null) {
-            app.eventLogger.warn("AniobViewModel", "Ignored Grill answer for stale question $questionId")
-            AniobForegroundService.clearGrillQuestion(app)
-            return
-        }
-        val allowed = if (requireOption) answer in question.options
-        else question.allowFreeText || answer in question.options
-        if (!allowed) {
-            app.eventLogger.warn("AniobViewModel", "Rejected unoffered Grill quick choice for $questionId")
-            AniobForegroundService.notifyGrillQuestion(
-                app, taskId, question, currentTask.clarifiedGoal.ifBlank { currentTask.rawPrompt }
-            )
-            return
-        }
-
-        val answers = notificationGrillAnswers.getOrPut(taskId) { linkedMapOf() }
-        answers[questionId] = answer.trim()
-        val nextQuestion = state.grillMeResult?.questions
-            ?.firstOrNull { answers[it.id].isNullOrBlank() }
-        if (nextQuestion != null) {
-            AniobForegroundService.notifyGrillQuestion(
-                app, taskId, nextQuestion, currentTask.clarifiedGoal.ifBlank { currentTask.rawPrompt }
-            )
-            return
-        }
-
-        val completedAnswers = answers.toMap()
-        notificationGrillAnswers.remove(taskId)
-        AniobForegroundService.clearGrillQuestion(app)
-        onGrillAnswersSubmitted(completedAnswers)
-    }
-
-    fun onGrillAnswersSubmitted(answers: Map<String, String>, rememberKeys: Set<String> = emptySet()) {
+    /**
+     * The one hand-back from the question card. [allAnswers] holds clarification answers and consent
+     * answers; they are split here so consent only ever feeds [taskConsent] (never the model prompt,
+     * the success criteria or the vault) and clarifications go into the clarified goal.
+     */
+    fun onGrillAnswersSubmitted(allAnswers: Map<String, String>, rememberKeys: Set<String> = emptySet()) {
         val currentTask = _uiState.value.activeTask ?: return
-        notificationGrillAnswers.remove(currentTask.id)
-        AniobForegroundService.clearGrillQuestion(app)
-        if (answers.containsKey("target_miss")) {
-            pendingTargetClarificationKey?.takeIf { it.first == currentTask.id }?.let { (_, key) ->
-                targetMissLedger.recordSuccess(currentTask.id, key)
-            }
-            pendingTargetClarificationKey = null
-        }
+        val (answers, consentAnswers) = com.aniob.core.safety.TaskConsent.split(allAnswers)
+        val implicit = taskConsent.granted
+        taskConsent = com.aniob.core.safety.TaskConsent.fromAnswers(consentAnswers, implicit)
         // Plan-time feasibility hand-off ("I can't tap the system dialog for you"): the choice is not a task slot.
         answers.entries.firstOrNull { it.key.startsWith("delegate.") }?.let { (_, choice) ->
             when (choice) {
@@ -2519,22 +2561,27 @@ class AniobViewModel(
             }
             try {
                 executeTaskPipeline(updatedTask, gen)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled // Stop is a real stop, not a crash
+            } catch (failure: Exception) {
+                ensureTaskTerminated(updatedTask, gen, failure)
             } finally {
                 publishResearchRun(
                     app.researchTelemetry.endTaskIfActive(
                         failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
                     )
                 )
+                ensureTaskTerminated(updatedTask, gen, null)
             }
         }
     }
 
-    /** Explicit cancel from the Grill sheet or its notification, not a silent dismiss. */
+    /** Explicit cancel from the question card, not a silent dismiss. */
     fun cancelGrillMe() {
         val currentTask = _uiState.value.activeTask
-        notificationGrillAnswers.remove(currentTask?.id)
-        pendingTargetClarificationKey = null
-        AniobForegroundService.clearGrillQuestion(app)
+        warmupJob?.cancel()
+        warmupJob = null
+        taskConsent = com.aniob.core.safety.TaskConsent.NONE
         if (currentTask != null) {
             app.taskOwner.stop(currentTask.id)
             activeTaskJob?.cancel()
@@ -2567,6 +2614,57 @@ class AniobViewModel(
     }
 
     fun dismissGrillMe() = cancelGrillMe()
+
+    /**
+     * A task ALWAYS ends.
+     *
+     * Whatever happens inside the pipeline — an unexpected throw, an early return, a route that
+     * produced no outcome — this closes the run: the outcome is sealed, the ongoing notification is
+     * removed and the chat stops showing the task as working. Without it a single exception left the
+     * UI on "working" forever while nothing was running any more.
+     *
+     * It never touches a superseded generation (a newer task owns the UI) and never rewrites a run
+     * the pipeline already closed properly.
+     */
+    private fun ensureTaskTerminated(task: AniobTask, generation: Long, failure: Throwable?) {
+        if (generation != activeGeneration) return
+        if (failure == null && !_uiState.value.isRunning) return
+        val isCancelled = failure is kotlinx.coroutines.CancellationException
+        val rawMessage = failure?.message ?: failure?.javaClass?.simpleName ?: ""
+        val humanReason = when {
+            isCancelled -> "Task was stopped"
+            rawMessage.isNotBlank() -> com.aniob.core.narration.FailureReasonCopy.humanize(rawMessage)
+            else -> "The task stopped without reporting a result."
+        }
+        app.eventLogger.warn("AniobViewModel", "Termination guard for ${task.id}: $humanReason (raw: $rawMessage)")
+        if (_uiState.value.lastSealedTaskId != task.id) {
+            recordSealedOutcome(task.id, SealedOutcome.failed(humanReason))
+        }
+        AniobBackgroundController.onTaskFinished(
+            app,
+            humanReason,
+            isSuccess = false,
+            openChat = true,
+            resultTitle = com.aniob.app.outcome.AniobOutcomeCopy.forTask(Outcome.FAILED, humanReason).title
+        )
+        val alreadySealed = _uiState.value.lastSealedTaskId == task.id
+        updateToIdle {
+            it.copy(
+                chatMessages = if (alreadySealed) it.chatMessages else it.chatMessages + ChatMessage(
+                    id = "msg_terminated_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = humanReason,
+                    provider = "TERMINATION",
+                    badge = if (isCancelled) "Stopped" else "Failed",
+                    retryPrompt = if (isCancelled) null else task.rawPrompt
+                ),
+                isStreaming = false,
+                streamingBubbleText = "",
+                showGrillMeSheet = false,
+                statusMessage = humanReason
+            )
+        }
+    }
 
     /**
      * Executes the task through the ExecutionRouter ladder:
@@ -2654,13 +2752,20 @@ class AniobViewModel(
         // connection pool to drop the socket.
         viewModelScope.launch(Dispatchers.IO) { prewarmGateway() }
 
-        // Background automation integrity: minimize Aniob chat UI and run foreground service
-        AniobBackgroundController.onTaskStarted(app, task.clarifiedGoal.ifBlank { task.rawPrompt })
+        // The progress notification starts at once, but the chat stays in front: the user is only
+        // sent away once the agent has decided this task must be driven on another app's screen.
+        val runPrompt = task.clarifiedGoal.ifBlank { task.rawPrompt }
+        AniobBackgroundController.onTaskStarted(app, runPrompt)
 
         val accessibility = AniobAccessibilityService.instance
-        // The old fixed 500 ms sleep is now a bounded poll on the foreground package: usually the
-        // window manager wins in ~100 ms, and a device that is already backgrounded returns at once.
-        awaitAppBackgrounded(accessibility)
+        // A direct intent or app launch dispatches its own foreground app (or completes on dispatch),
+        // so it never needs Aniob's window out of the way and must not dump the user onto the home screen.
+        val shortcut = AniobIntentResolver.resolve(runPrompt, ::isLaunchablePackage)
+        val appPlan = AniobLaunchHub.plan(runPrompt, isLaunchable = ::isLaunchablePackage)
+        if (shortcut == null && appPlan == null) {
+            AniobBackgroundController.backgroundForAutomation(app)
+            awaitAppBackgrounded(accessibility)
+        }
 
         var screenBefore: AniobScreenState? = accessibility?.captureCurrentScreenState()
 
@@ -2873,13 +2978,16 @@ class AniobViewModel(
                 val liveService = accessibility
                 if (!reuseCheck.valid && liveService != null) {
                     if (foregroundBefore == "com.aniob.app") {
-                        app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
-                        AniobBackgroundController.currentActivity?.runOnUiThread {
-                            AniobBackgroundController.currentActivity?.moveTaskToBack(true)
+                        val isOpeningApp = currentStep == 0 && (shortcut != null || appPlan != null)
+                        if (!isOpeningApp) {
+                            app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
+                            AniobBackgroundController.currentActivity?.runOnUiThread {
+                                AniobBackgroundController.currentActivity?.moveTaskToBack(true)
+                            }
+                            delay(600)
+                            currentScreen = liveService.captureCurrentScreenState()
+                            screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
                         }
-                        delay(600)
-                        currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
                     } else if (foregroundBefore != null && foregroundBefore != captured.packageName) {
                         app.eventLogger.info(
                             "AniobViewModel",
@@ -2914,7 +3022,7 @@ class AniobViewModel(
                 val userRouting = _uiState.value.autoRouterMode.lowercase()
                 val planLadder = {
                     executionRouter.planStep(
-                        taskPrompt = task.clarifiedGoal,
+                        taskPrompt = task.clarifiedGoal.ifBlank { task.rawPrompt },
                         screenState = currentScreen,
                         stepIndex = currentStep,
                         taskSignature = task.rawPrompt.lowercase(),
@@ -3644,8 +3752,35 @@ class AniobViewModel(
                         }
                     }
                 }
-                val confirmLambda: suspend (AniobAction, AniobNode?, InterceptResult) -> Boolean = { approvedAction, approvedNode, verdict ->
+                val confirmLambda: suspend (AniobAction, AniobNode?, InterceptResult) -> Boolean = confirm@{ approvedAction, approvedNode, verdict ->
                     val category = AskPolicy.category(approvedAction, approvedNode)
+                    // Approvals are collected once, at the start. Mid-run the gate only checks them: a family
+                    // the user approved goes ahead, one they were never asked about is skipped (fail closed).
+                    // Nothing here pauses the task, shows a sheet or posts a notification.
+                    when (val resolution = com.aniob.core.safety.MidRunApproval.resolve(
+                        timing = askTiming(),
+                        level = AniobSafetyInterceptor.askLevel,
+                        category = category,
+                        consent = taskConsent
+                    )) {
+                        is com.aniob.core.safety.MidRunApproval.Resolution.Approve -> {
+                            recordAutoResolution(approvedAction, approvedNode, verdict, ConfirmDecision.APPROVE_FOR_TASK)
+                            return@confirm true
+                        }
+                        is com.aniob.core.safety.MidRunApproval.Resolution.Decline -> {
+                            recordAutoResolution(approvedAction, approvedNode, verdict, ConfirmDecision.DENY)
+                            val skipped = ChatMessage(
+                                id = "msg_skipped_${System.currentTimeMillis()}",
+                                role = "assistant",
+                                content = resolution.why,
+                                provider = "ASK_POLICY",
+                                badge = "Skipped"
+                            )
+                            _uiState.update { it.copy(chatMessages = it.chatMessages + skipped) }
+                            return@confirm false
+                        }
+                        is com.aniob.core.safety.MidRunApproval.Resolution.Prompt -> Unit
+                    }
                     val sensitive = category == AskCategory.SECRET || approvedNode?.isPassword == true
                     val humanWhat = when {
                         sensitive -> "Use a protected value"
@@ -3775,8 +3910,9 @@ class AniobViewModel(
                         if (missedAction != null) {
                             val misses = recordTargetMiss(task.id, missedAction, missedNode)
                             if (misses != null && misses >= 2) {
-                                requestTargetClarification(task, missedAction, missedNode)
-                                return
+                                finalOutcome = Outcome.FAILED
+                                terminalReason = targetMissReason(missedAction, missedNode)
+                                break
                             }
                         }
                         // Only a plan that ended for its own reasons speaks for this step. A plan
@@ -3943,13 +4079,13 @@ class AniobViewModel(
                 } else if (res.terminalState == StepResult.TerminalState.FAIL) {
                     if (targetMissCountForStep != null) {
                         if (targetMissCountForStep >= 2) {
-                            requestTargetClarification(
-                                task,
+                            finalOutcome = Outcome.FAILED
+                            terminalReason = targetMissReason(
                                 res.action,
                                 res.resolvedNode ?: com.aniob.core.execution.AniobActionExecutor
                                     .resolveTarget(res.action, currentScreen)?.node
                             )
-                            return
+                            break
                         }
                         deferredPlanHint = null
                         val fresh = accessibility?.captureCurrentScreenState()
@@ -3966,23 +4102,40 @@ class AniobViewModel(
                         currentStep++
                         continue
                     }
-                    // GRILL-ME for the model: "FAIL: ASK_USER: question | opt | opt" becomes the Grill sheet, once per task.
+                    // Everything needed was asked before the task started. A question the model still raises
+                    // mid-run never pauses the task or notifies the user: it carries on with a stated
+                    // assumption, or ends with the one missing detail so a re-run can supply it.
                     val parsedAsk = com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
-                    if (parsedAsk != null && task.grillAnswers.isEmpty()) {
-                        val ask = grillMeEngine.sanitizeQuestion(parsedAsk)
-                        setPhase(AgentPhase.ASKING)
-                        updateToIdle {
-                            it.copy(
-                                activeTask = task,
-                                grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(ask)),
-                                showGrillMeSheet = true,
-                                statusMessage = ask.question
-                            )
-                        }
-                        AniobForegroundService.notifyGrillQuestion(
-                            app, task.id, ask, task.clarifiedGoal.ifBlank { task.rawPrompt }
+                    if (parsedAsk != null) {
+                        val midRun = com.aniob.core.grillme.AniobAskUser.resolveWithoutUser(
+                            grillMeEngine.sanitizeQuestion(parsedAsk),
+                            alreadyAssumed = assumedMidRunAsk
                         )
-                        return
+                        when (midRun) {
+                            is com.aniob.core.grillme.AniobAskUser.MidRunDecision.Assume -> {
+                                assumedMidRunAsk = true
+                                taskContext = taskContext.withSuccess().copy(
+                                    grillAnswers = taskContext.grillAnswers + (midRun.question.id to midRun.answer)
+                                )
+                                val assumed = ChatMessage(
+                                    id = "msg_assumed_${System.currentTimeMillis()}",
+                                    role = "assistant",
+                                    content = "I didn't stop to ask. For \"${midRun.question.question}\" I went with " +
+                                        "\"${midRun.answer}\".",
+                                    provider = "ASSUMPTION",
+                                    badge = "Assumed"
+                                )
+                                _uiState.update { it.copy(chatMessages = it.chatMessages + assumed) }
+                                screenBefore = res.nextCtx.lastScreenState ?: currentScreen
+                                currentStep++
+                                continue
+                            }
+                            is com.aniob.core.grillme.AniobAskUser.MidRunDecision.CannotContinue -> {
+                                finalOutcome = Outcome.FAILED
+                                terminalReason = midRun.message
+                                break
+                            }
+                        }
                     }
                     val failReason = (res.action as? AniobAction.Fail)?.reason ?: res.verification?.reason.orEmpty()
                     if (failReason.contains("no-effect", ignoreCase = true) || failReason.contains("unchanged", ignoreCase = true)) {
@@ -4398,8 +4551,11 @@ class AniobViewModel(
         targetMissKey(action, node)?.let { targetMissLedger.recordSuccess(taskId, it) }
     }
 
-    private fun requestTargetClarification(task: AniobTask, action: AniobAction, node: AniobNode? = null) {
-        pendingTargetClarificationKey = targetMissKey(action, node)?.let { task.id to it }
+    /**
+     * What to tell the user when a control could not be found twice. The task ends with this reason
+     * (and a one-tap retry) instead of pausing mid-run to wait for a reply.
+     */
+    private fun targetMissReason(action: AniobAction, node: AniobNode? = null): String {
         val target = action.semanticTarget()
         val protectedTarget = node?.isPassword == true ||
             AskPolicy.category(action, node) == AskCategory.SECRET
@@ -4416,29 +4572,7 @@ class AniobViewModel(
                     else -> "that control"
                 }
             ).replace(Regex("\\s+"), " ").trim().take(100).ifBlank { "that control" }
-        val question = com.aniob.core.grillme.GrillQuestion(
-            id = "target_miss",
-            question = "I couldn't find '$label' on the screen twice. What should I look for instead, or where is it?",
-            options = emptyList(),
-            allowFreeText = true
-        )
-        notificationGrillAnswers.remove(task.id)
-        val result = AniobGrillMeResult(needsClarification = true, questions = listOf(question))
-        setPhase(AgentPhase.ASKING)
-        _uiState.update {
-            it.copy(
-                activeTask = task,
-                grillMeResult = result,
-                showGrillMeSheet = true,
-                confirmRequest = null,
-                isStreaming = false,
-                streamingBubbleText = "",
-                statusMessage = question.question
-            )
-        }
-        AniobForegroundService.notifyGrillQuestion(
-            app, task.id, question, task.clarifiedGoal.ifBlank { task.rawPrompt }
-        )
+        return "I couldn't find '$label' on the screen after trying twice. Tell me what it is called, or where it is, and I'll try again."
     }
 
     private suspend fun scrollRecoverAndRetry(
@@ -4725,8 +4859,8 @@ class AniobViewModel(
 
         app.approvalController.clearForTask(currentTask?.id ?: "")
         targetMissLedger.clear()
-        pendingTargetClarificationKey = null
-        notificationGrillAnswers.remove(currentTask?.id)
+        warmupJob?.cancel()
+        warmupJob = null
 
         AniobAccessibilityService.isTaskActive = false
         AniobForegroundService.clearConfirmation(app)
@@ -4761,9 +4895,6 @@ class AniobViewModel(
         AniobForegroundService.onStopRequestedFromNotification = null
         AniobForegroundService.onPauseToggleFromNotification = null
         AniobForegroundService.onConfirmDecisionWithIds = null
-        AniobForegroundService.onGrillReplyWithIds = null
-        AniobForegroundService.onGrillChoiceWithIds = null
-        AniobForegroundService.onGrillCancelForTask = null
         runCatching { localLlmProvider.release() }
     }
 
@@ -4800,6 +4931,9 @@ class AniobViewModel(
          * running in the background; a cold cache must not add seconds to the first action.
          */
         const val HYDRATION_BUDGET_MS = 300L
+
+        /** Upper bound for best-effort start-up warm-ups (gateway connection); never blocks a task. */
+        const val WARMUP_BUDGET_MS = 4_000L
 
         /** Ceiling for waiting on the chat window to minimise (it used to be a fixed 500 ms). */
         const val BACKGROUND_WAIT_MAX_MS = 500L

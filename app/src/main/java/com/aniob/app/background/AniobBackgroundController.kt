@@ -22,11 +22,23 @@ object AniobBackgroundController {
         CompletionReporter.unregisterActivity(activity)
     }
 
+    /**
+     * Starts the ongoing progress notification. This no longer leaves the chat: submitting a task
+     * must not throw the user to the home screen before the agent has decided what the task is.
+     */
     fun onTaskStarted(context: Context, prompt: String) {
         AniobForegroundService.startService(context, prompt)
-        currentActivityRef?.get()?.let { activity ->
-            activity.runOnUiThread { activity.moveTaskToBack(true) }
-        }
+    }
+
+    /**
+     * Leaves the chat only once the run is known to drive another app's screen (see
+     * `executeTaskPipeline`). A direct-intent task brings its own app to the front, and a task that
+     * is still thinking or about to ask a question stays where the user can see it.
+     */
+    fun backgroundForAutomation(context: Context) {
+        val activity = currentActivityRef?.get() ?: return
+        if (activity.isFinishing || activity.isDestroyed) return
+        activity.runOnUiThread { activity.moveTaskToBack(true) }
     }
 
     /** Progress is carried by the ongoing notification; no floating overlay is created. */

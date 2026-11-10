@@ -83,6 +83,8 @@ fun AniobChatScreen(
     onContinueInWebsite: (String) -> Unit = {},
     onConsumePendingPrefill: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onAskFinished: (Map<String, String>, Set<String>) -> Unit = { _, _ -> },
+    onAskCancel: () -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
@@ -358,7 +360,7 @@ fun AniobChatScreen(
                     promptInput = "Check battery status"
                     onSubmitTask("Check battery status")
                 }
-                ExampleTaskRow(title = "Book a cab to airport", subtitle = "Shows Grill-Me clarification") {
+                ExampleTaskRow(title = "Book a cab to airport", subtitle = "Asks a quick question first") {
                     promptInput = "Book a cab to airport"
                     onSubmitTask("Book a cab to airport")
                 }
@@ -491,6 +493,17 @@ fun AniobChatScreen(
                     }
                 }
             }
+        }
+
+        // 6b. One question at a time, directly above the chat bar (asked before the task starts).
+        val askResult = uiState.grillMeResult
+        if (uiState.showGrillMeSheet && askResult != null) {
+            com.aniob.app.ui.AniobAskCard(
+                result = askResult,
+                rememberedKeys = uiState.grillRememberedKeys,
+                onFinished = onAskFinished,
+                onCancel = onAskCancel
+            )
         }
 
         // 7. Horizontal Suggestion Rail (PROMPT 2)

@@ -1,0 +1,6 @@
+Configuration / Run,Mode_Code,Tasks_Evaluated,Tasks_Succeeded,Task_Success_Rate_Pct,Mean_End_to_End_Latency_Sec,Std_Latency_Sec,Mean_Latency_Per_Step_Sec,Mean_LLM_API_Calls_Per_Task,Mean_UI_Steps_Per_Task,Mean_Screenshots_Per_Task,Mean_Prompt_Tokens_Per_Call,Speedup_vs_Initial
+Run 1: Uncalibrated Baseline Loop (Initial 4-Task Diagnostic),INITIAL_DIAGNOSTIC,4,0,0.0,44.05,14.94,26.53,4.5,2.0,3.5,416.89,1.00x
+Run 2: Optimized Hybrid Loop (15-Task Cold Evaluation),FULL_HUMAN_SPEED,15,6,40.0,34.05,20.2,28.03,3.53,1.33,2.0,375.62,1.29x
+Run 3: Intent Teleportation Expansion (30-Task Benchmark with Reflexes),INTENT_SHORTCUT_ONLY,30,23,76.67,11.2,5.4,5.33,1.85,2.1,2.0,395.2,3.93x
+Run 4: Motif Burst & Fast-Observe Loop (50-Task Stress Test),MOTIF_AND_FAST_A11Y,50,45,90.0,3.15,1.45,1.5,1.15,2.1,0.35,375.62,13.98x
+Run 5: Full Human-Speed Replay Loop (80-Task Comprehensive Benchmark),FULL_HUMAN_SPEED,80,75,93.75,0.74,0.38,0.35,0.22,2.1,0.12,310.5,59.53x

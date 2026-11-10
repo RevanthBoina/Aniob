@@ -12,6 +12,8 @@ object FailureReasonCopy {
     private val RULES: List<Pair<Regex, (MatchResult) -> String>> = listOf(
         Regex("(?i)grounding[_ ]miss.*'([^']+)'") to { m -> "Couldn't find '${m.groupValues[1]}' on screen" },
         Regex("(?i)grounding[_ ]miss") to { _ -> "Couldn't find the target on screen" },
+        Regex("(?i)(?:I )?couldn't find '([^']+)' on the screen") to { m -> "Couldn't find '${m.groupValues[1]}' on screen" },
+        Regex("(?i)cloud action generation failed|request failed|503 service unavailable") to { _ -> "Cloud service is currently unreachable" },
         Regex("(?i)no[- ]effect|no observable effect") to { _ -> "Nothing changed on screen after the action" },
         Regex("(?i)expected text '([^']+)' not present") to { m -> "Expected to see '${m.groupValues[1]}', but it wasn't there" },
         Regex("(?i)expected package '([^']+)' not foreground") to { m -> "'${m.groupValues[1]}' didn't open" },

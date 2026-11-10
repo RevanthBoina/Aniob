@@ -1,0 +1,12 @@
+name: "learned_set_alarm_for_6pm_tommor"
+version: "2.1"
+description: "Set alarm for 6pm tommorow"
+risk_tier: "LOW"
+confirmation_required: false
+triggers:
+  - "set alarm for 6pm tommorow"
+steps:
+  - step: 1
+    action: "swipe"
+    direction: "UP"
+    description: "Swiping UP"

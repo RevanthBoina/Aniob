@@ -1,0 +1,14 @@
+name: "learned_turn_on_light_and_off_af"
+version: "2.1"
+description: "turn on light and off after 10 seconds"
+risk_tier: "LOW"
+confirmation_required: false
+triggers:
+  - "turn on light and off after 10 seconds"
+steps:
+  - step: 1
+    action: "device_control"
+    description: "Turn on flashlight then off after 10 seconds"
+  - step: 2
+    action: "finish"
+    description: "Goal accomplished"

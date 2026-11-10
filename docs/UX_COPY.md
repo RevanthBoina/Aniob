@@ -40,11 +40,15 @@ exception: it names the gateway the user is asked to connect, so the Cloud AI ca
 | Empty title | What do you want Aniob to do? |
 | Empty body | Type, speak, or tap a suggestion below. |
 | Queue chip | After this task: %1$s |
-| Grill title | Help me understand |
-| Grill subtitle | A couple of quick details so I get this right. |
-| Remember answer | Remember this answer |
-| Remembered badge | saved ✓ |
-| Grill footer | %1$d of %2$d · remembered %3$d |
+| Question card label | Quick question · %1$d of %2$d |
+| Question card (single) | Quick question |
+| Free-text option | Something else… |
+| Free-text placeholder | Type your answer |
+| Remember answer | Remember |
+| Skip a question | Skip |
+| Skip an approval | Don't allow |
+| Approval options | Allow · Don't allow |
+| Skipped step note | Skipped a payment step because payments were not approved at the start. |
 | Cancel task | Cancel task |
 | Template search | Search in… |
 | Template message | Send message to… |
