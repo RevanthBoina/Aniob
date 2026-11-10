@@ -39,8 +39,8 @@ class AniobGrillMeEngine(
     ): AniobGrillMeResult {
         val trimmed = taskPrompt.trim()
 
-        // Deterministic check for simple self-contained intent commands
-        if (isSelfContainedIntent(trimmed)) {
+        // Deterministic check for simple self-contained intent commands and complete instructions
+        if (isSelfContainedIntent(trimmed) || isCompleteInstruction(trimmed)) {
             return AniobGrillMeResult(needsClarification = false)
         }
 
@@ -56,9 +56,11 @@ class AniobGrillMeEngine(
                 val res = llmClient.generateClarificationQuestions(trimmed)
                 val filtered = res.questions
                     .filter { q ->
-                        !rememberedAnswers.containsKey(q.id) && !rememberedAnswers.containsKey("grill.${q.id}")
+                        !rememberedAnswers.containsKey(q.id) && !rememberedAnswers.containsKey("grill.${q.id}") &&
+                            !canBeDefaulted(q)
                     }
                     .map(::sanitizeQuestionOptions)
+                    .take(1)
                 if (filtered.isEmpty()) AniobGrillMeResult(needsClarification = false)
                 else res.copy(questions = filtered)
             } catch (e: CancellationException) {
@@ -83,6 +85,52 @@ class AniobGrillMeEngine(
         return core in SELF_CONTAINED
     }
 
+    fun isCompleteInstruction(prompt: String): Boolean {
+        val lower = AniobTextFold.fold(prompt)
+        val words = AniobTextFold.tokens(prompt).toSet()
+        val isQuestion = words.firstOrNull() in setOf("what", "why", "how", "who", "when", "where", "which", "explain", "define")
+        if (isQuestion) return false
+
+        // 1. Message instruction with a recipient and a body is complete: ask nothing.
+        val isMessage = words.any { it in setOf("message", "text", "send", "sms", "whatsapp", "telegram") }
+        if (isMessage) {
+            val toMatch = Regex("(?:message|text|send(?:\\s+a)?\\s+message\\s+to|send\\s+to)\\s+([a-zA-Z0-9_]+)").find(lower)
+            val hasExplicitRecipient = toMatch != null && toMatch.groupValues[1].trim().isNotBlank() &&
+                toMatch.groupValues[1].trim() !in listOf("a", "the", "me", "my", "app")
+            val hasContent = lower.contains("saying") || lower.contains("\"") || lower.contains("'") ||
+                Regex("(?:text|message)\\s+[a-zA-Z0-9_]+\\s+(?:that\\s+)?(.+)").find(lower)?.groupValues?.get(1)?.isNotBlank() == true ||
+                Regex("(?:tell|say\\s+to)\\s+[a-zA-Z0-9_]+\\s+(.+)").find(lower)?.groupValues?.get(1)?.isNotBlank() == true
+            if (hasExplicitRecipient && hasContent) return true
+        }
+
+        // 2. Alarm or timer instruction with a time is complete: ask nothing.
+        val isAlarm = words.any { it in setOf("alarm", "timer") }
+        if (isAlarm) {
+            val timeMatch = Regex("\\b(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|in\\s+\\d+\\s+minutes?|for\\s+\\d+\\s+(?:minutes?|seconds?|hours?))\\b").find(lower)
+            if (timeMatch != null && timeMatch.value.isNotBlank()) return true
+        }
+
+        // 3. Call instruction with a recipient is complete: ask nothing.
+        val isCall = words.any { it in setOf("call", "dial", "ring", "phone") }
+        if (isCall) {
+            val callMatch = Regex("\\b(?:call|dial|ring|phone)\\s+([a-zA-Z0-9_]+)").find(lower)
+            val hasRecipient = callMatch != null && callMatch.groupValues[1].trim().isNotBlank() &&
+                callMatch.groupValues[1].trim() !in listOf("a", "the", "app")
+            if (hasRecipient) return true
+        }
+
+        return false
+    }
+
+    fun canBeDefaulted(q: GrillQuestion): Boolean {
+        if (q.defaultOption != null) return true
+        val lowerId = q.id.lowercase(java.util.Locale.ROOT)
+        val lowerQ = q.question.lowercase(java.util.Locale.ROOT)
+        return lowerId in setOf("app", "provider_app", "ride_type", "confirm", "label", "which_app") ||
+            lowerId.contains("app") || lowerId.contains("provider") || lowerId.contains("confirm") ||
+            lowerQ.contains("which app") || lowerQ.contains("confirm") || lowerQ.contains("what label")
+    }
+
     /**
      * Generates structured questions for common ambiguous task patterns.
      * Extracts explicit values from prompt first, then checks remembered answers.
@@ -91,6 +139,9 @@ class AniobGrillMeEngine(
         taskPrompt: String,
         rememberedAnswers: Map<String, String> = emptyMap()
     ): AniobGrillMeResult {
+        if (isCompleteInstruction(taskPrompt)) {
+            return AniobGrillMeResult(needsClarification = false)
+        }
         val lower = AniobTextFold.fold(taskPrompt)
         val words = AniobTextFold.tokens(taskPrompt).toSet()
         val isQuestion = words.firstOrNull() in setOf("what", "why", "how", "who", "when", "where", "which", "explain", "define")
@@ -186,7 +237,7 @@ class AniobGrillMeEngine(
             if (relevantSlots.isNotEmpty()) {
                 val plan = calibratedAsking.plan(relevantSlots, taskPrompt)
                 val upfront = plan.upfront
-                return if (upfront != null) {
+                return if (upfront != null && !canBeDefaulted(GrillQuestion(upfront.id, upfront.questionAsAsked, upfront.options, defaultOption = upfront.default))) {
                     AniobGrillMeResult(
                         needsClarification = true,
                         questions = listOf(
@@ -304,8 +355,9 @@ class AniobGrillMeEngine(
             }
         }
 
-        return if (questions.isNotEmpty()) {
-            AniobGrillMeResult(needsClarification = true, questions = questions)
+        val nonDefaulted = questions.filterNot(::canBeDefaulted).take(1)
+        return if (nonDefaulted.isNotEmpty()) {
+            AniobGrillMeResult(needsClarification = true, questions = nonDefaulted)
         } else {
             AniobGrillMeResult(needsClarification = false)
         }

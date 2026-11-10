@@ -506,6 +506,7 @@ class AniobViewModel(
         }
 
     init {
+        AniobBackgroundController.onStopCallback = { stopCurrentTask() }
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
         // Key comes from encrypted storage (which migrates and then deletes any plaintext copy an
         // older build wrote). The model is only sanitised: OmniRoute accepts "auto", auto/<mode>
@@ -2884,13 +2885,7 @@ class AniobViewModel(
                 val liveService = accessibility
                 if (!reuseCheck.valid && liveService != null) {
                     if (foregroundBefore == "com.aniob.app") {
-                        app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
-                        AniobBackgroundController.currentActivity?.runOnUiThread {
-                            AniobBackgroundController.currentActivity?.moveTaskToBack(true)
-                        }
-                        delay(600)
-                        currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                        app.eventLogger.info("AniobViewModel", "Aniob is foregrounded; reflecting live progress without window focus fight")
                     } else if (foregroundBefore != null && foregroundBefore != captured.packageName) {
                         app.eventLogger.info(
                             "AniobViewModel",
@@ -4302,7 +4297,7 @@ class AniobViewModel(
 
     private suspend fun executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction, expectedTreeHash: String? = null): Boolean {
         // Block until the UI is quiescent so we never dispatch into a running animation.
-        AniobWaitForIdle.waitForIdle(1000)
+        AniobWaitForIdle.waitForIdle()
         if (accessibility == null) return false
         val deferred = CompletableDeferred<Boolean>()
         accessibility.executeAction(action, expectedTreeHash) { success ->

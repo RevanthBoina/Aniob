@@ -20,7 +20,9 @@ data class LaunchPlan(
     val label: String,
     val launchActivity: String? = null,
     /** [SOURCE_REGISTRY] when a live, launchable app answered; [SOURCE_SEED] for the stock fallback. */
-    val source: String = SOURCE_REGISTRY
+    val source: String = SOURCE_REGISTRY,
+    val narration: String? = null,
+    val alternativePackage: String? = null
 ) {
     companion object {
         const val SOURCE_REGISTRY = "registry"
@@ -71,6 +73,81 @@ object AniobLaunchHub {
 
     private const val MIN_NAME_LENGTH = 2
 
+    val userAppPreferences = LinkedHashMap<String, String>()
+    @Volatile var lastAmbiguityQuery: String? = null
+    @Volatile var lastAlternativeApp: RegisteredApp? = null
+    @Volatile var lastChosenApp: RegisteredApp? = null
+
+    fun isSwitchToOther(prompt: String): Boolean {
+        val lower = prompt.trim().lowercase(java.util.Locale.ROOT)
+        return lower in setOf(
+            "use the other one",
+            "switch to the other one",
+            "open the other one",
+            "use other one",
+            "the other one",
+            "switch app",
+            "open the other app",
+            "use the other app"
+        )
+    }
+
+    fun resetPreferences() {
+        userAppPreferences.clear()
+        lastAmbiguityQuery = null
+        lastAlternativeApp = null
+        lastChosenApp = null
+    }
+
+    /**
+     * Deterministic tie-breaker for ambiguous app candidates:
+     * 1. Prefer the app designed for the curated role if known.
+     * 2. Prefer system / first-party packages over third-party alternatives.
+     * 3. Fall back to alphabetical order so the choice is stable and predictable.
+     */
+    fun breakTie(
+        candidates: List<RegisteredApp>,
+        roleHint: String? = null,
+        isLaunchable: (String) -> Boolean = { true },
+        registry: AniobAppRegistry = AniobAppRegistry.getInstance()
+    ): RegisteredApp? {
+        val launchable = candidates.filter { isLaunchable(it.packageName) }
+        if (launchable.isEmpty()) return null
+        if (launchable.size == 1) return launchable.first()
+
+        val roleKey = roleHint?.lowercase(java.util.Locale.ROOT)
+        if (roleKey != null) {
+            val prefPkg = userAppPreferences[roleKey]
+            if (prefPkg != null) {
+                launchable.firstOrNull { it.packageName == prefPkg }?.let { return it }
+            }
+        }
+
+        // 1. Curated role
+        val rolePkg = if (roleKey != null) registry.role(roleKey) else null
+        if (rolePkg != null) {
+            launchable.firstOrNull { it.packageName == rolePkg }?.let { return it }
+        }
+        val roleMatches = launchable.filter { app ->
+            registry.roles().values.contains(app.packageName)
+        }
+        val pool1 = if (roleMatches.isNotEmpty()) roleMatches else launchable
+
+        // 2. System / first-party packages over third-party alternatives
+        val systemApps = pool1.filter { app ->
+            app.isSystemApp ||
+                app.packageName.startsWith("com.google.android.") ||
+                app.packageName.startsWith("com.android.")
+        }
+        val pool2 = if (systemApps.isNotEmpty()) systemApps else pool1
+
+        // 3. Alphabetical order by label, then packageName
+        return pool2.minWithOrNull(
+            compareBy<RegisteredApp> { it.label.lowercase(java.util.Locale.ROOT) }
+                .thenBy { it.packageName }
+        )
+    }
+
     // ------------------------------------------------------------------ #
     // planning
     // ------------------------------------------------------------------ #
@@ -89,13 +166,32 @@ object AniobLaunchHub {
     ): LaunchPlan? {
         val trimmed = prompt.trim()
         if (trimmed.isEmpty()) return null
+
+        if (isSwitchToOther(trimmed)) {
+            val alt = lastAlternativeApp
+            if (alt != null && isLaunchable(alt.packageName)) {
+                val query = lastAmbiguityQuery
+                if (query != null) {
+                    userAppPreferences[query.lowercase(java.util.Locale.ROOT)] = alt.packageName
+                }
+                val prevChosen = lastChosenApp
+                lastChosenApp = alt
+                lastAlternativeApp = prevChosen
+                return LaunchPlan(
+                    packageName = alt.packageName,
+                    label = alt.label,
+                    launchActivity = alt.launchActivity,
+                    source = LaunchPlan.SOURCE_REGISTRY,
+                    narration = "Opening ${alt.label}."
+                )
+            }
+        }
+
         val remainder = LAUNCH_VERB.find(trimmed)?.groupValues?.get(1)?.trim() ?: return null
         if (remainder.isBlank()) return null
 
         // 1. The live registry answers with its own tier order (package → label → alias → prefix →
-        //    fuzzy) on the app-name clause. Doing it this way — instead of only prefix-scanning —
-        //    is what keeps an exact label ahead of a longer derived alias: "Settings Hub" derives
-        //    the alias "settings", and it must not tie with the real Settings app for "open settings".
+        //    fuzzy) on the app-name clause.
         val clause = stripTrailingClause(remainder)
         when (val direct = registry.resolve(clause)) {
             is AppLookup.Match -> {
@@ -103,29 +199,40 @@ object AniobLaunchHub {
                 if (!isLaunchable(app.packageName)) return null
                 return LaunchPlan(app.packageName, app.label, app.launchActivity, LaunchPlan.SOURCE_REGISTRY)
             }
-            // An ambiguity in the live registry is answered with null: falling through to a seed
-            // would turn "which Settings?" into a coin flip.
-            is AppLookup.Ambiguous -> return null
+            is AppLookup.Ambiguous -> {
+                val chosen = breakTie(direct.candidates, roleHint = clause, isLaunchable = isLaunchable, registry = registry)
+                if (chosen != null) {
+                    val other = direct.candidates.firstOrNull { it.packageName != chosen.packageName && isLaunchable(it.packageName) }
+                    lastAmbiguityQuery = clause
+                    lastChosenApp = chosen
+                    lastAlternativeApp = other
+                    val narration = "Opening ${chosen.label}. Say 'use the other one' to switch"
+                    return LaunchPlan(
+                        packageName = chosen.packageName,
+                        label = chosen.label,
+                        launchActivity = chosen.launchActivity,
+                        source = LaunchPlan.SOURCE_REGISTRY,
+                        narration = narration,
+                        alternativePackage = other?.packageName
+                    )
+                }
+                return null
+            }
             is AppLookup.Miss -> Unit
         }
 
-        // 2. The app name at the *start* of the remainder, longest first ("open Chrome browser"
-        //    names Chrome even though "chrome browser" is not an app). A live tie is still a
-        //    question, and a live entry the platform rejects is a "no", never a seed lookup.
-        when (val live = pickAtStart(remainder, registry.all(), LaunchPlan.SOURCE_REGISTRY, isLaunchable)) {
+        // 2. The app name at the *start* of the remainder, longest first.
+        when (val live = pickAtStart(remainder, registry.all(), LaunchPlan.SOURCE_REGISTRY, isLaunchable, roleHint = clause, registry = registry)) {
             is Pick.Hit -> return live.plan
-            Pick.Tied -> return null
-            Pick.None -> Unit
+            Pick.Tied, Pick.None -> Unit
         }
 
-        // 3. Stock package ids, only because the registry had nothing that fits. Ties among seeds
-        //    (three stock "Clock" packages) are collapsed deterministically by resolveWithSeed,
-        //    whose answer is still gated by isLaunchable.
+        // 3. Stock package ids, only because the registry had nothing that fits.
         val seeded = registry.resolveWithSeed(clause)
         if (seeded is AppLookup.Match && isLaunchable(seeded.app.packageName)) {
             return LaunchPlan(seeded.app.packageName, seeded.app.label, seeded.app.launchActivity, LaunchPlan.SOURCE_SEED)
         }
-        when (val seedPick = pickAtStart(remainder, AniobAppRegistry.seedApps(), LaunchPlan.SOURCE_SEED, isLaunchable)) {
+        when (val seedPick = pickAtStart(remainder, AniobAppRegistry.seedApps(), LaunchPlan.SOURCE_SEED, isLaunchable, roleHint = clause, registry = registry)) {
             is Pick.Hit -> return seedPick.plan
             Pick.Tied, Pick.None -> Unit
         }
@@ -201,12 +308,12 @@ object AniobLaunchHub {
         remainder: String,
         entries: List<RegisteredApp>,
         source: String,
-        isLaunchable: (String) -> Boolean
+        isLaunchable: (String) -> Boolean,
+        roleHint: String? = null,
+        registry: AniobAppRegistry = AniobAppRegistry.getInstance()
     ): Pick {
         val lower = remainder.lowercase()
-        var best: RegisteredApp? = null
-        var bestLength = 0
-        var tied = false
+        val matchingEntries = mutableListOf<Pair<RegisteredApp, Int>>()
 
         for (entry in entries) {
             if (entry.packageName.isBlank() || entry.label.isBlank()) continue
@@ -214,21 +321,43 @@ object AniobLaunchHub {
                 val candidate = name.trim().lowercase()
                 if (candidate.length < MIN_NAME_LENGTH) continue
                 if (!startsWithWord(lower, candidate)) continue
-                when {
-                    candidate.length > bestLength -> {
-                        best = entry
-                        bestLength = candidate.length
-                        tied = false
-                    }
-                    candidate.length == bestLength && best?.packageName != entry.packageName -> tied = true
-                }
+                matchingEntries.add(entry to candidate.length)
             }
         }
 
-        val winner = best ?: return Pick.None
-        if (tied) return Pick.Tied
-        if (!isLaunchable(winner.packageName)) return Pick.None
-        return Pick.Hit(LaunchPlan(winner.packageName, winner.label, winner.launchActivity, source))
+        if (matchingEntries.isEmpty()) return Pick.None
+        val maxLength = matchingEntries.maxOf { it.second }
+        val tiedCandidates = matchingEntries
+            .filter { it.second == maxLength }
+            .map { it.first }
+            .distinctBy { it.packageName }
+            .filter { isLaunchable(it.packageName) }
+
+        if (tiedCandidates.isEmpty()) return Pick.None
+        if (tiedCandidates.size == 1) {
+            val winner = tiedCandidates.first()
+            return Pick.Hit(LaunchPlan(winner.packageName, winner.label, winner.launchActivity, source))
+        }
+
+        val chosen = breakTie(tiedCandidates, roleHint = roleHint, isLaunchable = isLaunchable, registry = registry)
+        if (chosen != null) {
+            val other = tiedCandidates.firstOrNull { it.packageName != chosen.packageName }
+            lastAmbiguityQuery = roleHint
+            lastChosenApp = chosen
+            lastAlternativeApp = other
+            val narration = "Opening ${chosen.label}. Say 'use the other one' to switch"
+            return Pick.Hit(
+                LaunchPlan(
+                    packageName = chosen.packageName,
+                    label = chosen.label,
+                    launchActivity = chosen.launchActivity,
+                    source = source,
+                    narration = narration,
+                    alternativePackage = other?.packageName
+                )
+            )
+        }
+        return Pick.None
     }
 
     /**

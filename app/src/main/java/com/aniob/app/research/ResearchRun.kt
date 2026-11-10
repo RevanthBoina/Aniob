@@ -39,7 +39,12 @@ data class ResearchRun(
     val fastpathSteps: Int = 0,
     val replayValidated: Boolean = false,
     val replayDiverged: Boolean = false,
-    val setupLatencyMs: Long = 0L
+    val setupLatencyMs: Long = 0L,
+    val messageDelayMs: Long = 0L,
+    val fastSkippedSteps: Int = 0,
+    val preTaskQuestions: Int = 0,
+    val outcomeCategory: String = "",
+    val userCorrected: Boolean = false
 ) {
 
     fun toCsvRow(): String = listOf(
@@ -71,7 +76,12 @@ data class ResearchRun(
         fastpathSteps.toString(),
         replayValidated.toString(),
         replayDiverged.toString(),
-        setupLatencyMs.toString()
+        setupLatencyMs.toString(),
+        messageDelayMs.toString(),
+        fastSkippedSteps.toString(),
+        preTaskQuestions.toString(),
+        CsvCodec.escape(CsvCodec.singleLine(outcomeCategory)),
+        userCorrected.toString()
     ).joinToString(CsvCodec.DELIMITER.toString())
 
     companion object {
@@ -81,10 +91,12 @@ data class ResearchRun(
                 "screenshots,prompt_tokens,study_pass,tree_reads,bitmaps,bursts_planned," +
                 "burst_members_run,bursts_suspended,shortcut_attempted,shortcut_degraded," +
                 "shortcut_fail_reason,skill_id,remember_replay_actions,fastpath_steps," +
-                "replay_validated,replay_diverged,setup_latency_ms"
+                "replay_validated,replay_diverged,setup_latency_ms," +
+                "message_delay_ms,fast_skipped_steps,pre_task_questions,outcome_category,user_corrected"
 
-        const val COLUMN_COUNT = 29
-        const val PREV_COLUMN_COUNT = 15
+        const val COLUMN_COUNT = 34
+        const val PREV_COLUMN_COUNT = 29
+        const val PREV_COLUMN_COUNT_15 = 15
         const val LEGACY_COLUMN_COUNT = 12
 
         /** Milliseconds precision in the raw file; the summary table and HUD round to 2 decimals. */
@@ -94,7 +106,7 @@ data class ResearchRun(
         /** Parses one CSV row; returns `null` for the header, blank lines or malformed rows. */
         fun fromCsvRow(row: String): ResearchRun? {
             val cells = CsvCodec.split(row)
-            if (cells.size != COLUMN_COUNT && cells.size != PREV_COLUMN_COUNT && cells.size != LEGACY_COLUMN_COUNT) return null
+            if (cells.size != COLUMN_COUNT && cells.size != PREV_COLUMN_COUNT && cells.size != PREV_COLUMN_COUNT_15 && cells.size != LEGACY_COLUMN_COUNT) return null
             val timestamp = cells[0].toLongOrNull() ?: return null
             val latency = cells[3].toDoubleOrNull() ?: return null
             val llmCalls = cells[4].toIntOrNull() ?: return null
@@ -123,6 +135,11 @@ data class ResearchRun(
             val replayValidated = if (cells.size >= 27) cells[26].toBooleanStrictOrNull() ?: return null else false
             val replayDiverged = if (cells.size >= 28) cells[27].toBooleanStrictOrNull() ?: return null else false
             val setupLatencyMs = if (cells.size >= 29) cells[28].toLongOrNull() ?: return null else 0L
+            val messageDelayMs = if (cells.size >= 30) cells[29].toLongOrNull() ?: 0L else 0L
+            val fastSkippedSteps = if (cells.size >= 31) cells[30].toIntOrNull() ?: 0 else 0
+            val preTaskQuestions = if (cells.size >= 32) cells[31].toIntOrNull() ?: 0 else 0
+            val outcomeCategory = if (cells.size >= 33) cells[32] else ""
+            val userCorrected = if (cells.size >= 34) cells[33].toBooleanStrictOrNull() ?: false else false
 
             return ResearchRun(
                 timestampMs = timestamp,
@@ -153,7 +170,12 @@ data class ResearchRun(
                 fastpathSteps = fastpathSteps,
                 replayValidated = replayValidated,
                 replayDiverged = replayDiverged,
-                setupLatencyMs = setupLatencyMs
+                setupLatencyMs = setupLatencyMs,
+                messageDelayMs = messageDelayMs,
+                fastSkippedSteps = fastSkippedSteps,
+                preTaskQuestions = preTaskQuestions,
+                outcomeCategory = outcomeCategory,
+                userCorrected = userCorrected
             )
         }
     }

@@ -230,6 +230,7 @@ object UniversalPlanner {
         CapabilityRegistry.specFor(CapabilityId.INSTALL_APP)?.match?.invoke(text)?.let { slots ->
             val target = slots.target ?: return@let
             val resolved = resolver.resolveApp(target)
+            if (resolved is AppResolution.Ambiguous) return@let
             val pkg = when (resolved) {
                 is AppResolution.Installed -> resolved.app.packageName
                 is AppResolution.Installable -> resolved.hintedPackage
