@@ -106,7 +106,11 @@ class ResearchTelemetryManager(
 
     var featureSelection: FeatureSelection
         get() = if (prefs.contains("execution_features_v1")) FeatureSelection(
-            prefs.getInt("execution_features_v1", 31).coerceIn(0, 31)) else FeatureSelection.fromLegacy(mode)
+            prefs.getInt("execution_features_v1", 31).coerceIn(0, 31)) else FeatureSelection.fromLegacy(mode).let { legacy ->
+            if (appContext.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+                    .getBoolean("fastpath_enabled", true)) legacy
+            else legacy.with(ExecutionFeature.REMEMBER, false)
+        }
         set(value) { prefs.edit().putInt("execution_features_v1", value.mask).apply() }
 
     private fun saveCombination(run: ResearchRun) {

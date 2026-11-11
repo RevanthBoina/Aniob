@@ -20,6 +20,17 @@ class CombinationTelemetryTest {
         override fun all() = rows.values.sortedByDescending { it.timestampMs }
     }
 
+    @Test fun firstUpgradePreservesDisabledReplayPreference() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        context.getSharedPreferences("aniob_research", 0).edit().clear().commit()
+        context.getSharedPreferences("aniob_prefs", 0).edit().putBoolean("fastpath_enabled", false).commit()
+        val manager = ResearchTelemetryManager(context, logger = {}, combinationDao = { Rows() })
+        manager.mode = AblationMode.FULL_HUMAN_SPEED
+        assertEquals(27, manager.featureSelection.mask)
+        manager.featureSelection = FeatureSelection.FULL_SPEED
+        assertEquals(31, manager.featureSelection.mask)
+    }
+
     @Test fun combinationSnapshotAndCorrectionsStayOutOfResearchFiles() {
         val context = ApplicationProvider.getApplicationContext<Application>()
         val rows = Rows()

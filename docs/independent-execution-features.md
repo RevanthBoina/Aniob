@@ -31,7 +31,8 @@ app ambiguity handling and confirmation policies remain in force.
 - Room migration 6→7 adds this table without dropping historical tables or research files.
 - “Clear research” clears research CSVs, not the separate combination database.
 - Existing presets and their stored labels/metrics are retained. On first upgrade the previous
-  preset is translated to its actual bits; no historical runs are relabeled.
+  preset is translated to its actual bits, preserving a disabled legacy replay preference;
+  no historical runs are relabeled.
 
 ## Automatic skills: investigation and changes
 
