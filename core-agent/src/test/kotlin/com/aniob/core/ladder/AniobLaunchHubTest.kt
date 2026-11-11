@@ -105,10 +105,9 @@ class AniobLaunchHubTest {
     }
 
     @Test
-    fun `two apps with the same name are ambiguous, not a guess`() {
+    fun `two apps with the same name use stable role preference`() {
         registry.hydrate(installed + RegisteredApp("com.other.clock", "Clock"), emptyMap())
-        assertNull("an equal-length tie is an answer of 'ask', never a coin flip",
-            AniobLaunchHub.plan("open clock", registry))
+        assertEquals("com.google.android.deskclock", AniobLaunchHub.plan("open clock", registry)?.packageName)
     }
 
     @Test
@@ -124,6 +123,20 @@ class AniobLaunchHubTest {
         assertEquals("com.instagram.android", AniobLaunchHub.plan("open instgram", registry)?.packageName)
         assertEquals("com.android.chrome", AniobLaunchHub.plan("open chorme", registry)?.packageName)
         assertNull(AniobLaunchHub.plan("open zephyr", registry))
+    }
+
+    @Test fun `ambiguous installed app stays local and alternatives can switch`() {
+        val apps = listOf(RegisteredApp("com.example.maps", "Maps"),
+            RegisteredApp("com.google.android.apps.maps", "Maps", isSystemApp = true))
+        for (order in listOf(apps, apps.reversed())) {
+            registry.hydrate(order, emptyMap())
+            assertEquals("com.google.android.apps.maps", AniobLaunchHub.plan("open maps", registry)?.packageName)
+            assertNull(AniobLaunchHub.planWeb("open maps", registry))
+            assertEquals("com.example.maps", AniobLaunchHub.plan("use the other one", registry)?.packageName)
+        }
+        val unknown = listOf(RegisteredApp("z.app", "Twin"), RegisteredApp("a.app", "Twin"))
+        assertEquals("a.app", AniobLaunchHub.breakTie(unknown, "twin", { true }, registry)?.packageName)
+        assertEquals("a.app", AniobLaunchHub.breakTie(unknown.reversed(), "twin", { true }, registry)?.packageName)
     }
 
     // ------------------------------------------------------------------ //

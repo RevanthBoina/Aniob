@@ -12,7 +12,8 @@ import com.aniob.core.knowledge.AppCatalogEntry
 data class AppLaunchTarget(
     val packageName: String,
     val appName: String,
-    val launchActivity: String? = null
+    val launchActivity: String? = null,
+    val narration: String? = null
 )
 
 /**

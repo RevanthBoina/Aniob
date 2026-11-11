@@ -191,7 +191,7 @@ class AniobExecutionRouter(
                     packageName = pending.packageName,
                     appName = pending.appName,
                     launchActivity = pending.launchActivity,
-                    reason = if (firstStep) {
+                    reason = pending.narration?.takeIf { it.isNotBlank() } ?: if (firstStep) {
                         "App shortcut: '${pending.appName}' is installed (0 LLM calls)"
                     } else {
                         "App switch: '${pending.appName}' is named later in the task and is not open (0 LLM calls)"
