@@ -269,7 +269,12 @@ class AniobAccountModelClient(
                 consume(parser.feed(line + "\n"))
             }
         } catch (e: IOException) {
-            // Disconnected mid-stream: whatever arrived is incomplete, so finish() reports it as such.
+            // A transport error is not a clean EOF from a server that omits completion events.
+            // Never return a partial action as a successful response after a broken connection.
+            health.recordFailure(endpoint, GatewayFailureKind.UNREACHABLE)
+            return Attempt.Failed(AniobAccountHttp.failure(
+                GatewayFailureKind.UNREACHABLE, code, endpoint, "reply disconnected before completion"
+            ))
         }
         consume(parser.finish())
 

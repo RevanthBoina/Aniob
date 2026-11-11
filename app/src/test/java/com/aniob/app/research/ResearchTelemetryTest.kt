@@ -226,7 +226,9 @@ class ResearchTelemetryTest {
             "Ablation_Mode,Mode_Code,Tasks_Evaluated,Tasks_Succeeded,Task_Success_Rate_Pct," +
                 "Mean_End_to_End_Latency_Sec,Std_Latency_Sec,Mean_Latency_Per_Step_Sec," +
                 "Mean_LLM_API_Calls_Per_Task,Mean_UI_Steps_Per_Task,Mean_Screenshots_Per_Task," +
-                "Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline",
+                "Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline," +
+                "Median_Latency_Sec,Unverified_Rate_Pct,Failed_Rate_Pct,Stopped_Rate_Pct," +
+                "User_Corrected_Rate_Pct,Mean_Message_Delay_Ms",
             lines[0]
         )
         assertEquals(2, lines.size)

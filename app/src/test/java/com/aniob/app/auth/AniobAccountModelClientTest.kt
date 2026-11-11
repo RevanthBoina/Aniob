@@ -182,6 +182,13 @@ class AniobAccountModelClientTest {
         assertEquals(GatewayFailureKind.NOT_JSON, failure(client(r).getNextActionRaw("s", "o")).kind)
     }
 
+    @Test fun `a clean EOF with text accepts servers that omit completion events`() = runBlocking<Unit> {
+        handler = { ex, _ -> ex.reply(200, "text/event-stream",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n") }
+        val (r, _) = repo()
+        assertEquals("hello", client(r).getNextActionRaw("s", "o").getOrThrow())
+    }
+
     @Test fun `a mid-stream disconnect is a failure, never a made-up answer`() = runBlocking<Unit> {
         handler = { ex, _ ->
             ex.responseHeaders.add("Content-Type", "text/event-stream")
