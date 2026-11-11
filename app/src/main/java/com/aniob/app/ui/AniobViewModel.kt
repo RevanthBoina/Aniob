@@ -66,6 +66,7 @@ import com.aniob.core.feasibility.Privilege
 import com.aniob.core.narration.AgentPhase
 import com.aniob.core.narration.PhaseSnapshot
 import com.aniob.core.narration.ThinkSource
+import com.aniob.core.outcome.RunOutcome
 import com.aniob.core.outcome.SealedOutcome
 import com.aniob.core.outcome.UserDecision
 import com.aniob.core.understander.AniobPromptUnderstanding
