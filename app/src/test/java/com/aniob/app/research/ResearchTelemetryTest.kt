@@ -53,8 +53,65 @@ class ResearchTelemetryTest {
 
     @Test fun ablationModesDoNotLeakLearnedSkillsIntoControlConditions() {
         for (mode in AblationMode.entries) {
-            assertEquals(mode == AblationMode.FULL_HUMAN_SPEED, mode.skillsEnabled)
+            assertEquals(mode != AblationMode.BASELINE, mode.skillsEnabled)
         }
+    }
+
+    @Test fun detachedClosureDoesNotCloseTheNextTaskAndAcceptsImmediateCorrection() {
+        val manager = ResearchTelemetryManager(context, clock = { 100L }, logger = {})
+        manager.clearAll()
+        manager.startTask("first", runId = "first")
+        manager.prepareBackgroundClosure("first")
+        manager.startTask("second", runId = "second")
+        assertNull(manager.endTaskIfActive("interrupted", runId = "first"))
+        manager.markUserCorrected("first")
+        val first = requireNotNull(manager.endTask(ResearchOutcome.UNVERIFIED, runId = "first"))
+        assertTrue(manager.isTaskActive)
+        assertTrue(first.userCorrected)
+        assertFalse(first.success)
+        assertEquals("second", manager.endTask(ResearchOutcome.STOPPED, runId = "second")?.runId)
+    }
+
+    @Test fun categorizedRowsAndAllFourModesRemainIndependent() {
+        val runs = AblationMode.entries.map { mode ->
+            ResearchRun(1, mode, "goal", 2.0, 0, 0, 1, false, "", false, false,
+                runId = mode.id, outcomeCategory = ResearchOutcome.SUCCESS,
+                originalOutcomeCategory = ResearchOutcome.UNVERIFIED, userCorrected = true, messageDelayMs = 40)
+        }
+        val rows = ResearchSummaryTable.build(runs)
+        assertEquals(AblationMode.entries.toList(), rows.map { it.mode })
+        rows.forEach {
+            assertEquals(0, it.successes)
+            assertEquals(2.0, it.medianLatencySeconds, 0.001)
+            assertEquals(100.0, it.unverifiedRatePercent, 0.001)
+            assertEquals(40.0, it.meanMessageDelayMs, 0.001)
+        }
+        runs.forEach { assertEquals(it, ResearchRun.fromCsvRow(it.toCsvRow())) }
+    }
+
+    @Test fun correctionTargetsRunIdAndPreservesMachineVerdict() {
+        var now = 0L
+        val manager = ResearchTelemetryManager(context, clock = { now }, logger = {})
+        manager.clearAll()
+        manager.startTask("first", runId = "first")
+        manager.recordTreeRead()
+        manager.recordBitmapCapture()
+        manager.recordActionCompleted()
+        now = 75
+        manager.recordCompletionMessageShown()
+        manager.endTask(ResearchOutcome.UNVERIFIED)
+        manager.startTask("second", runId = "second")
+        manager.endTask(ResearchOutcome.FAILED)
+        val corrected = requireNotNull(manager.markUserCorrected("first"))
+        assertFalse(corrected.success)
+        assertTrue(corrected.userCorrected)
+        assertEquals(ResearchOutcome.UNVERIFIED, corrected.originalOutcomeCategory)
+        assertEquals(ResearchOutcome.SUCCESS, corrected.outcomeCategory)
+        assertEquals(75L, corrected.messageDelayMs)
+        assertEquals(1, corrected.treeReads)
+        assertEquals(1, corrected.bitmaps)
+        assertEquals(1, corrected.screenshots)
+        assertEquals(ResearchOutcome.FAILED, manager.allRuns().last().outcomeCategory)
     }
 
     @Test fun extendedMeasurementsRoundTripWithoutConflatingPlansMembersAndBitmaps() {
@@ -271,7 +328,7 @@ class ResearchTelemetryTest {
         now += 12_500
         manager.recordLlmCall()
         manager.recordStep()
-        manager.recordScreenCapture()
+        manager.recordBitmapCapture()
         manager.recordPromptTokens(250)
         manager.markIntentShortcutUsed()
         val run = manager.endTask(isSuccess = true)
@@ -314,7 +371,7 @@ class ResearchTelemetryTest {
         now += 20_000
         manager.recordLlmCall()
         manager.recordStep()
-        manager.recordScreenCapture()
+        manager.recordBitmapCapture()
         manager.recordPromptTokens(350)
         manager.endTask(isSuccess = true)
 
@@ -355,7 +412,7 @@ class ResearchTelemetryTest {
         val manager = ResearchTelemetryManager(context, logger = {})
         manager.recordLlmCall()
         manager.recordStep()
-        manager.recordScreenCapture()
+        manager.recordBitmapCapture()
         manager.recordPromptTokens(100)
         manager.markRememberCacheHit()
         assertNull(manager.endTask(isSuccess = true))
@@ -369,7 +426,7 @@ class ResearchTelemetryTest {
         val manager = ResearchTelemetryManager(context, clock = { now }, logger = {})
         manager.startTask("first", AblationMode.BASELINE)
         repeat(5) { manager.recordLlmCall() }
-        repeat(3) { manager.recordScreenCapture() }
+        repeat(3) { manager.recordBitmapCapture() }
         manager.recordPromptTokens(500)
         now += 1_000
         manager.endTask(isSuccess = false, failureReason = "unmet_criteria")

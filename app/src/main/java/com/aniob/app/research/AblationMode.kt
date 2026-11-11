@@ -39,7 +39,11 @@ enum class AblationMode(
     val actionBursts: Boolean,
     val fastDeltaVerify: Boolean,
     val rememberReplay: Boolean,
-    val skillsEnabled: Boolean
+    val skillsEnabled: Boolean,
+    val fastIdleWait: Boolean,
+    val skipFastStepVerification: Boolean,
+    val optimizedFinish: Boolean,
+    val immediateCompletion: Boolean
 ) {
     BASELINE(
         id = "BASELINE",
@@ -50,7 +54,11 @@ enum class AblationMode(
         actionBursts = false,
         fastDeltaVerify = false,
         rememberReplay = false,
-        skillsEnabled = false
+        skillsEnabled = false,
+        fastIdleWait = false,
+        skipFastStepVerification = false,
+        optimizedFinish = false,
+        immediateCompletion = false
     ),
     INTENT_SHORTCUT_ONLY(
         id = "INTENT_SHORTCUT_ONLY",
@@ -61,7 +69,11 @@ enum class AblationMode(
         actionBursts = false,
         fastDeltaVerify = false,
         rememberReplay = false,
-        skillsEnabled = false
+        skillsEnabled = true,
+        fastIdleWait = false,
+        skipFastStepVerification = false,
+        optimizedFinish = false,
+        immediateCompletion = false
     ),
     BURST_AND_FAST_OBSERVE(
         id = "BURST_AND_FAST_OBSERVE",
@@ -72,7 +84,11 @@ enum class AblationMode(
         actionBursts = true,
         fastDeltaVerify = true,
         rememberReplay = false,
-        skillsEnabled = false
+        skillsEnabled = true,
+        fastIdleWait = true,
+        skipFastStepVerification = true,
+        optimizedFinish = true,
+        immediateCompletion = true
     ),
     FULL_HUMAN_SPEED(
         id = "FULL_HUMAN_SPEED",
@@ -83,7 +99,11 @@ enum class AblationMode(
         actionBursts = true,
         fastDeltaVerify = true,
         rememberReplay = true,
-        skillsEnabled = true
+        skillsEnabled = true,
+        fastIdleWait = true,
+        skipFastStepVerification = true,
+        optimizedFinish = true,
+        immediateCompletion = true
     );
 
     /**

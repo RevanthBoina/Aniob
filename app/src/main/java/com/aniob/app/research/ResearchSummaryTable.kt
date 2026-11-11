@@ -15,7 +15,13 @@ data class ResearchSummaryRow(
     val meanUiStepsPerTask: Double = 0.0,
     val meanScreenshotsPerTask: Double = 0.0,
     val meanPromptTokensPerCall: Double = 0.0,
-    val speedupVsBaseline: String = ""
+    val speedupVsBaseline: String = "",
+    val medianLatencySeconds: Double = 0.0,
+    val unverifiedRatePercent: Double = 0.0,
+    val failedRatePercent: Double = 0.0,
+    val stoppedRatePercent: Double = 0.0,
+    val correctedRatePercent: Double = 0.0,
+    val meanMessageDelayMs: Double = 0.0
 ) {
     /**
      * The line shown in the developer-only research status panel and in `Log.i("RESEARCH_METRICS", ...)`:
@@ -46,7 +52,9 @@ data class ResearchSummaryRow(
         String.format(Locale.US, "%.2f", meanUiStepsPerTask),
         String.format(Locale.US, "%.2f", meanScreenshotsPerTask),
         String.format(Locale.US, "%.2f", meanPromptTokensPerCall),
-        speedupVsBaseline
+        speedupVsBaseline,
+        medianLatencySeconds.toString(), unverifiedRatePercent.toString(), failedRatePercent.toString(),
+        stoppedRatePercent.toString(), correctedRatePercent.toString(), meanMessageDelayMs.toString()
     ).joinToString(CsvCodec.DELIMITER.toString())
 }
 
@@ -62,7 +70,8 @@ object ResearchSummaryTable {
         "Ablation_Mode,Mode_Code,Tasks_Evaluated,Tasks_Succeeded,Task_Success_Rate_Pct," +
             "Mean_End_to_End_Latency_Sec,Std_Latency_Sec,Mean_Latency_Per_Step_Sec," +
             "Mean_LLM_API_Calls_Per_Task,Mean_UI_Steps_Per_Task,Mean_Screenshots_Per_Task," +
-            "Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline"
+            "Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline," +
+            "Median_Latency_Sec,Unverified_Rate_Pct,Failed_Rate_Pct,Stopped_Rate_Pct,User_Corrected_Rate_Pct,Mean_Message_Delay_Ms"
 
     /**
      * One row per mode that has at least one measured run, in enum declaration order so the CSV is
@@ -81,7 +90,7 @@ object ResearchSummaryTable {
             val modeRuns = measuredRuns.filter { it.mode == mode }
             if (modeRuns.isEmpty()) return@mapNotNull null
             val n = modeRuns.size
-            val successes = modeRuns.count { it.success }
+            val successes = modeRuns.count { it.success && !it.userCorrected }
             val successRatePercent = successes.toDouble() / n * 100.0
             val meanLatencySeconds = modeRuns.sumOf { it.latencySeconds } / n
 
@@ -136,9 +145,22 @@ object ResearchSummaryTable {
                 meanUiStepsPerTask = meanUiStepsPerTask,
                 meanScreenshotsPerTask = meanScreenshotsPerTask,
                 meanPromptTokensPerCall = meanPromptTokensPerCall,
-                speedupVsBaseline = speedupVsBaseline
+                speedupVsBaseline = speedupVsBaseline,
+                medianLatencySeconds = median(modeRuns.map { it.latencySeconds }),
+                unverifiedRatePercent = modeRuns.count { it.originalOutcomeCategory == ResearchOutcome.UNVERIFIED } * 100.0 / n,
+                failedRatePercent = modeRuns.count { it.originalOutcomeCategory == ResearchOutcome.FAILED } * 100.0 / n,
+                stoppedRatePercent = modeRuns.count { it.originalOutcomeCategory in setOf(ResearchOutcome.STOPPED, ResearchOutcome.INTERRUPTED) } * 100.0 / n,
+                correctedRatePercent = modeRuns.count { it.userCorrected } * 100.0 / n,
+                meanMessageDelayMs = modeRuns.sumOf { it.messageDelayMs.toDouble() } / n
             )
         }
+    }
+
+    private fun median(values: List<Double>): Double {
+        if (values.isEmpty()) return 0.0
+        val sorted = values.sorted()
+        val middle = sorted.size / 2
+        return if (sorted.size % 2 == 1) sorted[middle] else (sorted[middle - 1] + sorted[middle]) / 2.0
     }
 
     /** Full file contents, header included, newline-terminated. */
@@ -161,7 +183,10 @@ object ResearchSummaryTable {
         val previous = previousRowsByMode(existingCsv)
         val current = rows.associateBy { it.mode }
         val merged = AblationMode.entries.mapNotNull { mode ->
-            current[mode]?.toCsvRow() ?: previous[mode]
+            current[mode]?.toCsvRow() ?: previous[mode]?.let { row ->
+                val missing = CsvCodec.split(HEADER).size - CsvCodec.split(row).size
+                row + ",".repeat(missing.coerceAtLeast(0))
+            }
         }
         return buildString {
             append(HEADER).append('\n')

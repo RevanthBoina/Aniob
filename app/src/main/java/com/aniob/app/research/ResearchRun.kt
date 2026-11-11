@@ -9,6 +9,8 @@ import java.util.Locale
  * append-only: a manual pass/fail override rewrites the last row instead of appending a second one,
  * so every row is one task and the summary never double-counts.
  */
+enum class ResearchOutcome { SUCCESS, UNVERIFIED, FAILED, STOPPED, INTERRUPTED }
+
 data class ResearchRun(
     val timestampMs: Long,
     val mode: AblationMode,
@@ -39,7 +41,14 @@ data class ResearchRun(
     val fastpathSteps: Int = 0,
     val replayValidated: Boolean = false,
     val replayDiverged: Boolean = false,
-    val setupLatencyMs: Long = 0L
+    val setupLatencyMs: Long = 0L,
+    val runId: String = "",
+    val outcomeCategory: ResearchOutcome = if (success) ResearchOutcome.SUCCESS else ResearchOutcome.FAILED,
+    val originalOutcomeCategory: ResearchOutcome = outcomeCategory,
+    val userCorrected: Boolean = false,
+    val messageDelayMs: Long = 0L,
+    val questionsBeforeStart: Int = 0,
+    val fastSkippedSteps: Int = 0
 ) {
 
     fun toCsvRow(): String = listOf(
@@ -71,7 +80,9 @@ data class ResearchRun(
         fastpathSteps.toString(),
         replayValidated.toString(),
         replayDiverged.toString(),
-        setupLatencyMs.toString()
+        setupLatencyMs.toString(),
+        CsvCodec.escape(runId), outcomeCategory.name, originalOutcomeCategory.name,
+        userCorrected.toString(), messageDelayMs.toString(), questionsBeforeStart.toString(), fastSkippedSteps.toString()
     ).joinToString(CsvCodec.DELIMITER.toString())
 
     companion object {
@@ -81,9 +92,10 @@ data class ResearchRun(
                 "screenshots,prompt_tokens,study_pass,tree_reads,bitmaps,bursts_planned," +
                 "burst_members_run,bursts_suspended,shortcut_attempted,shortcut_degraded," +
                 "shortcut_fail_reason,skill_id,remember_replay_actions,fastpath_steps," +
-                "replay_validated,replay_diverged,setup_latency_ms"
+                "replay_validated,replay_diverged,setup_latency_ms," +
+                "run_id,outcome_category,original_outcome_category,user_corrected,message_delay_ms,questions_before_start,fast_skipped_steps"
 
-        const val COLUMN_COUNT = 29
+        const val COLUMN_COUNT = 36
         const val PREV_COLUMN_COUNT = 15
         const val LEGACY_COLUMN_COUNT = 12
 
@@ -94,7 +106,7 @@ data class ResearchRun(
         /** Parses one CSV row; returns `null` for the header, blank lines or malformed rows. */
         fun fromCsvRow(row: String): ResearchRun? {
             val cells = CsvCodec.split(row)
-            if (cells.size != COLUMN_COUNT && cells.size != PREV_COLUMN_COUNT && cells.size != LEGACY_COLUMN_COUNT) return null
+            if (cells.size != COLUMN_COUNT && cells.size != 29 && cells.size != PREV_COLUMN_COUNT && cells.size != LEGACY_COLUMN_COUNT) return null
             val timestamp = cells[0].toLongOrNull() ?: return null
             val latency = cells[3].toDoubleOrNull() ?: return null
             val llmCalls = cells[4].toIntOrNull() ?: return null
@@ -153,7 +165,16 @@ data class ResearchRun(
                 fastpathSteps = fastpathSteps,
                 replayValidated = replayValidated,
                 replayDiverged = replayDiverged,
-                setupLatencyMs = setupLatencyMs
+                setupLatencyMs = setupLatencyMs,
+                runId = cells.getOrNull(29).orEmpty(),
+                outcomeCategory = cells.getOrNull(30)?.let { value -> ResearchOutcome.entries.firstOrNull { it.name == value } }
+                    ?: if (success) ResearchOutcome.SUCCESS else ResearchOutcome.FAILED,
+                originalOutcomeCategory = cells.getOrNull(31)?.let { value -> ResearchOutcome.entries.firstOrNull { it.name == value } }
+                    ?: if (success) ResearchOutcome.SUCCESS else ResearchOutcome.FAILED,
+                userCorrected = cells.getOrNull(32)?.toBooleanStrictOrNull() ?: false,
+                messageDelayMs = cells.getOrNull(33)?.toLongOrNull() ?: 0L,
+                questionsBeforeStart = cells.getOrNull(34)?.toIntOrNull() ?: 0,
+                fastSkippedSteps = cells.getOrNull(35)?.toIntOrNull() ?: 0
             )
         }
     }

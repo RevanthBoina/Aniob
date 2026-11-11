@@ -67,7 +67,14 @@ class ResearchTelemetryManager(
         var fastpathSteps: Int = 0,
         var replayValidated: Boolean = false,
         var replayDiverged: Boolean = false,
-        var setupLatencyMs: Long = 0L
+        var setupLatencyMs: Long = 0L,
+        val runId: String = "",
+        var lastActionCompletedMs: Long? = null,
+        var messageDelayMs: Long = 0L,
+        var questionsBeforeStart: Int = 0,
+        var fastSkippedSteps: Int = 0,
+        var userCorrected: Boolean = false,
+        var endedElapsedMs: Long? = null
     )
 
     private val appContext = context.applicationContext
@@ -77,6 +84,7 @@ class ResearchTelemetryManager(
     private val runCounter = AtomicLong(0)
 
     private var active: ActiveRun? = null
+    private val closing = mutableMapOf<String, ActiveRun>()
 
     @Volatile
     private var lastCompleted: ResearchRun? = null
@@ -120,7 +128,8 @@ class ResearchTelemetryManager(
     fun startTask(
         goal: String,
         mode: AblationMode = this.mode,
-        pass: StudyPass = this.studyPass
+        pass: StudyPass = this.studyPass,
+        runId: String = ""
     ) {
         synchronized(lock) {
             active?.let {
@@ -128,6 +137,7 @@ class ResearchTelemetryManager(
             }
             active = ActiveRun(
                 goal = goal.trim(),
+                runId = runId,
                 mode = mode,
                 pass = pass,
                 startElapsedMs = clock(),
@@ -157,7 +167,6 @@ class ResearchTelemetryManager(
         synchronized(lock) {
             active?.let {
                 it.treeReads++
-                it.screenshots++
             }
         }
     }
@@ -167,14 +176,27 @@ class ResearchTelemetryManager(
         synchronized(lock) {
             active?.let {
                 it.bitmaps++
+                it.screenshots++
             }
         }
     }
 
     /** Increments the screenshot capture counter. Kept for backwards compatibility. */
+    @Deprecated("Use recordTreeRead or recordBitmapCapture explicitly")
     fun recordScreenCapture() {
         recordTreeRead()
     }
+
+    fun recordActionCompleted() = synchronized(lock) { active?.let { it.lastActionCompletedMs = clock() } }
+
+    fun recordCompletionMessageShown(runId: String = "") = synchronized(lock) {
+        val run = if (runId.isBlank()) active else closing[runId] ?: active?.takeIf { it.runId == runId }
+        run?.lastActionCompletedMs?.let { run.messageDelayMs = (clock() - it).coerceAtLeast(0L) }
+    }
+
+    fun recordQuestionsBeforeStart(count: Int) = synchronized(lock) { active?.let { it.questionsBeforeStart = count.coerceAtLeast(0) } }
+
+    fun recordFastSkippedStep() = synchronized(lock) { active?.let { it.fastSkippedSteps++ } }
 
     fun recordBurst(planned: Int, run: Int, suspended: Boolean) {
         synchronized(lock) {
@@ -258,16 +280,18 @@ class ResearchTelemetryManager(
      * Closes the run, appends it to `research_runs.csv`, rewrites `research_summary_table.csv` and
      * logs the summary. Returns the row that was written, or `null` when no task was active.
      */
-    fun endTask(isSuccess: Boolean, failureReason: String = ""): ResearchRun? {
+    fun endTask(isSuccess: Boolean, failureReason: String = ""): ResearchRun? =
+        endTask(if (isSuccess) ResearchOutcome.SUCCESS else ResearchOutcome.FAILED, failureReason)
+
+    fun endTask(outcomeCategory: ResearchOutcome, failureReason: String = "", runId: String = ""): ResearchRun? {
+        val isSuccess = outcomeCategory == ResearchOutcome.SUCCESS
         val run: ResearchRun
         val summaryRow: ResearchSummaryRow?
         synchronized(lock) {
-            val current = active ?: run {
-                logger("RESEARCH_WARN endTask ignored: no task was started")
-                return null
-            }
-            active = null
-            val elapsedMs = (clock() - current.startElapsedMs).coerceAtLeast(0L)
+            val current = if (runId.isNotBlank()) closing.remove(runId) ?: active?.takeIf { it.runId == runId } else active
+            if (current == null) return null
+            if (current === active) active = null
+            val elapsedMs = ((current.endedElapsedMs ?: clock()) - current.startElapsedMs).coerceAtLeast(0L)
             run = ResearchRun(
                 timestampMs = current.startedAtWallMs,
                 mode = current.mode,
@@ -296,7 +320,14 @@ class ResearchTelemetryManager(
                 fastpathSteps = current.fastpathSteps,
                 replayValidated = current.replayValidated,
                 replayDiverged = current.replayDiverged,
-                setupLatencyMs = current.setupLatencyMs
+                setupLatencyMs = current.setupLatencyMs,
+                runId = current.runId,
+                originalOutcomeCategory = outcomeCategory,
+                outcomeCategory = if (current.userCorrected && outcomeCategory in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED)) ResearchOutcome.SUCCESS else outcomeCategory,
+                userCorrected = current.userCorrected && outcomeCategory in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED),
+                messageDelayMs = current.messageDelayMs,
+                questionsBeforeStart = current.questionsBeforeStart,
+                fastSkippedSteps = current.fastSkippedSteps
             )
             store.append(run)
             store.rewriteSummary()
@@ -323,10 +354,14 @@ class ResearchTelemetryManager(
      * given reason instead of vanishing from the denominator. No-op when the run was already closed
      * by [endTask] on the normal path.
      */
-    fun endTaskIfActive(failureReason: String): ResearchRun? {
-        val stillActive = synchronized(lock) { active != null }
+    fun endTaskIfActive(failureReason: String, runId: String = ""): ResearchRun? {
+        val stillActive = synchronized(lock) { active != null && (runId.isBlank() || active?.runId == runId) }
         if (!stillActive) return null
-        return endTask(isSuccess = false, failureReason = failureReason)
+        return endTask(outcomeCategory = when (failureReason) {
+            "stopped" -> ResearchOutcome.STOPPED
+            "interrupted", "superseded" -> ResearchOutcome.INTERRUPTED
+            else -> ResearchOutcome.FAILED
+        }, failureReason = failureReason, runId = runId)
     }
 
     /**
@@ -368,10 +403,38 @@ class ResearchTelemetryManager(
         return updated
     }
 
+    /** Detach counters before publishing so a new task cannot steal background closure. No IO. */
+    fun prepareBackgroundClosure(runId: String) = synchronized(lock) {
+        active?.takeIf { it.runId == runId }?.let {
+            it.endedElapsedMs = clock()
+            closing[runId] = it
+            active = null
+        }
+    }
+
+    /** A user attestation targets a task ID, never the most recent row. */
+    fun markUserCorrected(runId: String): ResearchRun? = synchronized(lock) {
+        if (runId.isBlank()) return null
+        active?.takeIf { it.runId == runId }?.let { it.userCorrected = true; return null }
+        closing[runId]?.let { it.userCorrected = true; return null }
+        val runs = store.read()
+        val index = runs.indexOfFirst { it.runId == runId }
+        if (index < 0) return null
+        val previous = runs[index]
+        if (previous.originalOutcomeCategory !in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED)) return null
+        val updated = previous.copy(success = false, outcomeCategory = ResearchOutcome.SUCCESS,
+            userCorrected = true, manuallyOverridden = false)
+        store.rewrite(runs.toMutableList().apply { this[index] = updated })
+        store.rewriteSummary()
+        if (lastCompleted?.runId == runId) lastCompleted = updated
+        updated
+    }
+
     /** Deletes both CSV files. Intended for "start a clean batch". */
     fun clearAll() {
         synchronized(lock) {
             active = null
+            closing.clear()
             lastCompleted = null
             store.clear()
         }
