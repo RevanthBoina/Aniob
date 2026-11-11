@@ -1,5 +1,6 @@
 package com.aniob.app.auth
 
+import com.aniob.app.BuildConfig
 import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.app.provider.AniobEgressLedger
 import com.aniob.core.auth.AniobAccessGrant
@@ -62,7 +63,11 @@ class AniobAccountModelClient(
     private val clock: AniobClock = AniobClock.SYSTEM,
     private val client: OkHttpClient = AniobHttpClientSingleton.client.newBuilder()
         .readTimeout(120, TimeUnit.SECONDS)
-        .build()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build(),
+    private val bypassHealthCheck: Boolean = false,
+    private val logger: (String, String) -> Unit = { tag, msg -> android.util.Log.w(tag, msg) }
 ) : AniobCloudLlmProvider, AniobActionStepProvider {
 
     override val name: String = AniobAccountHttp.NAME
@@ -157,9 +162,13 @@ class AniobAccountModelClient(
         if (wait > 0) {
             throw AniobAccountHttp.failure(GatewayFailureKind.SERVER_ERROR, 429, endpoint, "rate limited, retry in ${wait / 1000 + 1}s")
         }
-        if (health.admit(endpoint, isLocal = false) is AniobGatewayHealth.Admission.Skip) {
+        if (!bypassHealthCheck && health.admit(endpoint, isLocal = false) is AniobGatewayHealth.Admission.Skip) {
             throw AniobAccountHttp.failure(GatewayFailureKind.UNREACHABLE, null, endpoint, "recently failed; not retrying yet")
         }
+    }
+
+    private fun recordFailure(kind: GatewayFailureKind) {
+        if (!bypassHealthCheck) health.recordFailure(endpoint, kind)
     }
 
     private fun grantOrThrow(result: AniobAccessResult): AniobAccessGrant = when (result) {
@@ -187,12 +196,10 @@ class AniobAccountModelClient(
     ): Attempt {
         val request = Request.Builder()
             .url(endpoint)
+            .header("User-Agent", "Aniob/${BuildConfig.VERSION_NAME}")
             .header("Authorization", "Bearer ${grant.accessToken}")
-            .header("User-Agent", "Aniob/1.0")
-            .header("Accept", "text/event-stream, application/json")
-            .header("session_id", session)
+            .header("Accept", "text/event-stream")
             .apply {
-                grant.accountId?.let { header("chatgpt-account-id", it) }
                 config.originator.takeUnless { it.isBlank() || it.equals("NONE", true) || it.equals("UNSET", true) }
                     ?.let { header("originator", it) }
                 config.betaHeader.takeUnless { it.isBlank() || it.equals("NONE", true) || it.equals("UNSET", true) }
@@ -205,7 +212,8 @@ class AniobAccountModelClient(
         val response = try {
             client.newCall(request).awaitResponse()
         } catch (e: IOException) {
-            health.recordFailure(endpoint, GatewayFailureKind.UNREACHABLE)
+            logger("AniobAccount", "Network failure contacting $endpoint: ${e.javaClass.simpleName}: ${AniobSecretRedactor.redact(e.message.orEmpty())}")
+            recordFailure(GatewayFailureKind.UNREACHABLE)
             return Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.UNREACHABLE, null, endpoint, e.javaClass.simpleName))
         }
         return withContext(Dispatchers.IO) { response.use { read(it, onDelta, onFirstToken) } }
@@ -216,11 +224,12 @@ class AniobAccountModelClient(
         val type = response.header("Content-Type")
         if (code !in 200..299) {
             val errorBody = response.peekBody(MAX_ERROR_BYTES).string()
+            logger("AniobAccount", "HTTP $code ($type) from $endpoint: ${AniobSecretRedactor.redact(errorBody.take(300))}")
             return when (val outcome = AniobAccountHttp.classify(code, type, errorBody, response.header("Retry-After"), endpoint)) {
                 AniobAccountHttpOutcome.Ok -> Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "unexpected reply"))
                 AniobAccountHttpOutcome.Unauthorized -> Attempt.Unauthorized
                 is AniobAccountHttpOutcome.Denied -> {
-                    health.recordFailure(endpoint, GatewayFailureKind.AUTH)
+                    recordFailure(GatewayFailureKind.AUTH)
                     val reason = if (outcome.error is AniobAuthError.WorkspaceOrAccountDenied) "account or workspace not allowed" else "plan has no access"
                     Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.AUTH, 403, endpoint, reason))
                 }
@@ -229,26 +238,36 @@ class AniobAccountModelClient(
                     Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.SERVER_ERROR, 429, endpoint, "rate limited, retry in ${outcome.retryAfterMs / 1000}s"))
                 }
                 is AniobAccountHttpOutcome.Gateway -> {
-                    health.recordFailure(endpoint, outcome.failure.kind)
+                    recordFailure(outcome.failure.kind)
                     Attempt.Failed(outcome.failure)
                 }
             }
         }
-        if (type.orEmpty().contains("application/json", ignoreCase = true)) {
-            val text = extractResponseText(response.body?.string().orEmpty())
-            if (text.isBlank()) return Attempt.Failed(
-                AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "reply had no text")
-            )
+        val isEventStream = com.aniob.core.external.AniobGatewayClassifier.isEventStream(type)
+        val isJsonType = com.aniob.core.external.AniobGatewayClassifier.isJsonContentType(type)
+        // A 2xx that is HTML (captive portal, login redirect) is rejected before parsing.
+        val peek = if (isEventStream || isJsonType) "" else response.peekBody(MAX_ERROR_BYTES).string()
+        if (!isEventStream && !isJsonType) {
+            val ok = AniobAccountHttp.classify(code, type, peek, null, endpoint)
+            if (ok is AniobAccountHttpOutcome.Gateway) {
+                logger("AniobAccount", "HTTP $code ($type) rejected as non-stream from $endpoint: ${AniobSecretRedactor.redact(peek.take(300))}")
+                recordFailure(ok.failure.kind)
+                return Attempt.Failed(ok.failure)
+            }
+        }
+        if (isJsonType || (!isEventStream && peek.trimStart().startsWith("{"))) {
+            val rawJson = response.body?.string().orEmpty()
+            val text = extractResponseText(rawJson)
+            if (text.isBlank()) {
+                val summary = AniobAccountHttp.summaryOf(rawJson)
+                logger("AniobAccount", "HTTP $code JSON had no output text ($type): $summary")
+                return Attempt.Failed(
+                    AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, summary.takeUnless { it == "no details" } ?: "reply had no text")
+                )
+            }
             onFirstToken()
             onDelta(text)
             return Attempt.Done(text)
-        }
-        // A 2xx that is not a stream (an HTML page, say) is rejected before parsing.
-        val peek = if (type.orEmpty().contains("event-stream", ignoreCase = true)) "" else response.peekBody(MAX_ERROR_BYTES).string()
-        val ok = AniobAccountHttp.classify(code, type, peek, null, endpoint)
-        if (ok is AniobAccountHttpOutcome.Gateway) {
-            health.recordFailure(endpoint, ok.failure.kind)
-            return Attempt.Failed(ok.failure)
         }
 
         val parser = AniobSseParser()
@@ -271,7 +290,8 @@ class AniobAccountModelClient(
         } catch (e: IOException) {
             // A transport error is not a clean EOF from a server that omits completion events.
             // Never return a partial action as a successful response after a broken connection.
-            health.recordFailure(endpoint, GatewayFailureKind.UNREACHABLE)
+            logger("AniobAccount", "Stream interrupted from $endpoint: ${e.javaClass.simpleName}: ${AniobSecretRedactor.redact(e.message.orEmpty())}")
+            recordFailure(GatewayFailureKind.UNREACHABLE)
             return Attempt.Failed(AniobAccountHttp.failure(
                 GatewayFailureKind.UNREACHABLE, code, endpoint, "reply disconnected before completion"
             ))
@@ -280,12 +300,16 @@ class AniobAccountModelClient(
 
         acc.failure?.let { failure ->
             if (failure.code == "truncated" && acc.text().isNotBlank()) return@let
-            val kind = if (failure.code == "truncated") GatewayFailureKind.UNREACHABLE else GatewayFailureKind.CLIENT_ERROR
-            if (kind == GatewayFailureKind.UNREACHABLE) health.recordFailure(endpoint, kind)
+            val kind = if (failure.code == "truncated") {
+                if (acc.text().isBlank() && !isEventStream) GatewayFailureKind.NOT_JSON else GatewayFailureKind.UNREACHABLE
+            } else GatewayFailureKind.CLIENT_ERROR
+            if (kind == GatewayFailureKind.UNREACHABLE || kind == GatewayFailureKind.NOT_JSON) recordFailure(kind)
             return Attempt.Failed(AniobAccountHttp.failure(kind, code, endpoint, AniobSecretRedactor.redact(failure.message)))
         }
         if (!acc.completed && acc.text().isBlank()) {
-            return Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "no completion event"))
+            val kind = if (isEventStream) GatewayFailureKind.MALFORMED else GatewayFailureKind.NOT_JSON
+            val detail = if (isEventStream) "no completion event" else "expected a stream but got ${type ?: "unknown content type"}"
+            return Attempt.Failed(AniobAccountHttp.failure(kind, code, endpoint, detail))
         }
         val text = acc.text()
         if (text.isBlank()) {

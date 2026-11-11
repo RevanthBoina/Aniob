@@ -126,13 +126,34 @@ class AniobSseParser {
 
             "response.completed" -> {
                 terminal = true
-                val usage = AniobAuthJson.obj(AniobAuthJson.obj(json["response"])?.get("usage"))
+                val response = AniobAuthJson.obj(json["response"])
+                emitOutputText(response, out)
+                val usage = AniobAuthJson.obj(response?.get("usage"))
                 out += AniobStreamEvent.Completed(
                     usage?.let { AniobUsage(AniobAuthJson.long(it["input_tokens"]), AniobAuthJson.long(it["output_tokens"])) }
                 )
             }
 
-            "response.failed", "response.incomplete", "error" -> {
+            "response.incomplete" -> {
+                terminal = true
+                val response = AniobAuthJson.obj(json["response"])
+                emitOutputText(response, out)
+                val error = AniobAuthJson.obj(json["error"]) ?: AniobAuthJson.obj(response?.get("error"))
+                val reason = AniobAuthJson.str(AniobAuthJson.obj(response?.get("incomplete_details"))?.get("reason"))
+                if (error != null || reason == "content_filter") {
+                    val code = AniobAuthJson.str(error?.get("code")) ?: reason ?: type
+                    val message = AniobAuthJson.str(error?.get("message")) ?: AniobAuthJson.str(json["message"])
+                        ?: reason?.let { "The reply was cut short ($it)." } ?: "The model service reported a failure."
+                    out += AniobStreamEvent.Failed(code, message.replace(Regex("\\s+"), " ").take(MESSAGE_LIMIT))
+                } else {
+                    val usage = AniobAuthJson.obj(response?.get("usage"))
+                    out += AniobStreamEvent.Completed(
+                        usage?.let { AniobUsage(AniobAuthJson.long(it["input_tokens"]), AniobAuthJson.long(it["output_tokens"])) }
+                    )
+                }
+            }
+
+            "response.failed", "error" -> {
                 terminal = true
                 val response = AniobAuthJson.obj(json["response"])
                 val error = AniobAuthJson.obj(json["error"]) ?: AniobAuthJson.obj(response?.get("error"))
@@ -144,6 +165,18 @@ class AniobSseParser {
             }
             else -> Unit // many informational events (response.created, content_part.added, ...)
         }
+    }
+
+    private fun emitOutputText(response: Map<String, Any?>?, out: MutableList<AniobStreamEvent>) {
+        val text = (response?.get("output") as? List<*>).orEmpty()
+            .mapNotNull(AniobAuthJson::obj)
+            .filter { AniobAuthJson.str(it["type"]) == "message" }
+            .flatMap { (it["content"] as? List<*>).orEmpty() }
+            .mapNotNull(AniobAuthJson::obj)
+            .filter { AniobAuthJson.str(it["type"]) == "output_text" }
+            .mapNotNull { AniobAuthJson.str(it["text"]) }
+            .joinToString("")
+        if (text.isNotBlank()) out += AniobStreamEvent.ItemDoneText(text)
     }
 
     private companion object {

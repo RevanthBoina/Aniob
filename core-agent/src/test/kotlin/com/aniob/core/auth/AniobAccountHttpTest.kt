@@ -41,4 +41,17 @@ class AniobAccountHttpTest {
         assertEquals(GatewayFailureKind.CLIENT_ERROR, bad.failure.kind)
         assertFalse(bad.failure.message!!.contains("abcdefghijklmnop1234"))
     }
+
+    @Test fun `redirects and subscription error codes classify accurately`() {
+        assertEquals(GatewayFailureKind.NOT_JSON, (c(302, "text/html", "") as AniobAccountHttpOutcome.Gateway).failure.kind)
+        assertTrue(c(429, "application/json", """{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}""") is AniobAccountHttpOutcome.RateLimited)
+        assertEquals(
+            AniobAccountHttpOutcome.Denied(AniobAuthError.PlanHasNoAccess),
+            c(400, "application/json", """{"error":{"code":"subscription_sharing_user_not_eligible"}}""")
+        )
+        assertEquals(
+            GatewayFailureKind.NOT_FOUND,
+            (c(400, "application/json", """{"error":{"code":"model_not_found"}}""") as AniobAccountHttpOutcome.Gateway).failure.kind
+        )
+    }
 }

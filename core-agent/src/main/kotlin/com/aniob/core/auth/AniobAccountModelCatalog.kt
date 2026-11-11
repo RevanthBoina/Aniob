@@ -50,6 +50,28 @@ class AniobAccountModelCatalog(val models: List<AniobAccountModel>, val defaultM
             return AniobAccountModelCatalog(models, chosen)
         }
 
+        /**
+         * Parses model listings returned by `GET /v1/models` (both standard OpenAI `data` entries
+         * with `id`/`name` and subscription `models` entries with `slug`/`display_name`/`visibility`).
+         */
+        fun parseModelsApiJson(jsonText: String): List<AniobAccountModel> {
+            val root = AniobAuthJson.parseObject(jsonText) ?: return emptyList()
+            val array = (root["models"] ?: root["data"]) as? List<*> ?: return emptyList()
+            val seen = LinkedHashSet<String>()
+            val out = mutableListOf<AniobAccountModel>()
+            for (item in array) {
+                val obj = AniobAuthJson.obj(item) ?: continue
+                val vis = AniobAuthJson.str(obj["visibility"])
+                if (!vis.isNullOrBlank() && vis != "list") continue
+                val id = (AniobAuthJson.str(obj["slug"]) ?: AniobAuthJson.str(obj["id"]))?.trim() ?: continue
+                if (validate(id) != null || !seen.add(id)) continue
+                val label = (AniobAuthJson.str(obj["display_name"]) ?: AniobAuthJson.str(obj["name"]))
+                    ?.takeIf { it.isNotBlank() } ?: id
+                out += AniobAccountModel(id, label)
+            }
+            return out
+        }
+
         private fun unquote(v: String) = v.trim().trim('"', '\'')
     }
 }

@@ -3,17 +3,25 @@ package com.aniob.app.auth
 import android.app.Application
 import android.content.Context
 import com.aniob.app.BuildConfig
+import com.aniob.app.network.AniobHttpClientSingleton
+import com.aniob.core.auth.AniobAccessResult
+import com.aniob.core.auth.AniobAccountModel
 import com.aniob.core.auth.AniobAccountModelCatalog
 import com.aniob.core.auth.AniobAuthConfig
+import com.aniob.core.auth.AniobAuthJson
 import com.aniob.core.auth.AniobAuthRepository
 import com.aniob.core.auth.AniobAuthState
 import com.aniob.core.auth.AniobClock
 import com.aniob.core.auth.AniobCloudSource
+import com.aniob.core.auth.AniobSecretRedactor
 import com.aniob.core.auth.AniobTokenClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import okhttp3.Request
 import java.io.File
 import java.io.IOException
 
@@ -43,7 +51,7 @@ class AniobAccountContainer(private val app: Application) {
             scopes = unset(BuildConfig.ACCOUNT_AUTH_SCOPES).ifBlank { "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct" },
             inferenceBaseUrl = unset(BuildConfig.ACCOUNT_AUTH_INFERENCE_URL).ifBlank { "https://api.openai.com/v1" },
             extraAuthorizeParams = extraParams,
-            originator = unset(BuildConfig.ACCOUNT_AUTH_ORIGINATOR).ifBlank { "aniob" },
+            originator = unset(BuildConfig.ACCOUNT_AUTH_ORIGINATOR),
             betaHeader = unset(BuildConfig.ACCOUNT_AUTH_BETA_HEADER)
         )
         c.takeIf { it.isUsable }
@@ -84,12 +92,78 @@ class AniobAccountContainer(private val app: Application) {
         AniobAccountModelCatalog.parse(text)
     }
 
+    private val _dynamicModels = MutableStateFlow<List<AniobAccountModel>>(loadCachedModels())
+    val dynamicModels: StateFlow<List<AniobAccountModel>> = _dynamicModels
+
+    val currentModels: List<AniobAccountModel>
+        get() = _dynamicModels.value.ifEmpty { catalog.models }
+
+    private fun loadCachedModels(): List<AniobAccountModel> {
+        val raw = prefs.getString(KEY_MODELS_CACHE, null) ?: return emptyList()
+        val list = AniobAuthJson.parseList(raw) ?: return emptyList()
+        return list.mapNotNull { item ->
+            val id = AniobAuthJson.str(item["id"]) ?: return@mapNotNull null
+            val label = AniobAuthJson.str(item["label"]) ?: id
+            AniobAccountModel(id, label)
+        }
+    }
+
+    private fun saveCachedModels(models: List<AniobAccountModel>) {
+        val list = models.map { mapOf("id" to it.id, "label" to it.label) }
+        prefs.edit().putString(KEY_MODELS_CACHE, AniobAuthJson.toJsonList(list)).apply()
+    }
+
+    /** Queries `GET /v1/models` with the signed-in account grant to discover available models. */
+    suspend fun fetchModels(): List<AniobAccountModel> {
+        val repo = repository ?: return currentModels
+        val c = config ?: return currentModels
+        val grant = when (val res = repo.obtainAccess()) {
+            is AniobAccessResult.Granted -> res.grant
+            else -> return currentModels
+        }
+        val modelsUrl = "${c.inferenceBaseUrl.trimEnd('/')}/models"
+        val request = Request.Builder()
+            .url(modelsUrl)
+            .header("User-Agent", "Aniob/${BuildConfig.VERSION_NAME}")
+            .header("Authorization", "Bearer ${grant.accessToken}")
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        val http = AniobHttpClientSingleton.client.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+        val response = try {
+            http.newCall(request).awaitResponse()
+        } catch (e: IOException) {
+            android.util.Log.w("AniobAccount", "Model list fetch failed: ${e.javaClass.simpleName}: ${AniobSecretRedactor.redact(e.message.orEmpty())}")
+            return currentModels
+        }
+        return response.use { resp ->
+            if (!resp.isSuccessful) {
+                android.util.Log.w("AniobAccount", "Model list HTTP ${resp.code} (${resp.header("Content-Type")})")
+                return@use currentModels
+            }
+            val body = resp.body?.string().orEmpty()
+            val parsed = AniobAccountModelCatalog.parseModelsApiJson(body)
+            if (parsed.isNotEmpty()) {
+                _dynamicModels.value = parsed
+                saveCachedModels(parsed)
+                val current = prefs.getString(KEY_MODEL, null)?.trim()
+                if (current.isNullOrBlank() || parsed.none { it.id == current }) {
+                    parsed.firstOrNull()?.let { model = it.id }
+                }
+            }
+            currentModels
+        }
+    }
+
     val state: AniobAuthState get() = repository?.state?.value ?: AniobAuthState.SignedOut
     val isSignedIn: Boolean get() = state is AniobAuthState.SignedIn
 
-    private val _source = kotlinx.coroutines.flow.MutableStateFlow(
+    private val _source = MutableStateFlow(
         AniobCloudSource.fromPref(prefs.getString(KEY_SOURCE, null)))
-    val source: kotlinx.coroutines.flow.StateFlow<AniobCloudSource> = _source
+    val source: StateFlow<AniobCloudSource> = _source
 
     var cloudSource: AniobCloudSource
         get() = AniobCloudSource.fromPref(prefs.getString(KEY_SOURCE, null))
@@ -99,7 +173,13 @@ class AniobAccountContainer(private val app: Application) {
         }
 
     var model: String
-        get() = catalog.resolve(prefs.getString(KEY_MODEL, null))
+        get() {
+            val saved = prefs.getString(KEY_MODEL, null)?.trim()
+            if (!saved.isNullOrBlank() && AniobAccountModelCatalog.validate(saved) == null) {
+                return saved
+            }
+            return currentModels.firstOrNull()?.id ?: catalog.defaultModelId
+        }
         set(value) = prefs.edit().putString(KEY_MODEL, value.trim()).apply()
 
     /** Blank means "let the service decide". */
@@ -107,10 +187,17 @@ class AniobAccountContainer(private val app: Application) {
         get() = prefs.getString(KEY_EFFORT, "") ?: ""
         set(value) = prefs.edit().putString(KEY_EFFORT, value).apply()
 
-    fun newClient(sessionId: String? = null, onLlmRequest: () -> Unit = {}): AniobAccountModelClient {
+    fun newClient(
+        sessionId: String? = null,
+        bypassHealthCheck: Boolean = false,
+        onLlmRequest: () -> Unit = {}
+    ): AniobAccountModelClient {
         val c = requireNotNull(config) { "account sign-in is not configured" }
         val r = requireNotNull(repository)
-        return AniobAccountModelClient(c, r, model, reasoningEffort.ifBlank { null }, sessionId, onLlmRequest)
+        return AniobAccountModelClient(
+            c, r, model, reasoningEffort.ifBlank { null }, sessionId, onLlmRequest,
+            bypassHealthCheck = bypassHealthCheck
+        )
     }
 
     /** Cancel and await the browser operation before clearing session state. Registration is retained. */
@@ -123,7 +210,8 @@ class AniobAccountContainer(private val app: Application) {
 
     suspend fun deleteProvider() {
         coordinator?.signOut(forgetRegistration = true) ?: repository?.signOut(forgetRegistration = true)
-        prefs.edit().remove(KEY_MODEL).remove(KEY_EFFORT).apply()
+        prefs.edit().remove(KEY_MODEL).remove(KEY_EFFORT).remove(KEY_MODELS_CACHE).apply()
+        _dynamicModels.value = emptyList()
         cloudSource = AniobCloudSource.OMNIROUTE
         // Stable per-install host id is intentionally retained; the client binding is forgotten.
     }
@@ -144,5 +232,6 @@ class AniobAccountContainer(private val app: Application) {
         const val KEY_MODEL = "account_model"
         const val KEY_EFFORT = "account_effort"
         const val KEY_EXT_AGENT_HOST_ID = "account_ext_agent_host_id"
+        const val KEY_MODELS_CACHE = "account_models_cache"
     }
 }

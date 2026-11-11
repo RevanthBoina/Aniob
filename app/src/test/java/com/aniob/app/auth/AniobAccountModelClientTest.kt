@@ -15,6 +15,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -69,9 +70,16 @@ class AniobAccountModelClientTest {
         return r to t
     }
 
-    private fun client(repo: AniobAuthRepository, counter: IntArray = IntArray(1), config: com.aniob.core.auth.AniobAuthConfig = testConfig(base)) = AniobAccountModelClient(
+    private fun client(
+        repo: AniobAuthRepository,
+        counter: IntArray = IntArray(1),
+        config: com.aniob.core.auth.AniobAuthConfig = testConfig(base),
+        health: AniobGatewayHealth = AniobGatewayHealth(),
+        bypassHealthCheck: Boolean = false
+    ) = AniobAccountModelClient(
         config = config, repository = repo, model = "m-1", reasoningEffort = "low", sessionId = "sess-1",
-        onLlmRequest = { counter[0]++ }, health = AniobGatewayHealth(), clock = clock
+        onLlmRequest = { counter[0]++ }, health = health, clock = clock,
+        bypassHealthCheck = bypassHealthCheck, logger = { _, _ -> }
     )
 
     private fun failure(r: Result<String>) = r.exceptionOrNull() as AniobGatewayException
@@ -82,7 +90,7 @@ class AniobAccountModelClientTest {
         val out = client(r).generateStreaming("hello", "be brief") { deltas += it }
         assertEquals("hi", out); assertEquals(listOf("hi"), deltas)
         val s = seen.single()
-        assertEquals("Bearer acc-1", s.auth); assertEquals("acct-9", s.account)
+        assertEquals("Bearer acc-1", s.auth); assertNull(s.account)
         assertEquals("aniob-test", s.originator); assertEquals("responses=test", s.beta)
         assertTrue(s.body.contains("\"stream\":true")); assertTrue(s.body.contains("\"store\":false"))
         assertTrue(s.body.contains("\"model\":\"m-1\"")); assertTrue(s.body.contains("\"effort\":\"low\""))
@@ -180,6 +188,31 @@ class AniobAccountModelClientTest {
         handler = { ex, _ -> ex.reply(200, "text/html", "<!doctype html><html><title>Login</title></html>") }
         val (r, _) = repo()
         assertEquals(GatewayFailureKind.NOT_JSON, failure(client(r).getNextActionRaw("s", "o")).kind)
+    }
+
+    @Test fun `non-html text plain stream and json replies are accepted`() = runBlocking<Unit> {
+        val (r, _) = repo()
+        handler = { ex, _ -> ex.reply(200, "text/plain", ok("plain-sse")) }
+        assertEquals("plain-sse", client(r).getNextActionRaw("s", "o").getOrThrow())
+        handler = { ex, _ -> ex.reply(200, "text/plain", """{"output_text":"plain-json"}""") }
+        assertEquals("plain-json", client(r).getNextActionRaw("s", "o").getOrThrow())
+    }
+
+    @Test fun `redirects are not followed and fail as NOT_JSON`() = runBlocking<Unit> {
+        handler = { ex, _ -> ex.reply(302, "text/html", "", mapOf("Location" to "$base/other")) }
+        val (r, _) = repo()
+        assertEquals(GatewayFailureKind.NOT_JSON, failure(client(r).getNextActionRaw("s", "o")).kind)
+    }
+
+    @Test fun `bypassHealthCheck ignores an open circuit breaker`() = runBlocking<Unit> {
+        val shared = AniobGatewayHealth()
+        val (r, _) = repo()
+        handler = { ex, _ -> ex.reply(502, "text/html", "<html><title>Bad Gateway</title></html>") }
+        assertEquals(GatewayFailureKind.SERVER_ERROR, failure(client(r, health = shared).getNextActionRaw("s", "o")).kind)
+        // Normal client skips while breaker is open; manual test bypasses and sees real recovery.
+        assertEquals(GatewayFailureKind.UNREACHABLE, failure(client(r, health = shared).getNextActionRaw("s", "o")).kind)
+        handler = { ex, _ -> ex.reply(200, "text/event-stream", ok("recovered")) }
+        assertEquals("recovered", client(r, health = shared, bypassHealthCheck = true).getNextActionRaw("s", "o").getOrThrow())
     }
 
     @Test fun `a clean EOF with text accepts servers that omit completion events`() = runBlocking<Unit> {
