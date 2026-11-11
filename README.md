@@ -1,6 +1,6 @@
 # Aniob
 
-Aniob is a **founder-led commercial Android app** for carrying out selected phone tasks from natural-language requests. It combines an Android interface and device integrations with a Kotlin/JVM agent core for routing, planning, safety checks, action execution, and verification. Automation depends on device support, Android permissions, and available models/providers; it cannot perform every task on every device.
+Aniob is an **open-source Android app** (Copyright 2026 Revanth Boina) for carrying out selected phone tasks from natural-language requests. It combines an Android interface and device integrations with a Kotlin/JVM agent core for routing, planning, safety checks, action execution, and verification. Automation depends on device support, Android permissions, and available models/providers; it cannot perform every task on every device.
 
 **Want to help?** You can report a bug, test a flow, improve docs, refine prompts or skills, or contribute code. Start with [CONTRIBUTING.md](CONTRIBUTING.md); no application or registration form is needed.
 
@@ -12,7 +12,7 @@ Aniob is a **founder-led commercial Android app** for carrying out selected phon
 - Applies user confirmations, safety checks, and verification where implemented; permissions and capability checks are part of the flow.
 - Supports model download/import, configurable skills, settings, and task metrics.
 
-These are implemented areas, not guarantees that a particular task will work. Some features require the user to enable Android services or permissions. **This repository has no project-level open-source licence**; its public visibility does not grant reuse rights.
+These are implemented areas, not guarantees that a particular task will work. Some features require the user to enable Android services or permissions. **This repository is licensed under the [Apache License, Version 2.0](LICENSE)** (`Copyright 2026 Revanth Boina`; see [NOTICE](NOTICE)).
 
 ## Get started
 
@@ -82,4 +82,10 @@ The open issue list is the source for new tracked work: [open Aniob issues](http
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution paths, setup, review, and commercial-project terms. Regular changes come from forks and pull requests; Revanth Boina retains final review and merge control. For sensitive security reports, use [SECURITY.md](SECURITY.md), not a public issue. Aniob follows its [Code of Conduct](CODE_OF_CONDUCT.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for contribution paths, setup, review, and licensing terms. Regular changes come from forks and pull requests; Revanth Boina retains final review and merge control. For sensitive security reports, use [SECURITY.md](SECURITY.md), not a public issue. Aniob follows its [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+Copyright 2026 Revanth Boina.
+
+Licensed under the **Apache License, Version 2.0** (see [LICENSE](LICENSE) and [NOTICE](NOTICE)). Copyright ownership, attribution, and statutory notices are also recorded in [NOTICE](NOTICE) in accordance with the Copyright Act, 1957 (India). Third-party dependencies and external model weights remain governed by their respective licenses.

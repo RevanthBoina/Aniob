@@ -1,6 +1,6 @@
 # Contributing to Aniob
 
-Thanks for your interest. Aniob is a public, founder-led **commercial project**; it has no project-level open-source licence. Contributions are voluntary and can offer practical learning, collaboration, and portfolio experience. No payment, employment, equity, certificate, or other benefit is promised. There is no application form, registration process, or need to share personal information.
+Thanks for your interest. Aniob is an open-source project created and maintained by **Revanth Boina** under the [Apache License, Version 2.0](LICENSE) (see also [NOTICE](NOTICE)). Contributions are voluntary and can offer practical learning, collaboration, and portfolio experience. No payment, employment, equity, certificate, or other benefit is promised. There is no application form, registration process, or need to share personal information.
 
 ## Ways to contribute
 
@@ -26,13 +26,13 @@ Small, focused contributions and questions are welcome. You do not have to claim
 
 Follow the prerequisites, build/test commands, and Android Studio run steps in the README's [Get started](README.md#get-started) section. Before opening a PR, run the relevant checks or state which ones you could not run. The CI workflow is the source of truth for pull-request checks; its preflight includes remote model URL checks and needs network access. JVM tests, Android unit tests, lint, packaging, and device instrumentation have different requirements. See the README roadmap for the known CI test issue.
 
-## Commercial project and contribution rights
+## License and contribution rights
 
-Aniob is not offered under an open-source licence. A public fork, issue discussion, or pull request does not transfer copyright or grant a licence to reuse Aniob. The founder's code, your pre-existing work, your contribution, and third-party materials remain distinct.
+Aniob is licensed under the [Apache License, Version 2.0](LICENSE) (`Copyright 2026 Revanth Boina`; see [NOTICE](NOTICE)). In accordance with Section 5 of the Apache License, Version 2.0, unless you explicitly state otherwise, any Contribution intentionally submitted by you for inclusion in Aniob is licensed under the terms and conditions of the Apache License, Version 2.0, without any additional terms or conditions.
 
-If work is intended for commercial incorporation, the founder will explain the proposed terms **before that work starts**. Accepted work intended for incorporation may require a separate written agreement, including an agreed intellectual-property assignment, **before incorporation**. The pull request itself is not that agreement. You can review the terms, ask questions, and decline; your pre-existing intellectual property remains yours unless you separately agree otherwise in writing.
+Submitting a contribution does not transfer copyright ownership or alter pre-existing intellectual property rights; original authorship and statutory attribution notices remain protected under applicable law, including the Copyright Act, 1957 (India). You must only submit work that you have the right to license under the Apache License, Version 2.0.
 
-Identify any third-party code, assets, models, or data you include, and provide their original licence or terms. A contribution agreement cannot change a third party's rights. Accepted work receives normal GitHub author attribution; release acknowledgements may also mention work at the maintainer's discretion. Aniob does not maintain a separate contributor roster. Any additional opportunities, if available, will be communicated separately.
+Identify any third-party code, assets, models, or data you include, and provide their original licence or terms. Third-party materials remain subject to their own licenses. Accepted work receives normal GitHub author attribution; release acknowledgements may also mention work at the maintainer's discretion.
 
 ## Security and privacy
 
