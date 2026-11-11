@@ -31,6 +31,18 @@ class FastVerifyTest {
         }
     )
 
+    @Test fun finalCheapCaptureCanAvoidBitmap() = runBlocking {
+        var captures = 0
+        var bitmaps = 0
+        val result = FastVerify.await(preAction = state("before"), timeoutMs = 0,
+            capturePoll = { captures++; state(if (captures == 1) "before" else "after") },
+            screenshot = { bitmaps++; "bitmap" }, finalCaptureAtTimeout = true)
+        assertEquals(2, captures)
+        assertEquals(0, bitmaps)
+        assertFalse(result.screenshotTaken)
+        assertEquals(FastVerify.Tier.CHANGED, result.tier)
+    }
+
     @Test
     fun identityPrefersTheStructuralHashAndFallsBackToTheTreeHash() {
         assertEquals("structural", FastVerify.screenIdentity(state("structural")))

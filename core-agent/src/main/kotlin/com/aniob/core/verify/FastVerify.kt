@@ -141,7 +141,8 @@ object FastVerify {
         timeoutMs: Long = MAX_WAIT_MS,
         windowEvents: () -> Long? = { null },
         capturePoll: suspend () -> AniobScreenState?,
-        screenshot: suspend () -> String? = { null }
+        screenshot: suspend () -> String? = { null },
+        finalCaptureAtTimeout: Boolean = false
     ): Outcome {
         val preIdentity = preAction?.let(::screenIdentity).orEmpty()
         val prePackage = preAction?.packageName.orEmpty()
@@ -191,6 +192,17 @@ object FastVerify {
             delay(pollMs)
         }
 
+        if (finalCaptureAtTimeout) {
+            captures++
+            val finalScreen = runCatching { capturePoll() }.getOrNull()
+            if (finalScreen != null) {
+                last = finalScreen
+                val decision = evaluate(preIdentity, finalScreen, wantedTexts, prePackage)
+                if (decision.passed) return Outcome(tier = decision.tier, elapsedMs = elapsedMs(startedAt),
+                    polls = polls, screen = finalScreen, matchedText = decision.matchedText,
+                    screenshotTaken = false, captures = captures)
+            }
+        }
         val bitmap = runCatching { screenshot() }.getOrNull()
         return Outcome(
             tier = Tier.TIMEOUT,
