@@ -521,8 +521,7 @@ class AniobViewModel(
         )
         val savedBaseUrl = secretStore.getOmniRouteBaseUrl()
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
-        // Only developer builds may select experimental conditions. Release always starts in the
-        // full-capability condition, even if this app data was previously used by a debug build.
+        // Execution features are user capabilities; only the research pass controls are developer-only.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
         val researchMode = app.researchTelemetry.featureSelection.mode
         val researchPass = if (researchControlsEnabled) app.researchTelemetry.studyPass else StudyPass.MEASURED.also {
@@ -585,7 +584,7 @@ class AniobViewModel(
                 safetyLevel = SafetyLevel.entries.getOrElse(
                     prefs.getInt("safety_level", SafetyLevel.STANDARD.ordinal)
                 ) { SafetyLevel.STANDARD },
-                fastPathEnabled = prefs.getBoolean("fastpath_enabled", true),
+                fastPathEnabled = app.researchTelemetry.featureSelection.rememberReplay,
                 disabledSkills = disabledSkills.toSet(),
                 ablationMode = researchMode,
                 featureSelection = app.researchTelemetry.featureSelection,
@@ -2658,7 +2657,7 @@ class AniobViewModel(
 
     private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
         if (taskGeneration != activeGeneration) return
-        // A release run always uses the full-capability condition; ablations are developer-only.
+        // Snapshot all five flags once. Settings edits during this task only affect the next task.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
         val researchMode = app.researchTelemetry.featureSelection
         val researchPass = if (researchControlsEnabled) app.researchTelemetry.studyPass else StudyPass.MEASURED

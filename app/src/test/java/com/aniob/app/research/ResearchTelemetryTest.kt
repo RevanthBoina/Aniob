@@ -53,7 +53,8 @@ class ResearchTelemetryTest {
 
     @Test fun ablationModesDoNotLeakLearnedSkillsIntoControlConditions() {
         for (mode in AblationMode.entries) {
-            assertEquals(mode != AblationMode.BASELINE, mode.skillsEnabled)
+            assertEquals(mode in setOf(AblationMode.INTENT_SHORTCUT_ONLY, AblationMode.BURST_AND_FAST_OBSERVE,
+                AblationMode.FULL_HUMAN_SPEED, AblationMode.LEARNED_SKILLS, AblationMode.FULL_SPEED), mode.skillsEnabled)
         }
     }
 

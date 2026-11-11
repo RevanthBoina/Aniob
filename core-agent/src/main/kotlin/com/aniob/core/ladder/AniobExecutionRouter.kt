@@ -330,26 +330,10 @@ class AniobExecutionRouter(
                         lastLocalFailCount, isModelFileMissing, previousProgress, userRoutingMode,
                         lastObservedResult, taskStickyTarget, skill.name)
                     val target = action.semanticTarget()
-                    if (target is SemanticTarget.SomIndex && screenState.findNodeById(target.index) == null) {
-                        val fallbackNode = findSemanticFallbackNode(taskPrompt, screenState)
-                        if (fallbackNode != null) {
-                            return ExecutionPlanResult.SkillStepExecution(
-                                action = AniobAction.Tap(SemanticTarget.SomIndex(fallbackNode.id)),
-                                skill = skill,
-                                reason = "Skill fallback matched node ${fallbackNode.id} by semantic token overlap"
-                            )
-                        }
-                        if (screenState.nodes.any { it.isScrollable }) {
-                            return ExecutionPlanResult.SkillStepExecution(
-                                action = AniobAction.Swipe(
-                                    direction = com.aniob.core.domain.SwipeDirection.DOWN,
-                                    distancePx = 600,
-                                    thought = "Scroll down to reveal off-screen skill target ${target.index}"
-                                ),
-                                skill = skill,
-                                reason = "Skill target ${target.index} off-screen; scrolling to reveal"
-                            )
-                        }
+                    if (target != null && com.aniob.core.execution.AniobActionExecutor.resolveTarget(action, screenState)?.node == null) {
+                        return modelFallbackForUnboundSkill(taskPrompt, screenState, stepIndex, taskSignature,
+                            powerState, installedModelId, lastLocalFailCount, isModelFileMissing, previousProgress,
+                            userRoutingMode, lastObservedResult, taskStickyTarget, skill.name)
                     }
                     return ExecutionPlanResult.SkillStepExecution(
                         action = action,

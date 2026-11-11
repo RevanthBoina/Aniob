@@ -70,6 +70,11 @@ class RememberCache(
         }
         val usable = actions.filter { it.isUsable || it.kind == RememberAction.BACK || it.kind == RememberAction.SCROLL }
         if (usable.isEmpty()) return false
+        // A generalized purpose may never retain an old person's input or message. If the
+        // explicit grammar cannot bind an input exactly, plan it anew instead of caching it.
+        if (parsed.template.startsWith("purpose:") && usable.any {
+            it.kind == RememberAction.INPUT && parsed.indexOfValue(it.inputText) == null
+        }) return false
 
         val key = keyOf(normalized, packageName, preActionScreenHash)
         val previous = entries[key]
