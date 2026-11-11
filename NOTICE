@@ -1,0 +1,53 @@
+Aniob
+Copyright (c) 2026 Revanth Boina
+
+This product includes software developed by Revanth Boina
+(https://github.com/RevanthBoina/Aniob).
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this work except in compliance with the License, a complete copy of which
+is included in the root LICENSE file. In accordance with Section 4(d) of the
+Apache License, Version 2.0, the contents of this NOTICE file are for
+informational and attribution purposes only and do not modify the License.
+
+Statutory Copyright Notice (The Copyright Act, 1957 - India)
+------------------------------------------------------------
+1. Subject Matter (Sections 2(o) and 2(ffc)):
+   The source code, object code, build configuration, documentation, and
+   original assets in this repository constitute original "computer
+   programmes" and "literary works" protected under the Copyright Act, 1957
+   (Act No. 14 of 1957, India, as amended), as well as international copyright
+   treaties including the Berne Convention and the TRIPS Agreement.
+
+2. Copyright Ownership & Exclusive Rights (Sections 14(b) and 17):
+   Subject to third-party materials and individual Contributions, Revanth
+   Boina is the author and first copyright owner of the original Aniob work
+   under Section 17, holding the exclusive statutory rights enumerated under
+   Section 14(b) of the Copyright Act, 1957. Each Contributor retains
+   copyright in their respective Contributions.
+
+3. Open-Source Licence Grant (Section 30 & Apache 2.0):
+   The permissions granted in the LICENSE file operate as a worldwide,
+   perpetual, non-exclusive, royalty-free licence granted by the copyright
+   owner under Section 30 of the Copyright Act, 1957, strictly conditioned on
+   compliance with Sections 1 through 9 of the Apache License, Version 2.0
+   (including retention of all copyright, patent, trademark, and NOTICE
+   attributions and stating changes made to modified files). Unauthorized use
+   or redistribution outside the terms of the License terminates the licence
+   grant without prejudice to statutory remedies for infringement under the
+   Copyright Act, 1957.
+
+4. Moral Rights & Lawful Adaptations (Sections 57 and 52(1)(aa)):
+   Author attribution ("right of paternity") and integrity protections under
+   Section 57 of the Copyright Act, 1957 remain reserved to Revanth Boina and
+   respective authors as recognized by law, subject to the computer-programme
+   adaptation proviso to Section 57(1) read with Section 52(1)(aa) and the
+   modification rights expressly granted under the Apache License, Version 2.0.
+
+5. Trademarks & Third-Party Components:
+   As stated in Section 6 of the LICENSE, the Apache License, Version 2.0 does
+   not grant permission to use the trade names, trademarks, service marks, or
+   product names of Revanth Boina or Aniob, except as required for reasonable
+   and customary attribution under this NOTICE file. Third-party libraries,
+   SDKs, services, and AI/ML model weights remain governed by their own
+   respective licences and notices.
