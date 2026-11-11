@@ -39,10 +39,12 @@ data class RememberAction(
         if (!parsed.hasParams) return this
         val inputIndex = parsed.indexOfValue(inputText)
         val textIndex = parsed.indexOfValue(text)
-        if (inputIndex == null && textIndex == null) return this
+        val descIndex = parsed.indexOfValue(contentDescription)
+        if (inputIndex == null && textIndex == null && descIndex == null) return this
         return copy(
             inputText = inputIndex?.let { RememberTemplate.placeholder(it) } ?: inputText,
-            text = textIndex?.let { RememberTemplate.placeholder(it) } ?: text
+            text = textIndex?.let { RememberTemplate.placeholder(it) } ?: text,
+            contentDescription = descIndex?.let { RememberTemplate.placeholder(it) } ?: contentDescription
         )
     }
 
@@ -50,9 +52,11 @@ data class RememberAction(
     fun injected(params: List<String>): RememberAction? {
         val newIn = RememberTemplate.inject(inputText, params) ?: return null
         val newText = RememberTemplate.inject(text, params) ?: return null
+        val newDesc = RememberTemplate.inject(contentDescription, params) ?: return null
         return copy(
             inputText = newIn,
-            text = newText
+            text = newText,
+            contentDescription = newDesc
         )
     }
 

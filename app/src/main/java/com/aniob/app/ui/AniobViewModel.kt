@@ -1243,7 +1243,7 @@ class AniobViewModel(
             val ok = rememberCache.record(
                 goal = goal,
                 packageName = transition.screen.packageName,
-                preActionScreenHash = FastVerify.screenIdentity(transition.screen),
+                preActionScreenHash = RememberCache.navigationScreenKey(goal, transition.screen),
                 actions = listOf(descriptor),
                 expectedNextHash = nextHash
             )

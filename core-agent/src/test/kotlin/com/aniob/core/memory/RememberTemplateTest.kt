@@ -19,6 +19,32 @@ import org.junit.Test
  */
 class RememberTemplateTest {
 
+    @Test fun `linkedin replay binds current person and message on same navigation purpose`() {
+        val oldGoal = "message Alice Brown on LinkedIn saying Hello Alice"
+        val newGoal = "message Ravi Kumar on LinkedIn saying Can we discuss the role?"
+        assertEquals(RememberTemplate.keyOf(oldGoal), RememberTemplate.keyOf(newGoal))
+        val oldScreen = AniobScreenState(packageName = "com.linkedin.android", treeHash = "old",
+            nodes = listOf(AniobNode(1, "EditText", viewId = "search", isEditable = true)))
+        val cache = RememberCache()
+        assertTrue(cache.record(oldGoal, oldScreen.packageName,
+            RememberCache.navigationScreenKey(oldGoal, oldScreen),
+            listOf(RememberAction(kind = RememberAction.INPUT, viewId = "search", inputText = "Alice Brown"))))
+        val action = cache.lookup(newGoal, oldScreen.copy(treeHash = "new"))!!.single() as AniobAction.InputText
+        assertEquals("Ravi Kumar", action.text)
+        val draft = RememberAction(kind = RememberAction.INPUT, viewId = "compose", inputText = "Hello Alice")
+            .parameterised(RememberTemplate.parse(oldGoal)).injected(RememberTemplate.parse(newGoal).params)!!
+        assertEquals("Can we discuss the role?", draft.inputText)
+        assertNull(cache.lookup(newGoal, oldScreen.copy(nodes = emptyList())))
+    }
+
+    @Test fun `purpose matching keeps unrelated tasks separate`() {
+        assertFalse(RememberTemplate.keyOf("search Alice on LinkedIn") ==
+            RememberTemplate.keyOf("message Alice on LinkedIn saying hello"))
+        val old = RememberTemplate.parse("message Alice on LinkedIn saying hello")
+        val descriptor = RememberAction(kind = RememberAction.TAP, contentDescription = "Alice")
+        assertEquals("Bob", descriptor.parameterised(old).injected(listOf("Bob", "hi"))!!.contentDescription)
+    }
+
     private fun clockScreen() = AniobScreenState(
         packageName = "com.google.android.deskclock",
         treeHash = "clock:alarm-editor",

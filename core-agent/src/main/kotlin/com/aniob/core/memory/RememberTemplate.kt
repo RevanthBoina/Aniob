@@ -43,7 +43,7 @@ object RememberTemplate {
         }
     }
 
-    enum class Kind { TIME, NUM, NAME }
+    enum class Kind { TIME, NUM, NAME, MESSAGE }
 
     /**
      * Quoted name, clock time, or number — in that order, because a time contains digits and a
@@ -59,9 +59,26 @@ object RememberTemplate {
     private val NOISE = Regex("[^a-z0-9 ]+")
     private val SPACES = Regex("\\s+")
 
+    // Conservative supported purpose grammar: arbitrary prose is deliberately not generalized.
+    // Names/messages may contain spaces and punctuation; a message must be explicitly delimited
+    // by "saying", "with message", or a colon. Unrecognized goals retain exact legacy behavior.
+    private val MESSAGE_TASK = Regex(
+        """^\s*(?:open\s+linkedin\s+and\s+)?(?:send\s+(?:a\s+)?message\s+to|message)\s+(.+?)\s+(?:on\s+linkedin\s+)?(?:saying|with\s+(?:the\s+)?message|:)\s*(.+?)(?:\s+on\s+linkedin)?\s*$""",
+        RegexOption.IGNORE_CASE)
+
+    private fun messagingPurpose(goal: String): Parsed? {
+        if (!goal.contains("linkedin", ignoreCase = true)) return null
+        val match = MESSAGE_TASK.matchEntire(goal) ?: return null
+        val person = match.groupValues[1].trim().removeSurrounding("\"")
+        val message = match.groupValues[2].trim().removeSurrounding("\"")
+        if (person.isBlank() || message.isBlank()) return null
+        return Parsed("purpose:linkedin:message:{NAME}:{MESSAGE}", listOf(person, message), listOf(Kind.NAME, Kind.MESSAGE))
+    }
+
     /** Splits a goal into its template and the parameter values that were cut out of it. */
     fun parse(goal: String): Parsed {
         if (goal.isBlank()) return Parsed.EMPTY
+        messagingPurpose(goal)?.let { return it }
 
         val builder = StringBuilder()
         val params = ArrayList<String>(3)

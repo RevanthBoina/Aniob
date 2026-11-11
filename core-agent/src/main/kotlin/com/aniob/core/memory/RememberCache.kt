@@ -136,7 +136,7 @@ class RememberCache(
     @Synchronized
     fun entryFor(goal: String, screen: AniobScreenState): Entry? {
         val goalKey = RememberTemplate.keyOf(goal)
-        val hash = screenKey(screen.screenHash.ifBlank { screen.treeHash })
+        val hash = screenKey(navigationScreenKey(goal, screen))
         if (goalKey.isBlank() || hash.isBlank()) return null
         return entries[keyOf(goalKey, screen.packageName, hash)]
             ?: entries[keyOf(goalKey, screen.packageName, WILDCARD_SCREEN)]
@@ -172,6 +172,29 @@ class RememberCache(
             "$goalKeywords$KEY_SEPARATOR$packageName$KEY_SEPARATOR${screenKey(screenHash)}"
 
         /** The hash component of a key: the screen hash, or the tree hash when it is blank. */
+        fun navigationScreenKey(goal: String, screen: AniobScreenState): String {
+            val parsed = RememberTemplate.parse(goal)
+            val legacy = screen.screenHash.ifBlank { screen.treeHash }
+            if (!parsed.template.startsWith("purpose:")) return legacy
+            fun abstract(value: String): String {
+                var result = value.lowercase()
+                parsed.params.sortedByDescending { it.length }.forEach { parameter ->
+                    result = result.replace(parameter.lowercase(), "{slot}")
+                }
+                return result
+            }
+            val structure = buildString {
+                append(screen.packageName).append('|').append(screen.activityName)
+                screen.nodes.forEach { node ->
+                    append('|').append(node.viewId).append(':').append(node.className)
+                    append(':').append(abstract(node.text)).append(':').append(abstract(node.contentDescription))
+                    append(':').append(node.isClickable).append(':').append(node.isEditable)
+                }
+            }
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(structure.toByteArray(Charsets.UTF_8))
+            return "nav1:" + digest.joinToString("") { "%02x".format(it) }
+        }
+
         fun screenKey(hash: String): String = hash.trim()
 
         /**
