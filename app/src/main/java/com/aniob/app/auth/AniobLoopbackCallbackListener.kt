@@ -45,24 +45,28 @@ class AniobLoopbackCallbackListener(
     }
 
     /** The actual port (useful when 0 is requested in tests). */
-    val boundPort: Int get() = server?.localPort ?: -1
+    override val boundPort: Int get() = server?.localPort ?: -1
 
     /** The address the socket is bound to; always the IPv4 loopback address. */
     val boundHost: String? get() = server?.inetAddress?.hostAddress
 
     override fun bind() {
-        val socket = ServerSocket()
+        server = try {
+            openSocket(port)
+        } catch (busy: BindException) {
+            if (port == 0) throw AniobPortInUseException(busy)
+            try { openSocket(0) } catch (fallback: IOException) { throw AniobPortInUseException(fallback) }
+        }
+    }
+
+    private fun openSocket(candidatePort: Int): ServerSocket = ServerSocket().also { socket ->
         try {
-            socket.reuseAddress = false
-            socket.bind(InetSocketAddress(InetAddress.getByAddress(LOOPBACK), port), 1)
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(InetAddress.getByAddress(LOOPBACK), candidatePort), 4)
             socket.soTimeout = POLL_MS
-            server = socket
-        } catch (e: BindException) {
+        } catch (error: IOException) {
             socket.close()
-            throw AniobPortInUseException(e)
-        } catch (e: IOException) {
-            socket.close()
-            throw e
+            throw error
         }
     }
 

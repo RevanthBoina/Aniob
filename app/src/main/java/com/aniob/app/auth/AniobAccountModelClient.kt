@@ -6,6 +6,7 @@ import com.aniob.core.auth.AniobAccessGrant
 import com.aniob.core.auth.AniobAccessResult
 import com.aniob.core.auth.AniobAccountHttp
 import com.aniob.core.auth.AniobAccountHttpOutcome
+import com.aniob.core.auth.AniobAuthJson
 import com.aniob.core.auth.AniobAuthConfig
 import com.aniob.core.auth.AniobAuthError
 import com.aniob.core.auth.AniobAuthRepository
@@ -187,12 +188,15 @@ class AniobAccountModelClient(
         val request = Request.Builder()
             .url(endpoint)
             .header("Authorization", "Bearer ${grant.accessToken}")
-            .header("Accept", "text/event-stream")
-            .header("originator", config.originator)
+            .header("User-Agent", "Aniob/1.0")
+            .header("Accept", "text/event-stream, application/json")
             .header("session_id", session)
             .apply {
                 grant.accountId?.let { header("chatgpt-account-id", it) }
-                if (config.betaHeader.isNotBlank()) header("OpenAI-Beta", config.betaHeader)
+                config.originator.takeUnless { it.isBlank() || it.equals("NONE", true) || it.equals("UNSET", true) }
+                    ?.let { header("originator", it) }
+                config.betaHeader.takeUnless { it.isBlank() || it.equals("NONE", true) || it.equals("UNSET", true) }
+                    ?.let { header("OpenAI-Beta", it) }
             }
             .post(body.toRequestBody("application/json".toMediaType()))
             .build()
@@ -230,6 +234,15 @@ class AniobAccountModelClient(
                 }
             }
         }
+        if (type.orEmpty().contains("application/json", ignoreCase = true)) {
+            val text = extractResponseText(response.body?.string().orEmpty())
+            if (text.isBlank()) return Attempt.Failed(
+                AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "reply had no text")
+            )
+            onFirstToken()
+            onDelta(text)
+            return Attempt.Done(text)
+        }
         // A 2xx that is not a stream (an HTML page, say) is rejected before parsing.
         val peek = if (type.orEmpty().contains("event-stream", ignoreCase = true)) "" else response.peekBody(MAX_ERROR_BYTES).string()
         val ok = AniobAccountHttp.classify(code, type, peek, null, endpoint)
@@ -261,18 +274,40 @@ class AniobAccountModelClient(
         consume(parser.finish())
 
         acc.failure?.let { failure ->
+            if (failure.code == "truncated" && acc.text().isNotBlank()) return@let
             val kind = if (failure.code == "truncated") GatewayFailureKind.UNREACHABLE else GatewayFailureKind.CLIENT_ERROR
             if (kind == GatewayFailureKind.UNREACHABLE) health.recordFailure(endpoint, kind)
             return Attempt.Failed(AniobAccountHttp.failure(kind, code, endpoint, AniobSecretRedactor.redact(failure.message)))
         }
-        if (!acc.completed) {
+        if (!acc.completed && acc.text().isBlank()) {
             return Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "no completion event"))
         }
         val text = acc.text()
         if (text.isBlank()) {
             return Attempt.Failed(AniobAccountHttp.failure(GatewayFailureKind.MALFORMED, code, endpoint, "reply had no text"))
         }
+        if (first) {
+            onFirstToken()
+            onDelta(text)
+        }
         return Attempt.Done(text)
+    }
+
+    private fun extractResponseText(raw: String): String {
+        val root = AniobAuthJson.parseObject(raw) ?: return ""
+        AniobAuthJson.str(root["output_text"])?.takeIf { it.isNotBlank() }?.let { return it }
+        val choice = (root["choices"] as? List<*>)?.firstOrNull()?.let(AniobAuthJson::obj)
+        val message = choice?.get("message")?.let(AniobAuthJson::obj)
+        AniobAuthJson.str(message?.get("content"))?.takeIf { it.isNotBlank() }?.let { return it }
+        val response = AniobAuthJson.obj(root["response"]) ?: root
+        return (response["output"] as? List<*>).orEmpty()
+            .mapNotNull(AniobAuthJson::obj)
+            .filter { AniobAuthJson.str(it["type"]) == "message" }
+            .flatMap { (it["content"] as? List<*>).orEmpty() }
+            .mapNotNull(AniobAuthJson::obj)
+            .filter { AniobAuthJson.str(it["type"]) == "output_text" }
+            .mapNotNull { AniobAuthJson.str(it["text"]) }
+            .joinToString("")
     }
 
     companion object {

@@ -69,8 +69,8 @@ class AniobAccountModelClientTest {
         return r to t
     }
 
-    private fun client(repo: AniobAuthRepository, counter: IntArray = IntArray(1)) = AniobAccountModelClient(
-        config = testConfig(base), repository = repo, model = "m-1", reasoningEffort = "low", sessionId = "sess-1",
+    private fun client(repo: AniobAuthRepository, counter: IntArray = IntArray(1), config: com.aniob.core.auth.AniobAuthConfig = testConfig(base)) = AniobAccountModelClient(
+        config = config, repository = repo, model = "m-1", reasoningEffort = "low", sessionId = "sess-1",
         onLlmRequest = { counter[0]++ }, health = AniobGatewayHealth(), clock = clock
     )
 
@@ -87,6 +87,40 @@ class AniobAccountModelClientTest {
         assertTrue(s.body.contains("\"stream\":true")); assertTrue(s.body.contains("\"store\":false"))
         assertTrue(s.body.contains("\"model\":\"m-1\"")); assertTrue(s.body.contains("\"effort\":\"low\""))
         assertFalse(s.body.contains("max_output_tokens"))
+    }
+
+    @Test fun `optional header sentinels are omitted`() = runBlocking<Unit> {
+        val (r, _) = repo()
+        for (value in listOf("", "NONE", "unset")) {
+            client(r, config = testConfig(base).copy(originator = value, betaHeader = value)).generate("hello", "brief")
+            assertEquals(null, seen.last().originator)
+            assertEquals(null, seen.last().beta)
+        }
+    }
+
+    @Test fun `completed item without deltas returns text and emits it once`() = runBlocking<Unit> {
+        handler = { ex, _ -> ex.reply(200, "text/event-stream",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\n" +
+                "data: {\"type\":\"response.completed\",\"response\":{}}\n\n") }
+        val (r, _) = repo()
+        val deltas = mutableListOf<String>()
+        assertEquals("hello", client(r).generateStreaming("hello", "brief") { deltas += it })
+        assertEquals(listOf("hello"), deltas)
+    }
+
+    @Test fun `accepts JSON response formats`() = runBlocking<Unit> {
+        val payloads = listOf(
+            """{"output_text":"hello"}""",
+            """{"choices":[{"message":{"content":"hello"}}]}""",
+            """{"response":{"output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}}"""
+        )
+        val (r, _) = repo()
+        for (payload in payloads) {
+            handler = { ex, _ -> ex.reply(200, "application/json", payload) }
+            val deltas = mutableListOf<String>()
+            assertEquals("hello", client(r).generateStreaming("hello", "brief") { deltas += it })
+            assertEquals(listOf("hello"), deltas)
+        }
     }
 
     @Test fun `step provider returns raw text and reports first token`() = runBlocking<Unit> {

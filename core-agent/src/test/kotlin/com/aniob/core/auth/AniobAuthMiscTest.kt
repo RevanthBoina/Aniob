@@ -89,6 +89,13 @@ class AniobAuthMiscTest {
         assertFalse(AniobAuthJson.parseObject(AniobResponsesRequest.build("m", "i", "t"))!!.containsKey("reasoning"))
     }
 
+    @Test fun `legacy gpt models omit reasoning configuration`() {
+        for (model in listOf("gpt-3.5-turbo", "GPT-4o")) {
+            val request = AniobAuthJson.parseObject(AniobResponsesRequest.build(model, "sys", "hello", reasoningEffort = "low"))!!
+            assertFalse(request.containsKey("reasoning"))
+        }
+    }
+
     @Test fun `model catalog parses, validates and falls back`() {
         val cat = AniobAccountModelCatalog.parse("default: m2\nmodels:\n  - id: m1\n    label: \"One\"\n  - id: m2\n    label: Two\n  - id: bad id!\n")
         assertEquals(listOf("m1", "m2"), cat.models.map { it.id })

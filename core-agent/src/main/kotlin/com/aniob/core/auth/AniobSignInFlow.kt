@@ -6,13 +6,14 @@ import kotlinx.coroutines.withContext
 import java.io.Closeable
 import java.io.IOException
 
-/** The loopback port is taken. Not retried on another port: the registered redirect is fixed. */
+/** No loopback callback port could be bound. */
 class AniobPortInUseException(cause: Throwable? = null) : IOException("callback port is in use", cause)
 
 /**
  * Receives the browser's redirect. The Android implementation binds `127.0.0.1` only.
  */
 interface AniobCallbackListener : Closeable {
+    val boundPort: Int get() = -1
     /** @throws AniobPortInUseException when the port is taken. */
     @Throws(IOException::class)
     fun bind()
@@ -95,9 +96,13 @@ class AniobSignInFlow(
             } catch (e: IOException) {
                 return fail(AniobAuthError.CallbackPortBusy)
             }
+            val redirectUri = if (listener.boundPort > 0) {
+                val uri = java.net.URI(config.redirectUri)
+                java.net.URI(uri.scheme, uri.userInfo, uri.host, listener.boundPort, uri.path, uri.query, uri.fragment).toString()
+            } else config.redirectUri
             if (resume == null) {
                 val challenge = AniobPkce.challengeFor(pending.verifier)
-                val url = AniobAuthorizeUrlBuilder.build(config.copy(clientId = pending.clientId ?: config.clientId), challenge, pending.state, pending.nonce)
+                val url = AniobAuthorizeUrlBuilder.build(config.copy(clientId = pending.clientId ?: config.clientId, redirectUri = redirectUri), challenge, pending.state, pending.nonce)
                 if (!browser.open(url)) return fail(AniobAuthError.BrowserUnavailable)
             }
             val deadline = clock.now() + remaining
@@ -111,7 +116,7 @@ class AniobSignInFlow(
 
             return when (parsed) {
                 is AniobCallbackResult.Code -> repository.completeSignIn(parsed.code, pending.verifier, pending.nonce, parsed.clientId,
-                    pending.clientId ?: config.clientId, version).also { successful = it == null }
+                    pending.clientId ?: config.clientId, version, redirectUri).also { successful = it == null }
                 is AniobCallbackResult.Failure -> fail(parsed.error)
                 AniobCallbackResult.Ignored -> fail(AniobAuthError.Unparseable)
             }
