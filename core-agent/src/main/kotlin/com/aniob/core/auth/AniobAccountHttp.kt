@@ -33,29 +33,53 @@ object AniobAccountHttp {
         endpoint: String?
     ): AniobAccountHttpOutcome {
         // Content is checked before anything is parsed: a web page is never an answer.
-        val html = AniobGatewayClassifier.looksLikeHtml(body)
+        val type = contentType.orEmpty().substringBefore(';').trim().lowercase()
+        val html = AniobGatewayClassifier.looksLikeHtml(body) || type == "text/html" || type == "application/xhtml+xml"
         if (status in 200..299) {
-            return if (html || !(AniobGatewayClassifier.isEventStream(contentType) ||
-                    AniobGatewayClassifier.isJsonContentType(contentType) || body.isEmpty())
-            ) {
-                AniobAccountHttpOutcome.Gateway(failure(GatewayFailureKind.NOT_JSON, status, endpoint, "expected a stream but got a web page"))
+            return if (html) {
+                val summary = AniobGatewayClassifier.summarize(body).takeIf { it.isNotBlank() && it != "empty response" }
+                val detail = if (summary != null) "expected a stream but got $summary" else "expected a stream but got a web page"
+                AniobAccountHttpOutcome.Gateway(failure(GatewayFailureKind.NOT_JSON, status, endpoint, detail))
             } else AniobAccountHttpOutcome.Ok
+        }
+        if (status in 300..399) {
+            return AniobAccountHttpOutcome.Gateway(
+                failure(GatewayFailureKind.NOT_JSON, status, endpoint, "unexpected redirect (HTTP $status)")
+            )
         }
         if (html && status != 401 && status != 429) {
             val kind = if (status >= 500) GatewayFailureKind.SERVER_ERROR else GatewayFailureKind.NOT_JSON
             return AniobAccountHttpOutcome.Gateway(failure(kind, status, endpoint, summaryOf(body)))
         }
+        val code = errorCodeOf(body)
         return when {
-            status == 401 -> AniobAccountHttpOutcome.Unauthorized
-            status == 403 -> AniobAccountHttpOutcome.Denied(deniedError(body))
+            status == 401 || code in AUTH_ERROR_CODES -> AniobAccountHttpOutcome.Unauthorized
+            code == "subscription_sharing_usage_limit_exceeded" ->
+                AniobAccountHttpOutcome.RateLimited(AniobRetryAfter.millis(retryAfterHeader))
+            code == "subscription_sharing_usage_unavailable" || code == "subscription_sharing_user_unavailable" ->
+                AniobAccountHttpOutcome.Gateway(failure(GatewayFailureKind.SERVER_ERROR, 503, endpoint, summaryOf(body)))
+            status == 403 || code == "subscription_sharing_user_not_eligible" ->
+                AniobAccountHttpOutcome.Denied(deniedError(body))
             status == 429 -> AniobAccountHttpOutcome.RateLimited(AniobRetryAfter.millis(retryAfterHeader))
-            status == 404 || status == 405 || status == 410 ->
+            status == 404 || status == 405 || status == 410 || code == "model_not_found" ->
                 AniobAccountHttpOutcome.Gateway(failure(GatewayFailureKind.NOT_FOUND, status, endpoint, summaryOf(body)))
             status in 400..499 ->
                 AniobAccountHttpOutcome.Gateway(failure(GatewayFailureKind.CLIENT_ERROR, status, endpoint, summaryOf(body)))
             else ->
                 AniobAccountHttpOutcome.Gateway(failure(GatewayFailureKind.SERVER_ERROR, status, endpoint, summaryOf(body)))
         }
+    }
+
+    private val AUTH_ERROR_CODES = setOf(
+        "subscription_sharing_invalid_user",
+        "chatpass_v2_scope_not_authorized",
+        "chatpass_v2_invalid_authorization_context"
+    )
+
+    private fun errorCodeOf(body: String): String? {
+        val json = AniobAuthJson.parseObject(body) ?: return null
+        val error = AniobAuthJson.obj(json["error"])
+        return AniobAuthJson.str(error?.get("code")) ?: AniobAuthJson.str(json["code"])
     }
 
     /** The exception thrown to the existing ladder; keeps the `(<code>)` message shape callers match on. */

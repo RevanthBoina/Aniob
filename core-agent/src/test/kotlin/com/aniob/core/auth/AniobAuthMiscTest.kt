@@ -44,8 +44,10 @@ class AniobAuthMiscTest {
     @Test fun `extra params parse`() {
         assertEquals(
             mapOf("a" to "1", "b" to "true"),
-            AniobAuthConfig.parseExtraParams("a=1&b=true&=skip&&")
+            AniobAuthConfig.parseExtraParams("a=1&b=true&=skip&&NONE=drop&UNSET")
         )
+        assertEquals(emptyMap<String, String>(), AniobAuthConfig.parseExtraParams("NONE"))
+        assertEquals(emptyMap<String, String>(), AniobAuthConfig.parseExtraParams("UNSET"))
     }
 
     @Test fun `router picks the account only when signed in and never swaps to the gateway`() {

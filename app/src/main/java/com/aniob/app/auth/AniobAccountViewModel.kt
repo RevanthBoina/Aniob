@@ -4,11 +4,14 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aniob.app.AniobApplication
+import com.aniob.core.auth.AniobAccountModel
 import com.aniob.core.auth.AniobAccountModelCatalog
 import com.aniob.core.auth.AniobAccountScreenState
 import com.aniob.core.auth.AniobAuthState
 import com.aniob.core.auth.AniobCloudSource
+import com.aniob.core.auth.AniobSecretRedactor
 import com.aniob.core.external.AniobGatewayClassifier
+import com.aniob.core.external.AniobGatewayHealth
 import com.aniob.core.external.GatewayFailureKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +33,7 @@ data class AniobAccountSettingsUi(
     val modelError: Boolean = false,
     val testing: Boolean = false,
     val testResult: AniobAccountTestResult? = null,
+    val testErrorMessage: String? = null,
     val revocationUnconfirmed: Boolean = false
 )
 
@@ -42,6 +46,7 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
 
     val available: Boolean = container.featureAvailable
     val catalog: AniobAccountModelCatalog get() = container.catalog
+    val models: List<AniobAccountModel> get() = container.currentModels
 
     val screenState: StateFlow<AniobAccountScreenState> =
         (container.repository?.state ?: MutableStateFlow<AniobAuthState>(AniobAuthState.SignedOut))
@@ -55,6 +60,15 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
         // A sign-in the system interrupted continues here; nothing is bound otherwise.
         container.coordinator?.resumeIfPending()
         viewModelScope.launch { container.source.collect { refresh() } }
+        viewModelScope.launch {
+            container.repository?.state?.collect { state ->
+                if (state is AniobAuthState.SignedIn) {
+                    AniobGatewayHealth.shared.reset()
+                    container.fetchModels()
+                    refresh()
+                }
+            }
+        }
     }
 
     private fun read() = AniobAccountSettingsUi(
@@ -67,49 +81,80 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
     fun cancelSignIn() { container.coordinator?.cancel() }
 
     fun signOut() { viewModelScope.launch {
+        AniobGatewayHealth.shared.reset()
         val revoked = container.signOut()
         refresh()
-        _settings.update { it.copy(revocationUnconfirmed = !revoked) }
+        _settings.update { it.copy(revocationUnconfirmed = !revoked, testResult = null, testErrorMessage = null) }
     } }
     fun signOutEverywhere() = signOut()
-    fun deleteProvider() { viewModelScope.launch { container.deleteProvider(); refresh() } }
+    fun deleteProvider() { viewModelScope.launch {
+        AniobGatewayHealth.shared.reset()
+        container.deleteProvider()
+        refresh()
+    } }
 
-    private fun refresh() { _settings.value = read() }
+    private fun refresh() {
+        _settings.update {
+            it.copy(
+                useAsCloud = container.cloudSource == AniobCloudSource.ACCOUNT,
+                model = container.model,
+                effort = container.reasoningEffort
+            )
+        }
+    }
 
     fun setUseAsCloud(enabled: Boolean) {
+        AniobGatewayHealth.shared.reset()
         container.cloudSource = if (enabled) AniobCloudSource.ACCOUNT else AniobCloudSource.OMNIROUTE
         refresh()
     }
 
     fun selectModel(id: String) {
         val error = AniobAccountModelCatalog.validate(id) != null
-        if (!error) container.model = id
-        _settings.update { it.copy(model = if (error) it.model else container.model, modelError = error, testResult = null) }
+        if (!error) {
+            AniobGatewayHealth.shared.reset()
+            container.model = id
+        }
+        _settings.update {
+            it.copy(
+                model = if (error) it.model else container.model,
+                modelError = error,
+                testResult = null,
+                testErrorMessage = null
+            )
+        }
     }
 
     fun setEffort(value: String) {
+        AniobGatewayHealth.shared.reset()
         container.reasoningEffort = value
-        _settings.update { it.copy(effort = value, testResult = null) }
+        _settings.update { it.copy(effort = value, testResult = null, testErrorMessage = null) }
     }
 
     /** One real, tiny inference call. A model list alone would not prove inference works. */
     fun sendTest() {
         if (_settings.value.testing || !container.isSignedIn) return
-        _settings.update { it.copy(testing = true, testResult = null) }
+        _settings.update { it.copy(testing = true, testResult = null, testErrorMessage = null) }
         viewModelScope.launch {
+            AniobGatewayHealth.shared.reset()
+            var errorMsg: String? = null
             val result = try {
-                container.newClient()
+                container.newClient(bypassHealthCheck = true)
                     .getNextActionRaw("You are a connection test. Reply briefly.", "Reply with the single word: ok")
                     .fold(
                         onSuccess = { if (it.isNotBlank()) AniobAccountTestResult.OK else AniobAccountTestResult.REJECTED },
-                        onFailure = { map(it) }
+                        onFailure = { err ->
+                            errorMsg = err.message?.let(AniobSecretRedactor::redact)?.take(200)
+                            map(err)
+                        }
                     )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IllegalStateException) {
+                errorMsg = e.message?.let(AniobSecretRedactor::redact)?.take(200)
                 AniobAccountTestResult.AUTH
             }
-            _settings.update { it.copy(testing = false, testResult = result) }
+            _settings.update { it.copy(testing = false, testResult = result, testErrorMessage = errorMsg) }
         }
     }
 
