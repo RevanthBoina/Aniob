@@ -21,7 +21,8 @@ data class TaskContext(
     val tokenBudget: TokenBudget = TokenBudget(),
     val consecutiveFailures: Int = 0,
     val rejectedFinishCount: Int = 0,
-    val taskId: String = ""
+    val taskId: String = "",
+    val hasFastSkippedSteps: Boolean = false
 ) {
     data class TokenBudget(
         val maxTotal: Int = 32_000,

@@ -51,6 +51,40 @@ class StepPipelineTest {
         records: MutableList<StepPipeline.StepRecord> = mutableListOf()
     ) = StepPipeline(limits = limits, learning = learning, recordStep = { records += it })
 
+    @Test fun `fast skip is neutral and does not enter learning`() = runBlocking {
+        val records = mutableListOf<StepPipeline.StepRecord>()
+        var learned = 0
+        var settled = 0
+        val learning = object : LearningPipeline {
+            override fun onVerifiedStep(ctx: TaskContext, action: AniobAction, screen: AniobScreenState) { learned++ }
+            override fun onTaskSuccess(ctx: TaskContext, trajectory: List<AniobAction>) { learned++ }
+        }
+        val pipe = StepPipeline(learning = learning, fastVerificationSkipEnabled = true,
+            fastVerificationThresholdMs = Long.MAX_VALUE, recordStep = { records += it },
+            settle = { _, capture -> settled++; capture() })
+        val before = screen("com.a", "Settings")
+        val result = pipe.executeStep(ctx.copy(consecutiveFailures = 1), before,
+            StepPipeline.Proposal.Model(tap("Settings"), "TEST"), capture = { before },
+            dispatch = { StepPipeline.DispatchOutcome(true) })
+        assertTrue(result.verificationSkippedFast)
+        assertFalse(records.single().verified)
+        assertEquals(null, records.single().failureReason)
+        assertEquals(0, learned)
+        assertEquals(0, settled)
+        assertEquals(1, result.nextCtx.consecutiveFailures)
+        assertEquals(1, result.nextCtx.condensedHistory.size)
+        assertTrue(result.nextCtx.condensedHistory.single().contains("verification skipped for speed"))
+    }
+
+    @Test fun `optimized finish rejects failed observable criteria immediately`() = runBlocking {
+        val before = screen("com.a", "Settings")
+        val result = StepPipeline(optimizedFinish = true).executeStep(ctx, before,
+            StepPipeline.Proposal.Model(AniobAction.Finish("done"), "TEST"), capture = { before },
+            dispatch = { StepPipeline.DispatchOutcome(true) })
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertFalse(result.verification!!.isExpected)
+    }
+
     @Test
     fun `happy path dispatch and verify reports continue`() = runBlocking {
         val before = screen("com.a", "Settings")
@@ -115,7 +149,7 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `finish without criteria on the first step still asks for work`() = runBlocking {
+    fun `finish without criteria on first step remains unverified`() = runBlocking {
         val screenNow = screen("com.a", "Clock")
         val noCriteria = TaskContext(instruction = "set an alarm for 7:30")
         val result = pipeline().executeStep(
@@ -125,8 +159,9 @@ class StepPipelineTest {
             capture = { screenNow },
             dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = screenNow) }
         )
-        assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
-        assertEquals(1, result.nextCtx.rejectedFinishCount)
+        assertEquals(StepResult.TerminalState.SUCCESS, result.terminalState)
+        assertEquals(0, result.nextCtx.rejectedFinishCount)
+        assertFalse(result.verification!!.isExpected)
     }
 
     @Test

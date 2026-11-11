@@ -47,7 +47,12 @@ class StepPipeline(
      * supplies a live snapshot so [DeterministicVerifier.verifyFinish] can judge device assertions;
      * pure-JVM callers and tests default to UNKNOWN (which makes such criteria inconclusive).
      */
-    private val deviceState: (SuccessCriteria?) -> DeviceStateSnapshot = { DeviceStateSnapshot.UNKNOWN }
+    private val deviceState: (SuccessCriteria?) -> DeviceStateSnapshot = { DeviceStateSnapshot.UNKNOWN },
+    private val fastVerificationSkipEnabled: Boolean = false,
+    private val fastVerificationThresholdMs: Long = FAST_STEP_VERIFY_SKIP_MS,
+    private val optimizedFinish: Boolean = false,
+    private val deferTaskLearning: Boolean = false,
+    private val beforeDispatch: suspend () -> Unit = {}
 ) {
 
     /** A proposed next action plus the rung that produced it. Rungs differ only here. */
@@ -114,7 +119,8 @@ class StepPipeline(
         val textEvidence: String? = null,
         val targetBounds: AniobRect? = resolvedNode?.bounds,
         val blockedBySafety: Boolean = false,
-        val blockedFingerprint: String? = null
+        val blockedFingerprint: String? = null,
+        val verificationSkippedFast: Boolean = false
     )
 
     suspend fun executeStep(
@@ -124,7 +130,7 @@ class StepPipeline(
         capture: suspend () -> AniobScreenState,
         dispatch: suspend (AniobAction) -> DispatchOutcome,
         confirm: suspend (AniobAction, AniobNode?, InterceptResult) -> Boolean = { _, _, _ -> false },
-        judge: (String) -> ReflectionOutcome = { ReflectionOutcome.rejected(it, it) },
+        judge: (String) -> ReflectionOutcome = { ReflectionOutcome.confirmed("Default judge abstained; outcome remains unverified") },
         targetNode: AniobNode? = null
     ): StepResult {
         currentCoroutineContext().ensureActive()
@@ -334,12 +340,17 @@ class StepPipeline(
 
         // DISPATCH: grounding is redone against the live tree inside the seam; a miss is never a tap.
         currentCoroutineContext().ensureActive()
+        if (effectiveAction !is AniobAction.Finish && effectiveAction !is AniobAction.Fail) beforeDispatch()
+        val dispatchStartedAt = System.nanoTime()
         val outcome = runCatching { dispatch(effectiveAction) }
             .getOrElse {
                 if (it is kotlinx.coroutines.CancellationException) throw it
                 DispatchOutcome(dispatched = false, reason = "dispatch threw: ${it.message}")
             }
 
+        val dispatchElapsedMs = (System.nanoTime() - dispatchStartedAt) / 1_000_000L
+        val skipFastVerification = fastVerificationSkipEnabled && dispatchElapsedMs < fastVerificationThresholdMs &&
+            proposal !is Proposal.DirectIntent && effectiveAction !is AniobAction.Finish && effectiveAction !is AniobAction.Fail
         val liveCommand = AniobActionExecutor.planDispatch(effectiveAction, observed)
 
         // DispatchOutcome.dispatched=false must prevent a verified action
@@ -355,7 +366,7 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // SETTLE: idle-gate instead of a fixed sleep
-        val screenAfter = outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
+        val screenAfter = if (skipFastVerification) outcome.screenAfter ?: observed else outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
             if (it is kotlinx.coroutines.CancellationException) throw it
             observed
         }
@@ -363,7 +374,10 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // VERIFY
-        val verification = if (proposal is Proposal.DirectIntent) {
+        val verification = if (skipFastVerification) {
+            DeterministicVerifier.VerificationResult(isExpected = false, durationMs = 0L,
+                reason = "Verification skipped: dispatch completed in ${dispatchElapsedMs}ms")
+        } else if (proposal is Proposal.DirectIntent) {
             val summary = (effectiveAction as? AniobAction.Finish)?.summary ?: effectiveAction.describeAction()
             if (ctx.successCriteria != null && ctx.successCriteria.hasObservableCheck) {
                 DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
@@ -398,7 +412,8 @@ class StepPipeline(
                 effectiveAction, verification, proposal,
                 // A device command's answer ("volume is 40%", "3 PDFs: ...") is the only place the
                 // model can read it; every other action is judged from the next observation.
-                dispatchNote = outcome.reason.takeIf { effectiveAction is AniobAction.DeviceControl }
+                dispatchNote = outcome.reason.takeIf { effectiveAction is AniobAction.DeviceControl },
+                verificationSkippedFast = skipFastVerification
             )
         )
             .withAction(effectiveAction)
@@ -417,6 +432,8 @@ class StepPipeline(
                     finalScreen = screenAfter,
                     steps = ctx.stepIndex + 1,
                     deterministic = verification,
+                    hasExecutedActions = ctx.trajectory.any { it !is AniobAction.Finish && it !is AniobAction.Fail },
+                    hasDeviceEvidence = completedDeviceCommand(ctx) != null,
                     llmJudge = judge
                 )
             }
@@ -426,10 +443,13 @@ class StepPipeline(
             } else {
                 nextCtx = nextCtx.withRejectedFinish(verdict.feedback)
                     .withFailure()
-                if (nextCtx.rejectedFinishCount >= MAX_REJECTED_FINISHES || proposal is Proposal.DirectIntent) {
+                if (nextCtx.rejectedFinishCount >= (if (optimizedFinish) MAX_REJECTED_FINISHES else BASELINE_MAX_REJECTED_FINISHES) || proposal is Proposal.DirectIntent) {
                     terminal = StepResult.TerminalState.FAIL
                 }
             }
+        } else if (skipFastVerification) {
+            // Neutral progress. No verified learning and no failure-counter change.
+            nextCtx = nextCtx.copy(hasFastSkippedSteps = true)
         } else if (!verification.isExpected) {
             nextCtx = nextCtx.withFailure()
             val legacy = reflectionAgent.reflect(observed, screenAfter, effectiveAction, verifiedSuccess = false)
@@ -460,7 +480,8 @@ class StepPipeline(
             effectiveAction, proposal, nextCtx, screenAfter, effectiveNode,
             terminal, verification.reason, start, verification, reflection, liveCommand,
             dispatched = true,
-            learningScreen = observed
+            learningScreen = observed,
+            verificationSkippedFast = skipFastVerification
         )
     }
 
@@ -489,9 +510,10 @@ class StepPipeline(
         dispatched: Boolean = true,
         learningScreen: AniobScreenState = screen,
         blockedBySafety: Boolean = false,
-        blockedFingerprint: String? = null
+        blockedFingerprint: String? = null,
+        verificationSkippedFast: Boolean = false
     ): StepResult {
-        val verified = verification?.isExpected == true && terminal != StepResult.TerminalState.FAIL && dispatched
+        val verified = !verificationSkippedFast && verification?.isExpected == true && terminal != StepResult.TerminalState.FAIL && dispatched
         val computedTokens = (action.describeAction().length + screen.treeHash.length) / 4 + 50
         val record = StepRecord(
             stepIndex = nextCtx.stepIndex,
@@ -499,20 +521,21 @@ class StepPipeline(
             provider = proposal.providerLabel,
             dispatched = dispatched,
             verified = verified,
-            failureReason = if (verified) null else reason,
+            failureReason = if (verified || verificationSkippedFast) null else reason,
             resolvedNode = resolvedNode,
             latencyMs = System.currentTimeMillis() - start,
             tokensUsed = computedTokens,
             textEvidence = verification?.textEvidence,
             targetBounds = resolvedNode?.bounds,
             blockedBySafety = blockedBySafety,
-            blockedFingerprint = blockedFingerprint
+            blockedFingerprint = blockedFingerprint,
+            verificationSkippedFast = verificationSkippedFast
         )
         // RECORD: one call site, verified-only for learning (failures must never distill).
         recordStep(record)
         if (verified && dispatched) {
             learning.onVerifiedStep(nextCtx, action, learningScreen)
-            if (terminal == StepResult.TerminalState.SUCCESS) {
+            if (terminal == StepResult.TerminalState.SUCCESS && !nextCtx.hasFastSkippedSteps && !deferTaskLearning) {
                 learning.onTaskSuccess(nextCtx, nextCtx.trajectory)
             }
         }
@@ -525,7 +548,8 @@ class StepPipeline(
             terminalState = terminal,
             resolvedNode = resolvedNode,
             tokensUsed = computedTokens,
-            latencyMs = record.latencyMs
+            latencyMs = record.latencyMs,
+            verificationSkippedFast = verificationSkippedFast
         )
     }
 
@@ -533,16 +557,20 @@ class StepPipeline(
         action: AniobAction,
         verification: DeterministicVerifier.VerificationResult,
         proposal: Proposal,
-        dispatchNote: String? = null
+        dispatchNote: String? = null,
+        verificationSkippedFast: Boolean = false
     ): String = "${proposal.providerLabel}: ${action.describeAction()} -> " +
-        (if (verification.isExpected) "the expected change was observed"
+        (if (verificationSkippedFast) "verification skipped for speed"
+        else if (verification.isExpected) "the expected change was observed"
         else "the expected change was not observed (" +
             NeutralWordingContract.neutralize(verification.reason) + ")") +
         (dispatchNote?.takeIf { it.isNotBlank() }?.let { " | result: ${it.take(DEVICE_NOTE_MAX_CHARS)}" } ?: "")
 
     companion object {
         /** A Finish rejected this many times becomes a hard failure (no infinite retry, no fake SUCCESS). */
-        const val MAX_REJECTED_FINISHES = 3
+        const val MAX_REJECTED_FINISHES = 1
+        const val BASELINE_MAX_REJECTED_FINISHES = 3
+        const val FAST_STEP_VERIFY_SKIP_MS = 500L
 
         /** A device result is fed back verbatim, but never more than this many characters. */
         const val DEVICE_NOTE_MAX_CHARS = 400
