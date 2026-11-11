@@ -133,7 +133,18 @@ class RememberCache(
 
         // The trace is stored with {PARAM_n} for the values that came from the prompt; a goal that
         // cannot fill one of them is a different task and must miss rather than tap a stale value.
-        val actions = entry.actions.map { it.injected(parsed.params) ?: return null }
+        val actions = entry.actions.map { stored ->
+            val injected = stored.injected(parsed.params) ?: return null
+            // A shared profile-row resource ID is not evidence of the requested person. Dynamic
+            // recipient labels must agree too, even when the generic view ID still exists.
+            if (RememberTemplate.isPlaceholder(stored.text) || RememberTemplate.isPlaceholder(stored.contentDescription)) {
+                val node = resolve(injected, screen) ?: return null
+                if (RememberTemplate.isPlaceholder(stored.text) && !node.text.equals(injected.text, ignoreCase = true)) return null
+                if (RememberTemplate.isPlaceholder(stored.contentDescription) &&
+                    !node.contentDescription.equals(injected.contentDescription, ignoreCase = true)) return null
+            }
+            injected
+        }
         return actions.map { replayOf(it, screen) ?: return null }
     }
 

@@ -37,6 +37,18 @@ class RememberTemplateTest {
         assertNull(cache.lookup(newGoal, oldScreen.copy(nodes = emptyList())))
     }
 
+    @Test fun `shared profile resource id cannot select the wrong recipient`() {
+        val goal = "message Alice on LinkedIn saying hello"
+        val cache = RememberCache()
+        val screen = AniobScreenState(packageName = "com.linkedin.android", treeHash = "results",
+            nodes = listOf(AniobNode(1, "TextView", viewId = "profile", text = "Alice", isClickable = true)))
+        cache.record(goal, screen.packageName, RememberCache.navigationScreenKey(goal, screen),
+            listOf(RememberAction(kind = RememberAction.TAP, viewId = "profile", text = "Alice")))
+        assertNotNull(cache.lookup("message Bob on LinkedIn saying hi", screen.copy(nodes = listOf(
+            screen.nodes.single().copy(text = "Bob")))))
+        assertNull(cache.lookup("message Bob on LinkedIn saying hi", screen))
+    }
+
     @Test fun `purpose matching keeps unrelated tasks separate`() {
         assertFalse(RememberTemplate.keyOf("search Alice on LinkedIn") ==
             RememberTemplate.keyOf("message Alice on LinkedIn saying hello"))
