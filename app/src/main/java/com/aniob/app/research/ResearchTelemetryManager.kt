@@ -359,11 +359,11 @@ class ResearchTelemetryManager(
         val line = if (run.isCombination) hudLine(run) else summaryRow?.hudLine() ?: fallbackHudLine(run)
         logger(line)
         logger(
-            "TASK_END mode=${run.mode.id} feature_mask=${run.featureMask} pass=${run.studyPass.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
+            "TASK_END mode=${run.mode.id} pass=${run.studyPass.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
                 "llm_calls=${run.llmCalls} local_inferences=${run.localInferences} steps=${run.steps} " +
                 "screenshots=${run.screenshots} prompt_tokens=${run.promptTokens} " +
                 "success=${run.success} intent_shortcut=${run.intentShortcutUsed} " +
-                "remember_cache_hit=${run.rememberCacheHit} failure_reason=\"${run.failureReason.take(120)}\""
+                "feature_mask=${run.featureMask} remember_cache_hit=${run.rememberCacheHit} failure_reason=\"${run.failureReason.take(120)}\""
         )
         return run
     }

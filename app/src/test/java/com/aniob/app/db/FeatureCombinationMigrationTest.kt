@@ -27,7 +27,7 @@ class FeatureCombinationMigrationTest {
             for (index in 0 until entities.length()) {
                 val entity = entities.getJSONObject(index)
                 old.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", entity.getString("tableName")))
-                val indices = entity.getJSONArray("indices")
+                val indices = entity.optJSONArray("indices") ?: org.json.JSONArray()
                 for (i in 0 until indices.length()) old.execSQL(indices.getJSONObject(i).getString("createSql")
                     .replace("\${TABLE_NAME}", entity.getString("tableName")))
             }
