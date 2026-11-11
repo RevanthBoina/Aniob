@@ -94,16 +94,17 @@ class AniobHippocampusTracker(
         screenReads: Int,
         actions: Int,
         escalations: Int,
-        elapsedMs: Long
+        elapsedMs: Long,
+        userAttested: Boolean = false
     ): String? {
-        if (steps.isEmpty() || steps.any { !it.verified }) return null
+        if (steps.isEmpty() || (!userAttested && steps.any { !it.verified })) return null
         if (hasCanaryText()) return null
 
         val slug = prompt.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(24)
         if (slug.isBlank()) return null
         val skillName = "learned_$slug"
         val riskTier = deriveRiskTier(steps.map { it.action })
-        val yaml = buildSkillYaml(skillName = skillName, prompt = prompt, riskTier = riskTier)
+        val yaml = buildSkillYaml(skillName = skillName, prompt = prompt, riskTier = riskTier, userAttested = userAttested)
 
         skillsDir.mkdirs()
         writeAtomically(File(skillsDir, "$skillName.yaml"), yaml)
@@ -114,13 +115,22 @@ class AniobHippocampusTracker(
 
         val signature = prompt.trim().lowercase()
         val packageName = steps.firstNotNullOfOrNull { (it.action as? AniobAction.OpenApp)?.packageName } ?: "unknown_package"
-        procedureStore.registerSuccess(
+        if (!userAttested) procedureStore.registerSuccess(
             taskSignature = signature,
             packageName = packageName,
             actions = steps.map { it.action },
             totalLatencyMs = elapsedMs
         )
         return skillName
+    }
+
+    /** Consolidate an immutable episode without borrowing or clearing a later task's steps. */
+    fun consolidateEpisode(taskId: String, prompt: String, episode: List<HippocampusStep>,
+        userAttested: Boolean = false, elapsedMs: Long = 0L): String? {
+        val captured = AniobHippocampusTracker(skillsDir, assetSkillsDir, procedureStore)
+        captured.beginTask(taskId, prompt)
+        episode.forEach(captured::recordStep)
+        return captured.consolidateOnSuccess(taskId, prompt, 0, episode.size, 0, elapsedMs, userAttested)
     }
 
     private fun writeAtomically(target: File, content: String) {
@@ -188,8 +198,8 @@ class AniobHippocampusTracker(
         return "LOW"
     }
 
-    private fun buildSkillYaml(skillName: String, prompt: String, riskTier: String): String {
-        val description = sanitizeLine(prompt).ifBlank { "Learned multi-step automation" }
+    private fun buildSkillYaml(skillName: String, prompt: String, riskTier: String, userAttested: Boolean): String {
+        val description = (if (userAttested) "USER_ATTESTATION: " else "DEVICE_VERIFIED: ") + sanitizeLine(prompt).ifBlank { "Learned multi-step automation" }
         val trigger = sanitizeLine(prompt.trim().lowercase())
         return buildString {
             appendLine("name: \"$skillName\"")

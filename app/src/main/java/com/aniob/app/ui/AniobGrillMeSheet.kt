@@ -33,15 +33,15 @@ fun AniobGrillMeSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    val userAnswers = remember {
+    val userAnswers = remember(grillResult) {
         mutableStateMapOf<String, String>().apply {
             grillResult.questions.forEach { q ->
-                put(q.id, q.defaultOption ?: q.options.firstOrNull().orEmpty())
+                put(q.id, q.defaultOption.orEmpty())
             }
         }
     }
-    val customMode = remember { mutableStateMapOf<String, Boolean>() }
-    val rememberToggles = remember {
+    val customMode = remember(grillResult) { mutableStateMapOf<String, Boolean>() }
+    val rememberToggles = remember(grillResult) {
         mutableStateMapOf<String, Boolean>().apply {
             grillResult.questions.forEach { q -> put(q.id, rememberedKeys.contains(q.id)) }
         }
@@ -55,6 +55,25 @@ fun AniobGrillMeSheet(
     }
 
     var generalNotes by remember { mutableStateOf("") }
+
+    val canAutoContinue = grillResult.questions.isNotEmpty() && grillResult.questions.all { !it.defaultOption.isNullOrBlank() }
+    var countdown by remember(grillResult) { mutableStateOf(if (canAutoContinue) 10 else 0) }
+    var submitted by remember(grillResult) { mutableStateOf(false) }
+    fun submitOnce() {
+        if (submitted || grillResult.questions.any { userAnswers[it.id].isNullOrBlank() }) return
+        submitted = true
+        val answers = userAnswers.filterValues { it.isNotBlank() }.toMutableMap()
+        if (generalNotes.isNotBlank()) answers["notes"] = generalNotes
+        onConfirm(answers, rememberToggles.filterValues { it }.keys)
+    }
+    LaunchedEffect(grillResult, canAutoContinue) {
+        if (!canAutoContinue) return@LaunchedEffect
+        while (countdown > 0 && !submitted) {
+            kotlinx.coroutines.delay(1_000)
+            countdown--
+        }
+        submitOnce()
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -190,14 +209,10 @@ fun AniobGrillMeSheet(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
-                    onClick = {
-                        val finalAnswers = userAnswers.toMutableMap()
-                        if (generalNotes.isNotBlank()) finalAnswers["notes"] = generalNotes
-                        val remember = rememberToggles.filter { it.value }.keys
-                        onConfirm(finalAnswers, remember)
-                    },
+                    onClick = { submitOnce() },
+                    enabled = !submitted && grillResult.questions.all { !userAnswers[it.id].isNullOrBlank() },
                     modifier = Modifier.testTag("grill_me_confirm")
-                ) { Text("Continue") }
+                ) { Text(if (canAutoContinue && countdown > 0) "Continue (${countdown}s)" else "Continue") }
             }
 
             Spacer(modifier = Modifier.height(24.dp))

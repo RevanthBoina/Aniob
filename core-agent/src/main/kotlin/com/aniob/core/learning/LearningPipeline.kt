@@ -28,6 +28,9 @@ interface LearningPipeline {
     /** A task that ended in verified success. Persists fastpath + may promote a skill draft. */
     fun onTaskSuccess(ctx: TaskContext, trajectory: List<AniobAction>)
 
+    /** User attestation is a separate provenance channel, never a verified-step callback. */
+    fun onUserAttestedTask(ctx: TaskContext, trajectory: List<AniobAction>) {}
+
     /** Clears task working memory / rehearsal on any terminal outcome. */
     fun onTaskEnd(taskId: String) {}
 

@@ -40,7 +40,7 @@ class AniobGrillMeEngine(
         val trimmed = taskPrompt.trim()
 
         // Deterministic check for simple self-contained intent commands
-        if (isSelfContainedIntent(trimmed)) {
+        if (isSelfContainedIntent(trimmed) || isCompleteInstruction(trimmed)) {
             return AniobGrillMeResult(needsClarification = false)
         }
 
@@ -58,7 +58,9 @@ class AniobGrillMeEngine(
                     .filter { q ->
                         !rememberedAnswers.containsKey(q.id) && !rememberedAnswers.containsKey("grill.${q.id}")
                     }
+                    .filter { it.defaultOption.isNullOrBlank() }
                     .map(::sanitizeQuestionOptions)
+                    .take(1)
                 if (filtered.isEmpty()) AniobGrillMeResult(needsClarification = false)
                 else res.copy(questions = filtered)
             } catch (e: CancellationException) {
@@ -70,6 +72,21 @@ class AniobGrillMeEngine(
 
         // Dynamic fallback generator
         return generateFallbackQuestions(trimmed, rememberedAnswers)
+    }
+
+    internal fun isCompleteInstruction(prompt: String): Boolean {
+        val tokens = AniobTextFold.tokens(prompt).toSet()
+        val quoted = Regex("""(["'])(.{1,280}?)\1""").find(prompt)
+        if (tokens.any { it in setOf("send", "message", "text", "sms", "whatsapp", "telegram") } && quoted != null) {
+            val after = prompt.substring(quoted.range.last + 1)
+            val before = prompt.substring(0, quoted.range.first)
+            if (Regex("""(?i)\bto\s+([\p{L}][\p{L}\p{N}_.@'-]*(?:\s+[\p{L}][\p{L}\p{N}_.@'-]*){0,3})\s*$""").containsMatchIn(after) ||
+                Regex("""(?i)\b(?:send|text|message)\s+([\p{L}][\p{L}\p{N}_.@'-]*(?:\s+[\p{L}][\p{L}\p{N}_.@'-]*){0,3})\s+(?:saying|that)\s*$""").containsMatchIn(before)) return true
+        }
+        if (tokens.any { it in setOf("alarm", "timer") } &&
+            Regex("""(?i)\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b|\bin\s+\d+\s*(?:seconds?|minutes?|hours?)\b""").containsMatchIn(prompt)) return true
+        return tokens.any { it in setOf("call", "dial", "ring", "phone") } &&
+            Regex("""(?i)\b(?:call|dial|ring|phone)\s+([\p{L}\p{N}][\p{L}\p{N}_.@' +()-]{0,60})\s*$""").containsMatchIn(prompt)
     }
 
     private val SELF_CONTAINED = setOf(
@@ -97,6 +114,7 @@ class AniobGrillMeEngine(
         val isRide = !isQuestion && words.any { it in setOf("cab", "ride", "taxi", "uber", "lyft") }
         val isMessage = !isQuestion && words.any { it in setOf("message", "text", "send", "sms", "whatsapp") }
         val isAlarm = !isQuestion && words.any { it in setOf("alarm", "timer") }
+        if (isCompleteInstruction(taskPrompt)) return AniobGrillMeResult(false)
         val questions = mutableListOf<GrillQuestion>()
 
         // Plan-7.7: Calibrated Asking ladder (extract -> vault -> device -> default -> ask)
@@ -304,8 +322,9 @@ class AniobGrillMeEngine(
             }
         }
 
-        return if (questions.isNotEmpty()) {
-            AniobGrillMeResult(needsClarification = true, questions = questions)
+        val unresolved = questions.filter { it.defaultOption.isNullOrBlank() }.take(1)
+        return if (unresolved.isNotEmpty()) {
+            AniobGrillMeResult(needsClarification = true, questions = unresolved)
         } else {
             AniobGrillMeResult(needsClarification = false)
         }

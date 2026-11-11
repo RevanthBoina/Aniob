@@ -21,17 +21,18 @@ class AniobGrillMeEngineTest {
     fun testCabBookingTriggersClarification() = runBlocking {
         val result = engine.evaluateTask("Book a cab")
         assertTrue(result.needsClarification)
-        assertTrue("Expected at least 2 questions", result.questions.size >= 2)
+        assertTrue("Only one unresolved question", result.questions.size == 1)
         val destinationQuestion = result.questions.first { it.id == "destination" }
         assertTrue("Expected destination question", destinationQuestion.question.contains("destination", ignoreCase = true))
         assertTrue("Destination remains a free-text field", destinationQuestion.allowFreeText)
         assertTrue("Do not fabricate candidate destinations", destinationQuestion.options.isEmpty())
 
-        val rideTierQuestion = result.questions.first { it.id == "ride_type" }
-        assertTrue("Expected known ride-tier choices", rideTierQuestion.options.isNotEmpty())
+    }
 
-        val providerQuestion = result.questions.first { it.id == "provider_app" }
-        assertTrue("Only installed ride apps may be offered", providerQuestion.options.isEmpty())
-        assertTrue(providerQuestion.allowFreeText)
+    @Test fun completeInstructionsAskNothing() = runBlocking {
+        for (prompt in listOf("Send 'I am here' to John", "Message John saying 'I am here'",
+            "Set an alarm at 7 am", "Set timer in 5 minutes", "Call John")) {
+            assertFalse(prompt, engine.evaluateTask(prompt).needsClarification)
+        }
     }
 }
