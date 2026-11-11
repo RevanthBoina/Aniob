@@ -39,7 +39,11 @@ enum class AblationMode(
     val actionBursts: Boolean,
     val fastDeltaVerify: Boolean,
     val rememberReplay: Boolean,
-    val skillsEnabled: Boolean
+    val skillsEnabled: Boolean,
+    val fastIdleWait: Boolean,
+    val skipFastStepVerification: Boolean,
+    val optimizedFinish: Boolean,
+    val immediateCompletion: Boolean
 ) {
     BASELINE(
         id = "BASELINE",
@@ -50,7 +54,11 @@ enum class AblationMode(
         actionBursts = false,
         fastDeltaVerify = false,
         rememberReplay = false,
-        skillsEnabled = false
+        skillsEnabled = false,
+        fastIdleWait = false,
+        skipFastStepVerification = false,
+        optimizedFinish = false,
+        immediateCompletion = false
     ),
     INTENT_SHORTCUT_ONLY(
         id = "INTENT_SHORTCUT_ONLY",
@@ -61,7 +69,11 @@ enum class AblationMode(
         actionBursts = false,
         fastDeltaVerify = false,
         rememberReplay = false,
-        skillsEnabled = false
+        skillsEnabled = true,
+        fastIdleWait = false,
+        skipFastStepVerification = false,
+        optimizedFinish = false,
+        immediateCompletion = false
     ),
     BURST_AND_FAST_OBSERVE(
         id = "BURST_AND_FAST_OBSERVE",
@@ -72,7 +84,11 @@ enum class AblationMode(
         actionBursts = true,
         fastDeltaVerify = true,
         rememberReplay = false,
-        skillsEnabled = false
+        skillsEnabled = true,
+        fastIdleWait = true,
+        skipFastStepVerification = true,
+        optimizedFinish = true,
+        immediateCompletion = true
     ),
     FULL_HUMAN_SPEED(
         id = "FULL_HUMAN_SPEED",
@@ -83,7 +99,53 @@ enum class AblationMode(
         actionBursts = true,
         fastDeltaVerify = true,
         rememberReplay = true,
-        skillsEnabled = true
+        skillsEnabled = true,
+        fastIdleWait = true,
+        skipFastStepVerification = true,
+        optimizedFinish = true,
+        immediateCompletion = true
+    ),
+    INTENT_SHORTCUTS(
+        id = "INTENT_SHORTCUTS", label = "Intent shortcuts", description = "Intent shortcuts", paperLabel = "Intent shortcuts",
+        intentShortcuts = true, actionBursts = false, fastDeltaVerify = false, rememberReplay = false,
+        skillsEnabled = false, fastIdleWait = false, skipFastStepVerification = false,
+        optimizedFinish = false, immediateCompletion = false
+    ),
+    LEARNED_SKILLS(
+        id = "LEARNED_SKILLS", label = "Learned skills", description = "Learned skills", paperLabel = "Learned skills",
+        intentShortcuts = false, actionBursts = false, fastDeltaVerify = false, rememberReplay = false,
+        skillsEnabled = true, fastIdleWait = false, skipFastStepVerification = false,
+        optimizedFinish = false, immediateCompletion = false
+    ),
+    REMEMBER(
+        id = "REMEMBER", label = "FastPath/remember replay", description = "FastPath/remember replay", paperLabel = "FastPath/remember replay",
+        intentShortcuts = false, actionBursts = false, fastDeltaVerify = false, rememberReplay = true,
+        skillsEnabled = false, fastIdleWait = false, skipFastStepVerification = false,
+        optimizedFinish = false, immediateCompletion = false
+    ),
+    ACTION_BURST(
+        id = "ACTION_BURST", label = "Action burst", description = "Action burst", paperLabel = "Action burst",
+        intentShortcuts = false, actionBursts = true, fastDeltaVerify = false, rememberReplay = false,
+        skillsEnabled = false, fastIdleWait = false, skipFastStepVerification = false,
+        optimizedFinish = true, immediateCompletion = true
+    ),
+    FAST_OBSERVE(
+        id = "FAST_OBSERVE", label = "Fast observation", description = "Fast observation", paperLabel = "Fast observation",
+        intentShortcuts = false, actionBursts = false, fastDeltaVerify = true, rememberReplay = false,
+        skillsEnabled = false, fastIdleWait = true, skipFastStepVerification = false,
+        optimizedFinish = true, immediateCompletion = true
+    ),
+    FULL_SPEED(
+        id = "FULL_SPEED", label = "Full speed", description = "Full speed", paperLabel = "Full speed",
+        intentShortcuts = true, actionBursts = true, fastDeltaVerify = true, rememberReplay = true,
+        skillsEnabled = true, fastIdleWait = true, skipFastStepVerification = false,
+        optimizedFinish = true, immediateCompletion = true
+    ),
+    COMBINATION(
+        id = "COMBINATION", label = "Custom combination", description = "Custom combination", paperLabel = "Custom combination",
+        intentShortcuts = false, actionBursts = false, fastDeltaVerify = false, rememberReplay = false,
+        skillsEnabled = false, fastIdleWait = false, skipFastStepVerification = false,
+        optimizedFinish = false, immediateCompletion = false
     );
 
     /**
@@ -91,7 +153,7 @@ enum class AblationMode(
      * fold child labels into their interactive parent, assign sequential ids, hash the structure
      * and gate the bitmap capture. Both burst conditions enable it; the other two stay raw.
      */
-    val fastObservation: Boolean get() = actionBursts
+    val fastObservation: Boolean get() = this == FAST_OBSERVE || this == FULL_SPEED || this == BURST_AND_FAST_OBSERVE || this == FULL_HUMAN_SPEED
 
     companion object {
         val DEFAULT: AblationMode = FULL_HUMAN_SPEED

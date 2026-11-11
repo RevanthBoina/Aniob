@@ -89,7 +89,7 @@ class SealedOutcome private constructor(
      * as "confirmed by you", never counted as machine-verified). NO on anything that claimed success demotes it to FAILED.
      */
     fun withUserDecision(decision: UserDecision, atMs: Long = 0L): SealedOutcome = when {
-        decision == UserDecision.YES && (outcome == RunOutcome.UNVERIFIED || outcome == RunOutcome.DELEGATED) ->
+        decision == UserDecision.YES && (outcome == RunOutcome.UNVERIFIED || outcome == RunOutcome.DELEGATED || outcome == RunOutcome.FAILED) ->
             SealedOutcome(
                 RunOutcome.VERIFIED, reason,
                 evidence + EvidenceRef(EvidenceRef.Origin.USER_ATTESTATION, "user", "thumbs-up at $atMs"),

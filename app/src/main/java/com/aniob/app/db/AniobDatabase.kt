@@ -14,12 +14,14 @@ import androidx.room.RoomDatabase
         ActiveTaskEntity::class,
         WorkflowEntity::class,
         AuditLogEntity::class,
+        FeatureCombinationEntity::class,
         TaskOutcomeEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class AniobDatabase : RoomDatabase() {
+    abstract fun featureCombinationDao(): FeatureCombinationDao
     abstract fun sessionScoreDao(): SessionScoreDao
     abstract fun appKnowledgeBaseDao(): AppKnowledgeBaseDao
     abstract fun tipDao(): TipDao
@@ -59,6 +61,12 @@ abstract class AniobDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS feature_combination_runs (runId TEXT NOT NULL PRIMARY KEY, featureMask INTEGER NOT NULL, configurationKey TEXT NOT NULL, timestampMs INTEGER NOT NULL, runCsv TEXT NOT NULL)")
+            }
+        }
+
         fun getDatabase(context: Context): AniobDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -70,7 +78,8 @@ abstract class AniobDatabase : RoomDatabase() {
                     WorkflowDatabaseMigrations.MIGRATION_2_3,
                     WorkflowDatabaseMigrations.MIGRATION_3_4,
                     MIGRATION_4_5,
-                    OutcomeGuard.MIGRATION_5_6
+                    OutcomeGuard.MIGRATION_5_6,
+                    MIGRATION_6_7
                 ).addCallback(OutcomeGuard.callback).build()
                 INSTANCE = instance
                 instance

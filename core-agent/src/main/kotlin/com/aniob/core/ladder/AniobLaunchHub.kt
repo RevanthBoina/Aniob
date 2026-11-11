@@ -20,7 +20,8 @@ data class LaunchPlan(
     val label: String,
     val launchActivity: String? = null,
     /** [SOURCE_REGISTRY] when a live, launchable app answered; [SOURCE_SEED] for the stock fallback. */
-    val source: String = SOURCE_REGISTRY
+    val source: String = SOURCE_REGISTRY,
+    val narration: String? = null
 ) {
     companion object {
         const val SOURCE_REGISTRY = "registry"
@@ -52,6 +53,39 @@ data class LaunchPlan(
  * Pure Kotlin/JVM: no Android imports, so the policy is unit-testable.
  */
 object AniobLaunchHub {
+    private val rolePackages = mapOf(
+        "maps" to listOf("com.google.android.apps.maps"),
+        "camera" to listOf("com.google.android.GoogleCamera", "com.android.camera2", "com.android.camera"),
+        "clock" to listOf("com.google.android.deskclock", "com.android.deskclock"),
+        "browser" to listOf("com.android.chrome"), "settings" to listOf("com.android.settings")
+    )
+    private var lastChosen: RegisteredApp? = null
+    private var lastAlternative: RegisteredApp? = null
+
+    internal fun breakTie(candidates: List<RegisteredApp>, query: String,
+        isLaunchable: (String) -> Boolean, registry: AniobAppRegistry): RegisteredApp? {
+        val launchable = candidates.distinctBy { it.packageName }.filter { isLaunchable(it.packageName) }
+        val role = rolePackages.keys.firstOrNull { query.lowercase(java.util.Locale.ROOT).contains(it) }
+        val preferred = listOfNotNull(role?.let(registry::role)) + rolePackages[role].orEmpty()
+        preferred.forEach { pkg -> launchable.firstOrNull { it.packageName == pkg }?.let { return it } }
+        val system = launchable.filter { it.isSystemApp || it.packageName.startsWith("com.google.android.") || it.packageName.startsWith("com.android.") }
+        return system.ifEmpty { launchable }.minWithOrNull(compareBy<RegisteredApp> { it.label.lowercase(java.util.Locale.ROOT) }.thenBy { it.packageName })
+    }
+
+    fun isSwitchToOther(prompt: String): Boolean = prompt.trim().lowercase(java.util.Locale.ROOT) in setOf(
+        "use the other one", "switch to the other one", "open the other one", "use the other app")
+
+    private fun ambiguousPlan(candidates: List<RegisteredApp>, query: String,
+        isLaunchable: (String) -> Boolean, registry: AniobAppRegistry, source: String): LaunchPlan? {
+        val chosen = breakTie(candidates, query, isLaunchable, registry) ?: return null
+        lastChosen = chosen
+        lastAlternative = candidates.sortedBy { it.packageName }.firstOrNull {
+            it.packageName != chosen.packageName && isLaunchable(it.packageName)
+        }
+        return LaunchPlan(chosen.packageName, chosen.label, chosen.launchActivity, source,
+            "Opening ${chosen.label}. Say 'use the other one' to switch.")
+    }
+
 
     /** `open|launch|start|run|go to|switch to|fire up <name>` with optional politeness/articles. */
     private val LAUNCH_VERB = Regex(
@@ -88,6 +122,13 @@ object AniobLaunchHub {
         isLaunchable: (String) -> Boolean = { true }
     ): LaunchPlan? {
         val trimmed = prompt.trim()
+        if (isSwitchToOther(trimmed)) {
+            val alternative = lastAlternative?.takeIf { isLaunchable(it.packageName) } ?: return null
+            lastAlternative = lastChosen
+            lastChosen = alternative
+            return LaunchPlan(alternative.packageName, alternative.label, alternative.launchActivity,
+                narration = "Opening ${alternative.label}.")
+        }
         if (trimmed.isEmpty()) return null
         val remainder = LAUNCH_VERB.find(trimmed)?.groupValues?.get(1)?.trim() ?: return null
         if (remainder.isBlank()) return null
@@ -105,7 +146,7 @@ object AniobLaunchHub {
             }
             // An ambiguity in the live registry is answered with null: falling through to a seed
             // would turn "which Settings?" into a coin flip.
-            is AppLookup.Ambiguous -> return null
+            is AppLookup.Ambiguous -> return ambiguousPlan(direct.candidates, clause, isLaunchable, registry, LaunchPlan.SOURCE_REGISTRY)
             is AppLookup.Miss -> Unit
         }
 
@@ -114,7 +155,7 @@ object AniobLaunchHub {
         //    question, and a live entry the platform rejects is a "no", never a seed lookup.
         when (val live = pickAtStart(remainder, registry.all(), LaunchPlan.SOURCE_REGISTRY, isLaunchable)) {
             is Pick.Hit -> return live.plan
-            Pick.Tied -> return null
+            is Pick.Tied -> return ambiguousPlan(live.candidates, clause, isLaunchable, registry, LaunchPlan.SOURCE_REGISTRY)
             Pick.None -> Unit
         }
 
@@ -127,7 +168,7 @@ object AniobLaunchHub {
         }
         when (val seedPick = pickAtStart(remainder, AniobAppRegistry.seedApps(), LaunchPlan.SOURCE_SEED, isLaunchable)) {
             is Pick.Hit -> return seedPick.plan
-            Pick.Tied, Pick.None -> Unit
+            is Pick.Tied, Pick.None -> Unit
         }
         return null
     }
@@ -193,7 +234,7 @@ object AniobLaunchHub {
     /** Result of matching names at the start of the remainder: hit, equal-length tie, or nothing. */
     private sealed class Pick {
         data class Hit(val plan: LaunchPlan) : Pick()
-        data object Tied : Pick()
+        data class Tied(val candidates: List<RegisteredApp>) : Pick()
         data object None : Pick()
     }
 
@@ -206,7 +247,7 @@ object AniobLaunchHub {
         val lower = remainder.lowercase()
         var best: RegisteredApp? = null
         var bestLength = 0
-        var tied = false
+        val tied = linkedMapOf<String, RegisteredApp>()
 
         for (entry in entries) {
             if (entry.packageName.isBlank() || entry.label.isBlank()) continue
@@ -218,15 +259,16 @@ object AniobLaunchHub {
                     candidate.length > bestLength -> {
                         best = entry
                         bestLength = candidate.length
-                        tied = false
+                        tied.clear()
+                        tied[entry.packageName] = entry
                     }
-                    candidate.length == bestLength && best?.packageName != entry.packageName -> tied = true
+                    candidate.length == bestLength -> tied[entry.packageName] = entry
                 }
             }
         }
 
         val winner = best ?: return Pick.None
-        if (tied) return Pick.Tied
+        if (tied.size > 1) return Pick.Tied(tied.values.toList())
         if (!isLaunchable(winner.packageName)) return Pick.None
         return Pick.Hit(LaunchPlan(winner.packageName, winner.label, winner.launchActivity, source))
     }
@@ -282,6 +324,8 @@ object AniobLaunchHub {
     fun clearMemory() {
         launched.clear()
         taskSignature = null
+        lastChosen = null
+        lastAlternative = null
     }
 
     // ------------------------------------------------------------------ #

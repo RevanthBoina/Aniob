@@ -32,7 +32,7 @@ object AniobResponsesRequest {
             "stream" to true,
             "store" to false
         )
-        if (!reasoningEffort.isNullOrBlank()) {
+        if (!model.startsWith("gpt-3", true) && !model.startsWith("gpt-4", true) && !reasoningEffort.isNullOrBlank()) {
             body["reasoning"] = linkedMapOf("effort" to reasoningEffort)
         }
         return AniobAuthJson.toJson(body)

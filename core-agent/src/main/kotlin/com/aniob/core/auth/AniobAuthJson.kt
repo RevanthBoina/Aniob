@@ -7,7 +7,7 @@ import com.squareup.moshi.Types
 import java.io.IOException
 
 /** Tiny Moshi wrapper so core-agent parses JSON without `org.json` (an Android class). */
-internal object AniobAuthJson {
+object AniobAuthJson {
     private val moshi = Moshi.Builder().build()
     private val mapAdapter: JsonAdapter<Map<String, Any?>> = moshi.adapter(
         Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java)

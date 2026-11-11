@@ -101,7 +101,7 @@ class AniobAccountViewModel(application: Application) : AndroidViewModel(applica
                 container.newClient()
                     .getNextActionRaw("You are a connection test. Reply briefly.", "Reply with the single word: ok")
                     .fold(
-                        onSuccess = { if (it.trim().equals("ok", ignoreCase = true)) AniobAccountTestResult.OK else AniobAccountTestResult.REJECTED },
+                        onSuccess = { if (it.isNotBlank()) AniobAccountTestResult.OK else AniobAccountTestResult.REJECTED },
                         onFailure = { map(it) }
                     )
             } catch (e: CancellationException) {

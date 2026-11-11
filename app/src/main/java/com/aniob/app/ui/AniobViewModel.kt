@@ -18,6 +18,8 @@ import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.research.FeatureSelection
+import com.aniob.app.research.ExecutionFeature
 import com.aniob.app.research.AblationMode
 import com.aniob.app.research.ResearchRun
 import com.aniob.app.research.ResearchSummaryRow
@@ -66,6 +68,7 @@ import com.aniob.core.feasibility.Privilege
 import com.aniob.core.narration.AgentPhase
 import com.aniob.core.narration.PhaseSnapshot
 import com.aniob.core.narration.ThinkSource
+import com.aniob.core.outcome.RunOutcome
 import com.aniob.core.outcome.SealedOutcome
 import com.aniob.core.outcome.UserDecision
 import com.aniob.core.understander.AniobPromptUnderstanding
@@ -182,6 +185,7 @@ data class AniobUiState(
     /** Result of the last Cloud AI save / connection test, rendered as a banner in Settings. */
     val cloudTest: CloudTestUiState = CloudTestUiState(),
     /** Research: ablation condition that the next task will run under. */
+    val featureSelection: FeatureSelection = FeatureSelection.FULL_SPEED,
     val ablationMode: AblationMode = AblationMode.DEFAULT,
     /** Research: study pass (warm-up vs measured). */
     val studyPass: StudyPass = StudyPass.MEASURED,
@@ -284,6 +288,7 @@ class AniobViewModel(
 
     val uiState: StateFlow<AniobUiState> = _uiState.asStateFlow()
 
+    private var skillHydrationJob: kotlinx.coroutines.Job? = null
     private val semanticSkillMatcher = AniobSemanticSkillMatcher()
     private val grillMeEngine by lazy { AniobGrillMeEngine(llmClient = buildGrillLlmClient()) }
     private val planningAgent = AniobPlanningAgent()
@@ -516,12 +521,9 @@ class AniobViewModel(
         )
         val savedBaseUrl = secretStore.getOmniRouteBaseUrl()
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
-        // Only developer builds may select experimental conditions. Release always starts in the
-        // full-capability condition, even if this app data was previously used by a debug build.
+        // Execution features are user capabilities; only the research pass controls are developer-only.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
-        val researchMode = if (researchControlsEnabled) app.researchTelemetry.mode else AblationMode.DEFAULT.also {
-            app.researchTelemetry.mode = it
-        }
+        val researchMode = app.researchTelemetry.featureSelection.mode
         val researchPass = if (researchControlsEnabled) app.researchTelemetry.studyPass else StudyPass.MEASURED.also {
             app.researchTelemetry.studyPass = it
         }
@@ -545,7 +547,7 @@ class AniobViewModel(
         // Step 0: the app named at the start of the task ("open Clock and set an alarm").
         executionRouter.appLaunchResolver = { goal ->
             AniobLaunchHub.plan(goal, AniobAppRegistry.getInstance(), isLaunchable)?.let { plan ->
-                AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity)
+                AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity, plan.narration)
             }
         }
         // Mid-task: an app named later in the task ("… then open Instagram"), skipping the apps this
@@ -561,7 +563,7 @@ class AniobViewModel(
                 }.getOrNull(),
                 exclude = AniobLaunchHub.launchedPackages()
             )?.let { plan ->
-                AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity)
+                AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity, plan.narration)
             }
         }
         rememberCacheLoadJob = viewModelScope.launch(Dispatchers.IO) {
@@ -582,9 +584,10 @@ class AniobViewModel(
                 safetyLevel = SafetyLevel.entries.getOrElse(
                     prefs.getInt("safety_level", SafetyLevel.STANDARD.ordinal)
                 ) { SafetyLevel.STANDARD },
-                fastPathEnabled = prefs.getBoolean("fastpath_enabled", true),
+                fastPathEnabled = app.researchTelemetry.featureSelection.rememberReplay,
                 disabledSkills = disabledSkills.toSet(),
                 ablationMode = researchMode,
+                featureSelection = app.researchTelemetry.featureSelection,
                 studyPass = researchPass,
                 researchLastRun = lastResearchRun,
                 researchStatusLine = lastResearchRun?.let { app.researchTelemetry.hudLine(it) },
@@ -594,7 +597,7 @@ class AniobViewModel(
 
         // Research conditions never change release capabilities; the persisted ask posture is
         // applied exactly as chosen, including OFF, before the first task can start.
-        applyAblationMode(_uiState.value.ablationMode)
+        applyFeatureSelection(_uiState.value.featureSelection)
         applyAskLevel(_uiState.value.safetyLevel)
 
         _isReadyToRender.value = true
@@ -624,10 +627,13 @@ class AniobViewModel(
                 .onFailure { app.eventLogger.warn("AniobViewModel", "FastPath hydration failed: ${it.message}") }
         }
 
-        // Hydrate learned skills consolidated into the runtime skill_library/skills directory
-        viewModelScope.launch(Dispatchers.IO) {
+        // Hydrate packaged and learned skills once; skills-only tasks await this same job.
+        skillHydrationJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
+                app.assets.list("aniob_skill_library/skills").orEmpty().filter { it.endsWith(".yaml") || it.endsWith(".yml") || it.endsWith(".json") }.forEach { name ->
+                    app.assets.open("aniob_skill_library/skills/$name").use { semanticSkillMatcher.loadAndIndexStream(it) }
+                }
                 semanticSkillMatcher.loadAndIndexDirectory(skillsDir)
             }
         }
@@ -1074,10 +1080,10 @@ class AniobViewModel(
     fun setFastPathEnabled(enabled: Boolean) {
         app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("fastpath_enabled", enabled).apply()
-        _uiState.update { it.copy(fastPathEnabled = enabled) }
+        setFeatureSelection(_uiState.value.featureSelection.with(ExecutionFeature.REMEMBER, enabled))
         // Re-derive the effective replay flag: a mode without remember-replay keeps it off even
         // when the user switch is on.
-        applyAblationMode(_uiState.value.ablationMode)
+        if (!_uiState.value.isRunning) applyFeatureSelection(_uiState.value.featureSelection)
     }
 
     // =========================================================================================
@@ -1090,10 +1096,18 @@ class AniobViewModel(
      * Persisted in the telemetry manager's prefs (not `aniob_prefs`) so the CSV and the mode that
      * produced it cannot drift apart. The change is applied to the real switches immediately.
      */
+    fun setFeatureSelection(selection: FeatureSelection) {
+        app.researchTelemetry.featureSelection = selection
+        _uiState.update { it.copy(featureSelection = selection, ablationMode = selection.mode,
+            fastPathEnabled = selection.rememberReplay, researchStatusLine = null) }
+        if (!_uiState.value.isRunning) applyFeatureSelection(selection)
+    }
+
     fun setAblationMode(mode: AblationMode) {
         if (!com.aniob.app.AniobBuild.isDeveloperBuild(app)) return
         app.researchTelemetry.mode = mode
-        applyAblationMode(mode)
+        setFeatureSelection(FeatureSelection.fromLegacy(mode))
+        if (!_uiState.value.isRunning) applyAblationMode(mode)
         _uiState.update { it.copy(ablationMode = mode, researchStatusLine = null) }
         // The summary lives on disk; refresh it off the main thread.
         viewModelScope.launch(Dispatchers.IO) {
@@ -1146,19 +1160,16 @@ class AniobViewModel(
      * Applies a mode to the mechanisms that exist today. Called on init, on every mode change and
      * at the start of each task, so a stale switch can never survive into a measured run.
      */
-    internal fun applyAblationMode(mode: AblationMode) {
-        val effective = if (com.aniob.app.AniobBuild.isDeveloperBuild(app)) mode else AblationMode.DEFAULT
+    internal fun applyAblationMode(mode: AblationMode) = applyFeatureSelection(FeatureSelection.fromLegacy(mode))
+
+    internal fun applyFeatureSelection(effective: FeatureSelection) {
         executionRouter.intentShortcutsEnabled = effective.intentShortcuts
         executionRouter.skillsEnabled = effective.skillsEnabled
-        executionRouter.fastPathEnabled = effective.rememberReplay && _uiState.value.fastPathEnabled
-        observationPolicy.setBurstLimit(
-            if (effective.actionBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
-        )
-        // The release default is the full-capability condition; developer builds may select a
-        // measured condition for the next task.
+        executionRouter.fastPathEnabled = effective.rememberReplay
+        executionRouter.rememberReplayEnabled = effective.rememberReplay
+        observationPolicy.setBurstLimit(if (effective.actionBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP)
         AniobAccessibilityService.setFastObservation(effective.fastObservation)
         AniobAccessibilityService.setResearchFastDeltaVerify(effective.fastDeltaVerify)
-        executionRouter.rememberReplayEnabled = effective.rememberReplay && _uiState.value.fastPathEnabled
     }
 
     /**
@@ -1200,12 +1211,12 @@ class AniobViewModel(
      * mid-task cannot seed a cache the run never read.
      */
     private fun persistRememberTransitions(
-        mode: AblationMode,
+        mode: FeatureSelection,
         goal: String,
         transitions: List<RememberTransition>
     ) {
         if (transitions.isEmpty()) return
-        if (!mode.rememberReplay || !_uiState.value.fastPathEnabled) return
+        if (!mode.rememberReplay) return
 
         // Drop undone transitions (e.g. BACK key) to keep minimal path (F-1)
         val pruned = mutableListOf<RememberTransition>()
@@ -1231,7 +1242,7 @@ class AniobViewModel(
             val ok = rememberCache.record(
                 goal = goal,
                 packageName = transition.screen.packageName,
-                preActionScreenHash = FastVerify.screenIdentity(transition.screen),
+                preActionScreenHash = RememberCache.navigationScreenKey(goal, transition.screen),
                 actions = listOf(descriptor),
                 expectedNextHash = nextHash
             )
@@ -1502,12 +1513,62 @@ class AniobViewModel(
         }
     }
 
+    private data class CompletedLearningSnapshot(
+        val taskId: String,
+        val prompt: String,
+        val criteria: SuccessCriteria?,
+        val screen: AniobScreenState?,
+        val actions: List<AniobAction>,
+        val transitions: List<RememberTransition>,
+        val mode: FeatureSelection,
+        val episode: List<AniobHippocampusTracker.HippocampusStep>
+    )
+    private var lastCompletedLearningSnapshot: CompletedLearningSnapshot? = null
+
+    private fun tryApplyNaturalLanguageCorrection(text: String): Boolean {
+        if (_uiState.value.isRunning || !com.aniob.core.outcome.AniobOutcomeCorrection.matches(text)) return false
+        val outcome = _uiState.value.lastSealedOutcome ?: return false
+        if (outcome.userDecision != null || outcome.outcome !in setOf(RunOutcome.FAILED, RunOutcome.UNVERIFIED)) return false
+        _uiState.update { it.copy(chatMessages = it.chatMessages + ChatMessage(
+            id = "msg_user_${java.util.UUID.randomUUID()}", role = "user", content = text)) }
+        onOutcomeDecision(UserDecision.YES)
+        return true
+    }
+
     /** The user's thumbs on the last result. YES attests an unconfirmed run; NO demotes a claimed success. */
     fun onOutcomeDecision(decision: UserDecision) {
         val taskId = _uiState.value.lastSealedTaskId ?: return
         val current = _uiState.value.lastSealedOutcome ?: return
         if (current.userDecision != null) return
         recordSealedOutcome(taskId, current.withUserDecision(decision, System.currentTimeMillis()))
+        if (decision != UserDecision.YES || current.outcome !in setOf(RunOutcome.FAILED, RunOutcome.UNVERIFIED)) return
+        val snapshot = lastCompletedLearningSnapshot?.takeIf { it.taskId == taskId } ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.supervisorScope {
+                launch { runCatching {
+                    val row = app.researchTelemetry.markUserCorrected(taskId)
+                    if (row != null) {
+                        val summary = app.researchTelemetry.summaryFor(row.mode)
+                        _uiState.update { state -> if (state.lastSealedTaskId == taskId)
+                            state.copy(researchLastRun = row, researchSummary = summary) else state }
+                    }
+                } }
+                launch { runCatching {
+                    learningPipeline.onUserAttestedTask(TaskContext(instruction = snapshot.prompt,
+                        successCriteria = snapshot.criteria ?: SuccessCriteria(), taskId = taskId,
+                        lastScreenState = snapshot.screen), snapshot.actions)
+                } }
+                launch { runCatching { persistRememberTransitions(snapshot.mode, snapshot.prompt, snapshot.transitions) } }
+                launch { runCatching {
+                    if (snapshot.mode.skillsEnabled) {
+                        val name = hippocampusTracker.consolidateEpisode(snapshot.taskId, snapshot.prompt,
+                            snapshot.episode, userAttested = true)
+                        if (name != null) semanticSkillMatcher.loadAndIndexSingleSkill(File(
+                            File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills"), "$name.yaml"))
+                    }
+                } }
+            }
+        }
     }
 
     private fun buildGrillLlmClient(): AniobPromptGrillMeClient? {
@@ -2039,6 +2100,7 @@ class AniobViewModel(
     fun submitTask(prompt: String) {
         val trimmed = prompt.trim()
         if (trimmed.isBlank()) return
+        if (tryApplyNaturalLanguageCorrection(trimmed)) return
 
         // Reject if another task is active to prevent double submission
         if (_uiState.value.isRunning && activeTaskJob?.isActive == true) {
@@ -2089,7 +2151,9 @@ class AniobViewModel(
 
             // Resolve the effective goal and direct device/app capabilities before any chooser,
             // clarification, Doctor advice, or model route.
-            val effectivePrompt = resolveContextualGoal(trimmed)
+            val alternative = if (AniobLaunchHub.isSwitchToOther(trimmed))
+                AniobLaunchHub.plan(trimmed, AniobAppRegistry.getInstance(), ::isLaunchablePackage) else null
+            val effectivePrompt = alternative?.let { "open ${it.packageName}" } ?: resolveContextualGoal(trimmed)
             val effectiveTask = task.copy(clarifiedGoal = effectivePrompt)
             val headsUp = com.aniob.core.safety.AskPolicy.taskStartPreview(
                 effectivePrompt,
@@ -2307,6 +2371,7 @@ class AniobViewModel(
                     return@launch
                 }
                 is Feasibility.DelegateToUser -> {
+                    questionsBeforeStart.merge(task.id, 1, Int::plus)
                     setPhase(AgentPhase.ASKING)
                     _uiState.update {
                         it.copy(
@@ -2324,6 +2389,7 @@ class AniobViewModel(
             // Step 1: Grill-Me Check with remembered vault preferences
             val grillResult = grillMeEngine.evaluateTask(effectivePrompt, sharedKnowledgeStore.getAll())
             if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
+                questionsBeforeStart.merge(task.id, grillResult.questions.size, Int::plus)
                 setPhase(AgentPhase.ASKING)
                 _uiState.update {
                     it.copy(
@@ -2350,7 +2416,8 @@ class AniobViewModel(
             } finally {
                 publishResearchRun(
                     app.researchTelemetry.endTaskIfActive(
-                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
+                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped",
+                        runId = effectiveTask.id
                     )
                 )
             }
@@ -2533,7 +2600,8 @@ class AniobViewModel(
             } finally {
                 publishResearchRun(
                     app.researchTelemetry.endTaskIfActive(
-                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
+                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped",
+                        runId = updatedTask.id
                     )
                 )
             }
@@ -2583,19 +2651,29 @@ class AniobViewModel(
      * Executes the task through the ExecutionRouter ladder:
      * INTENT -> FASTPATH -> SKILL -> LOCAL_SLM -> OMNIROUTE_CLOUD
      */
+    private val questionsBeforeStart = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    @Volatile private var activeRunMode: FeatureSelection = FeatureSelection.FULL_SPEED
+
     private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
         if (taskGeneration != activeGeneration) return
-        // A release run always uses the full-capability condition; ablations are developer-only.
+        // Snapshot all five flags once. Settings edits during this task only affect the next task.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
-        val researchMode = if (researchControlsEnabled) app.researchTelemetry.mode else AblationMode.DEFAULT
+        val researchMode = app.researchTelemetry.featureSelection
         val researchPass = if (researchControlsEnabled) app.researchTelemetry.studyPass else StudyPass.MEASURED
-        applyAblationMode(researchMode)
-        rememberCacheLoadJob?.join()
+        activeRunMode = researchMode
+        executionRouter.beginTask()
+        applyFeatureSelection(researchMode)
+        if (researchMode.skillsEnabled) skillHydrationJob?.join()
+        if (researchMode.rememberReplay) rememberCacheLoadJob?.join()
         app.researchTelemetry.startTask(
             task.clarifiedGoal.ifBlank { task.rawPrompt },
-            researchMode,
-            researchPass
+            researchMode.mode,
+            researchPass,
+            runId = task.id,
+            featureMask = researchMode.mask
         )
+        app.researchTelemetry.recordQuestionsBeforeStart(questionsBeforeStart.remove(task.id) ?: 0)
         persistRunningMarker(task, 0, "Task started")
 
         watchdog.reset()
@@ -2654,7 +2732,7 @@ class AniobViewModel(
         // Learned state (skills, FastPath trajectories) hydrates in parallel with the first
         // capture instead of in front of it. A cold cache must not delay step 0; the first task
         // after install simply plans from the model.
-        val hydration = if (researchMode.skillsEnabled && _uiState.value.fastPathEnabled) {
+        val hydration = if (researchMode.rememberReplay) {
             viewModelScope.async(Dispatchers.Default) {
                 learningPipeline.awaitHydration(HYDRATION_BUDGET_MS)
             }
@@ -2729,11 +2807,19 @@ class AniobViewModel(
             )
         }
 
+        var settleTransition: (suspend (AniobAction) -> AniobScreenState?)? = null
         val stepPipe = StepPipeline(
             limits = agentLimits,
+            fastVerificationSkipEnabled = researchMode.skipFastStepVerification,
+            optimizedFinish = researchMode.optimizedFinish,
+            deferTaskLearning = researchMode.immediateCompletion,
+            beforeDispatch = { AniobWaitForIdle.waitForIdle(fast = researchMode.fastIdleWait) },
             learning = learningPipeline,
             reflectionAgent = reflectionAgent,
             recordStep = { stepRecord ->
+                if (stepRecord.provider == "SKILL") executionRouter.onSkillStepRecorded(stepRecord.verified)
+                if (stepRecord.dispatched) app.researchTelemetry.recordActionCompleted()
+                if (stepRecord.verificationSkippedFast) app.researchTelemetry.recordFastSkippedStep()
                 val node = stepRecord.resolvedNode
                 val obs = if (node != null) {
                     "node ${node.id} (${node.text.take(15)})"
@@ -2768,6 +2854,7 @@ class AniobViewModel(
                     latencyMs = stepRecord.latencyMs,
                     tokensUsed = stepRecord.tokensUsed,
                     verifiedSuccess = stepRecord.verified,
+                    verificationSkippedFast = stepRecord.verificationSkippedFast,
                     failureReason = stepRecord.failureReason,
                     textEvidence = stepRecord.textEvidence,
                     targetBounds = stepRecord.targetBounds
@@ -2776,7 +2863,7 @@ class AniobViewModel(
             },
             // Dispatch already polled for the transition (FastVerify); a second fixed wait here
             // would only re-add the latency this change removes.
-            settle = { _, capture -> capture() },
+            settle = { action, capture -> settleTransition?.invoke(action) ?: capture() },
             // Hardware/package evidence for Finish verification. Unknown probes stay inconclusive.
             deviceState = { criteria -> probeDeviceState(criteria) }
         )
@@ -2856,7 +2943,7 @@ class AniobViewModel(
                     // Step 0 already holds a capture from just before the prompt was typed.
                     screenBefore!!
                 } else if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
-                    screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                    screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     val fresh = accessibility?.captureCurrentScreenState() ?: AniobScreenState(
                         packageName = "com.aniob.app",
                         treeHash = "mock_hash_${currentStep}",
@@ -2890,7 +2977,7 @@ class AniobViewModel(
                         }
                         delay(600)
                         currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     } else if (foregroundBefore != null && foregroundBefore != captured.packageName) {
                         app.eventLogger.info(
                             "AniobViewModel",
@@ -2899,14 +2986,14 @@ class AniobViewModel(
                         executeActionSync(liveService, AniobAction.OpenApp(packageName = foregroundBefore))
                         delay(800)
                         currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     } else {
                         app.eventLogger.info(
                             "AniobViewModel",
                             "Session tree stale (${reuseCheck.reason}) - refreshing capture"
                         )
                         currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     }
                 }
                 appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
@@ -2951,7 +3038,7 @@ class AniobViewModel(
                     executionRouter.rememberReplayEnabled = false
                     ladderResult = planLadder()
                     executionRouter.rememberReplayEnabled =
-                        researchMode.rememberReplay && _uiState.value.fastPathEnabled
+                        researchMode.rememberReplay
                 }
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
                     taskProgress = ladderResult.progress ?: taskProgress
@@ -2985,6 +3072,7 @@ class AniobViewModel(
                             if (dispatched) {
                                 actionsDispatched++
                                 app.researchTelemetry.recordStep()
+                                app.researchTelemetry.recordActionCompleted()
                                 // A silent device command (volume, torch, pause...) changes nothing on
                                 // screen: waiting for a window change would burn the whole settle budget.
                                 val sequenceWaitMs = deviceArgs["then_delay_ms"]?.toLongOrNull() ?: 0L
@@ -3535,7 +3623,7 @@ class AniobViewModel(
                 persistRunningMarker(task, currentStep + 1, proposal.action.describeAction())
 
                 val captureLambda: suspend () -> AniobScreenState = {
-                    screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                    screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     accessibility?.captureCurrentScreenState() ?: currentScreen
                 }
 
@@ -3572,8 +3660,11 @@ class AniobViewModel(
                         expectedTexts = com.aniob.core.verify.FastVerify.expectedTexts(act, resolvedCriteria),
                         timeoutMs = budget,
                         windowEvents = { accessibility.windowEventSequence() },
-                        capturePoll = { accessibility.captureCurrentScreenState() },
-                        screenshot = { captureVerifyScreenshot() }
+                        capturePoll = { accessibility.captureCurrentScreenState().also {
+                            screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
+                        } },
+                        screenshot = { captureVerifyScreenshot() },
+                        finalCaptureAtTimeout = activeRunMode.fastDeltaVerify
                     )
                     fast.screenshotBase64?.let { bitmap ->
                         val id = com.aniob.core.verify.FastVerify
@@ -3583,6 +3674,7 @@ class AniobViewModel(
                     return fast.screen ?: accessibility.captureCurrentScreenState()
                 }
 
+                settleTransition = { action -> awaitTransition(action) }
                 val dispatchLambda: suspend (AniobAction) -> StepPipeline.DispatchOutcome = { act ->
                     when {
                         proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
@@ -3618,9 +3710,9 @@ class AniobViewModel(
                             val plannedMiss = act.semanticTarget() != null &&
                                 com.aniob.core.execution.AniobActionExecutor
                                     .planDispatch(act, dispatchOrigin) is DispatchCommand.NoOp
-                            var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash ?: dispatchOrigin.screenHash.ifBlank { dispatchOrigin.treeHash }) else true
+                            var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash ?: dispatchOrigin.screenHash.ifBlank { dispatchOrigin.treeHash }, waitForIdle = false) else true
                             actionsDispatched++
-                            var screenAfter = awaitTransition(act)
+                            var screenAfter = if (researchMode.skipFastStepVerification) null else awaitTransition(act)
                             if (!ok && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
                                 com.aniob.core.perception.PreObserveScroll
                                     .shouldScroll(dispatchOrigin, preObservedScreens)
@@ -3729,7 +3821,7 @@ class AniobViewModel(
                             capture = {
                                 accessibility?.captureCurrentScreenState()?.also {
                                     screenReads++; screenCaptureCount++
-                                    app.researchTelemetry.recordScreenCapture()
+                                    app.researchTelemetry.recordTreeRead()
                                 }
                             },
                             executeMember = { member, memberCtx, planningScreen, target ->
@@ -3861,7 +3953,7 @@ class AniobViewModel(
                     }
                     delay(BURST_REPLAN_SETTLE_MS)
                     accessibility?.captureCurrentScreenState()?.let { fresh ->
-                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                         screenBefore = fresh
                     }
                     _uiState.update { it.copy(statusMessage = "The screen changed. Planning the next step from what is on screen...") }
@@ -3910,10 +4002,10 @@ class AniobViewModel(
                     )
                 }
                 stepResult = res
-                val targetMissCountForStep = if (planConsumedStep) null else
+                val targetMissCountForStep = if (planConsumedStep || res.verificationSkippedFast) null else
                     recordStepTargetOutcome(task.id, res, currentScreen)
                 app.researchTelemetry.recordStep()
-                if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay) {
+                if (!res.verificationSkippedFast && ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay) {
                     val postScreen = res.nextCtx.lastScreenState ?: currentScreen
                     val isStalled = FastVerify.screenIdentity(postScreen) == FastVerify.screenIdentity(currentScreen)
                     val replayEntry = rememberCache.entryFor(task.clarifiedGoal.ifBlank { task.rawPrompt }, currentScreen)
@@ -3950,9 +4042,9 @@ class AniobViewModel(
                     )
                 }
                 taskContext = res.nextCtx
-                observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
+                if (!res.verificationSkippedFast) observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
 
-                if (primaryProvider == "LOCAL_SLM") {
+                if (!res.verificationSkippedFast && primaryProvider == "LOCAL_SLM") {
                     if (res.verification?.isSuccessful == true) localFailCount = 0 else localFailCount++
                 }
 
@@ -3975,7 +4067,7 @@ class AniobViewModel(
                         val fresh = accessibility?.captureCurrentScreenState()
                         if (fresh != null) {
                             screenReads++; screenCaptureCount++
-                            app.researchTelemetry.recordScreenCapture()
+                            app.researchTelemetry.recordTreeRead()
                             screenBefore = fresh
                         } else {
                             screenBefore = res.nextCtx.lastScreenState ?: currentScreen
@@ -4019,12 +4111,12 @@ class AniobViewModel(
             // of the run, not of the session.
             executionRouter.intentShortcutsEnabled = shortcutsWereEnabled
             AniobAccessibilityService.isTaskActive = false
-            learningPipeline.onTaskEnd(task.id)
+            if (!researchMode.immediateCompletion || !currentCoroutineContext().isActive) learningPipeline.onTaskEnd(task.id)
         }
 
         if (taskGeneration != activeGeneration) {
             // A newer task took ownership; record this one honestly but do not touch the live UI.
-            app.researchTelemetry.endTask(isSuccess = false, failureReason = "superseded")
+            app.researchTelemetry.endTask(com.aniob.app.research.ResearchOutcome.INTERRUPTED, "superseded", runId = task.id)
             return
         }
 
@@ -4042,7 +4134,7 @@ class AniobViewModel(
         // Device evidence is merged into EVERY closing path (intent, pipeline, model Finish).
         // v1 only wired it into the intent branch, leaving the common ladder path unguarded.
         setPhase(AgentPhase.VERIFYING)
-        val finalDeviceState = probeDeviceState(resolvedCriteria)
+        val finalDeviceState = if (resolvedCriteria?.hasDeviceChecks == true) probeDeviceState(resolvedCriteria) else DeviceStateSnapshot.UNKNOWN
         val deviceEvaluations = evalDeviceAssertions(resolvedCriteria, finalDeviceState)
         val criteriaEvaluations = (
             when {
@@ -4104,9 +4196,10 @@ class AniobViewModel(
         }
 
         val totalDuration = System.currentTimeMillis() - startTime
-        val isSuccess = (finalOutcome == Outcome.SUCCESS)
+        val closedOutcome = finalOutcome ?: Outcome.FAILED
+        val isSuccess = (closedOutcome == Outcome.SUCCESS)
         val outcomeCopy = com.aniob.app.outcome.AniobOutcomeCopy.forTask(
-            outcome = finalOutcome ?: Outcome.FAILED,
+            outcome = closedOutcome ?: Outcome.FAILED,
             reason = terminalReason.ifBlank { "Unmet criteria" },
             taskLabel = task.rawPrompt,
             completedChecks = evidenceItems.filter { it.met }.map { it.label },
@@ -4119,162 +4212,193 @@ class AniobViewModel(
         // endTask appends the row, rewrites the summary table and logs RESEARCH_METRICS.
         val researchFailureReason = when {
             isSuccess -> ""
-            finalOutcome == Outcome.STOPPED -> "stopped"
-            finalOutcome == Outcome.INTERRUPTED -> "interrupted"
-            finalOutcome == Outcome.UNVERIFIED -> terminalReason.ifBlank { "unverified" }
+            closedOutcome == Outcome.STOPPED -> "stopped"
+            closedOutcome == Outcome.INTERRUPTED -> "interrupted"
+            closedOutcome == Outcome.UNVERIFIED -> terminalReason.ifBlank { "unverified" }
             else -> terminalReason.ifBlank { "unmet_criteria" }
         }
-        if (isSuccess) {
-            persistRememberTransitions(
-                mode = researchMode,
-                goal = task.clarifiedGoal.ifBlank { task.rawPrompt },
-                transitions = rememberTransitions
-            )
-        }
-        val researchRun = app.researchTelemetry.endTask(isSuccess, researchFailureReason)
-        val researchLine = researchRun?.let { app.researchTelemetry.hudLine(it) }
-        val researchSummaryRow = researchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
+        val episodeSnapshot = hippocampusTracker.getSteps()
+        val actionsSnapshot = verifiedActions.toList()
+        val transitionsSnapshot = rememberTransitions.toList()
+        val stateTraceSnapshot = episodeSnapshot.map { it.screenHash }
+        val stepCountSnapshot = currentStep + 1
+        val routingReasonSnapshot = _uiState.value.lastRoutingReason
+        val skipTaskLearning = stepResult?.nextCtx?.hasFastSkippedSteps == true
+        lastCompletedLearningSnapshot = CompletedLearningSnapshot(task.id,
+            task.clarifiedGoal.ifBlank { task.rawPrompt }, resolvedCriteria, finalScreen,
+            episodeSnapshot.map { it.action }, transitionsSnapshot, researchMode, episodeSnapshot)
+        // Clear only this episode, synchronously. Background consolidation uses the captured list.
+        hippocampusTracker.onFailure()
+        var researchRun: com.aniob.app.research.ResearchRun? = null
+        var researchLine: String? = null
+        var researchSummaryRow: com.aniob.app.research.ResearchSummaryRow? = null
 
-        val consolidatedSkill = if (isSuccess && researchMode.skillsEnabled) {
-            hippocampusTracker.consolidateOnSuccess(
-                taskId = task.id,
-                prompt = task.clarifiedGoal,
-                screenReads = screenReads,
-                actions = actionsDispatched,
-                escalations = escalations,
-                elapsedMs = totalDuration
-            )
-        } else {
-            hippocampusTracker.onFailure()
-            null
-        }
-        if (consolidatedSkill != null) {
-            runCatching {
-                val skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
-                semanticSkillMatcher.loadAndIndexDirectory(skillsDir)
+        suspend fun bookkeeping() = kotlinx.coroutines.supervisorScope {
+            val research = async {
+                runCatching {
+                    if (researchMode.immediateCompletion) app.researchTelemetry.endTask(
+                        com.aniob.app.research.ResearchOutcome.valueOf(closedOutcome.name), researchFailureReason, runId = task.id)
+                    else null
+                }.getOrNull()
             }
-            app.eventLogger.info("AniobHippocampus", "Consolidated learned skill '$consolidatedSkill'")
+            launch { runCatching {
+                if (isSuccess) persistRememberTransitions(researchMode,
+                    task.clarifiedGoal.ifBlank { task.rawPrompt }, transitionsSnapshot)
+            } }
+            launch { runCatching {
+                app.metricsCollector.recordSession(taskId = task.id, prompt = task.rawPrompt, isSuccess = isSuccess,
+                    steps = stepCountSnapshot, durationMs = totalDuration, tokensUsed = totalTokens,
+                    providerUsed = primaryProvider, decisionReason = decisionReason)
+            } }
+            launch { try { runCatching {
+                if (isSuccess && !completedByIntent && !skipTaskLearning &&
+                    (researchMode.immediateCompletion || stepResult?.terminalState != StepResult.TerminalState.SUCCESS)) {
+                    learningPipeline.onTaskSuccess(TaskContext(instruction = task.rawPrompt,
+                        successCriteria = resolvedCriteria, taskId = task.id, lastScreenState = finalScreen), actionsSnapshot)
+                }
+            } } finally { learningPipeline.onTaskEnd(task.id) } }
+            launch { runCatching {
+                if (isSuccess && researchMode.skillsEnabled) {
+                    val name = hippocampusTracker.consolidateEpisode(task.id,
+                        task.clarifiedGoal.ifBlank { task.rawPrompt }, episodeSnapshot, elapsedMs = totalDuration)
+                    if (name != null) {
+                        val dir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
+                        semanticSkillMatcher.loadAndIndexSingleSkill(File(dir, "$name.yaml"))
+                    }
+                }
+            } }
+            launch { runCatching {
+                app.eventLogger.recordSessionCounters(screenReads = screenReads, actions = actionsDispatched,
+                    escalations = escalations, elapsedMs = totalDuration, stateTrace = stateTraceSnapshot,
+                    providerDecisionReason = decisionReason, lastRoutingReason = routingReasonSnapshot)
+            } }
+            researchRun = research.await()
+            researchLine = researchRun?.let { app.researchTelemetry.hudLine(it) }
+            researchSummaryRow = researchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
+            if (_uiState.value.lastSealedTaskId == task.id) _uiState.update {
+                it.copy(researchLastRun = researchRun ?: it.researchLastRun,
+                    researchStatusLine = researchLine ?: it.researchStatusLine,
+                    researchSummary = researchSummaryRow ?: it.researchSummary)
+            }
         }
-        app.eventLogger.recordSessionCounters(
-            screenReads = screenReads,
-            actions = actionsDispatched,
-            escalations = escalations,
-            elapsedMs = totalDuration,
-            stateTrace = hippocampusTracker.currentStateTrace(),
-            providerDecisionReason = decisionReason,
-            lastRoutingReason = _uiState.value.lastRoutingReason
-        )
 
-        val execOutcome = when (finalOutcome) {
+        val execOutcome = when (closedOutcome) {
             Outcome.SUCCESS -> ExecOutcome.SUCCESS
             Outcome.STOPPED -> ExecOutcome.STOPPED
             Outcome.INTERRUPTED -> ExecOutcome.INTERRUPTED
             Outcome.UNVERIFIED -> ExecOutcome.UNVERIFIED
             Outcome.FAILED -> ExecOutcome.FAILED_VERIFICATION
         }
-        ExecReport(
-            outcome = execOutcome,
-            reason = resultSummary,
-            screenReads = screenReads,
-            actions = actionsDispatched,
-            escalations = escalations,
-            elapsedMs = totalDuration,
-            stateTrace = hippocampusTracker.currentStateTrace(),
-            providerUsed = primaryProvider,
-            decisionReason = decisionReason
-        ).toMetricSnapshot(taskId = task.id, stepIndex = currentStep + 1).also { snapshot ->
-            app.eventLogger.info(
-                "AniobMetrics",
-                "SNAPSHOT{task=${snapshot.taskId},provider=${snapshot.provider}," +
-                    "screenReads=${snapshot.screenReads},actions=${snapshot.actions}," +
-                    "escalations=${snapshot.escalations},routing=${snapshot.lastRoutingReason}}"
-            )
-        }
-
-        val summaryCard = buildSummary(
-            prompt = task.rawPrompt,
-            outcome = finalOutcome,
-            steps = currentStep + 1,
-            durationMs = totalDuration,
-            provider = primaryProvider,
-            evidence = evidenceItems,
-            reason = terminalReason.ifBlank { null }
-        )
-        postSummaryCard(summaryCard)
-        // Step 1 invariant: SUCCESS survives only with observer-made evidence; otherwise UNVERIFIED.
-        recordSealedOutcome(
-            task.id,
-            AniobOutcomeBridge.seal(
-                outcome = finalOutcome ?: Outcome.FAILED,
-                reason = terminalReason.ifBlank { resultSummary },
-                evaluations = criteriaEvaluations
-            )
-        )
-        setPhase(AgentPhase.IDLE)
-        clearRunningMarker()
-
-        AniobBackgroundController.onTaskFinished(
-            app,
-            resultSummary,
-            isSuccess = isSuccess,
-            unverified = finalOutcome == Outcome.UNVERIFIED,
-            openChat = finalOutcome == Outcome.FAILED || finalOutcome == Outcome.UNVERIFIED,
-            wasStopped = finalOutcome == Outcome.STOPPED,
-            resultTitle = outcomeCopy.title
-        )
-
-        val chatBadge = when (finalOutcome) {
-            Outcome.SUCCESS -> "Success"
-            Outcome.UNVERIFIED -> "Unverified"
-            Outcome.STOPPED -> "Stopped"
-            Outcome.INTERRUPTED -> "Interrupted"
-            Outcome.FAILED -> "Failed"
-        }
-        val assistantMessage = ChatMessage(
-            id = "msg_asst_${java.util.UUID.randomUUID()}",
-            role = "assistant",
-            content = outcomeCopy.message,
-            badge = chatBadge,
-            stepIndex = currentStep + 1
-        )
-
-        viewModelScope.launch {
-            app.metricsCollector.recordSession(
-                taskId = task.id,
-                prompt = task.rawPrompt,
-                isSuccess = isSuccess,
-                steps = currentStep + 1,
-                durationMs = totalDuration,
-                tokensUsed = totalTokens,
+        fun recordExecSnapshot() {
+            ExecReport(
+                outcome = execOutcome,
+                reason = resultSummary,
+                screenReads = screenReads,
+                actions = actionsDispatched,
+                escalations = escalations,
+                elapsedMs = totalDuration,
+                stateTrace = stateTraceSnapshot,
                 providerUsed = primaryProvider,
                 decisionReason = decisionReason
-            )
-            // A shortcut completion has no step trajectory to learn from; recording an empty one
-            // would teach the pipeline nothing and pollute the store.
-            if (isSuccess && !completedByIntent && stepResult?.terminalState != StepResult.TerminalState.SUCCESS) {
-                val trajectory = verifiedActions.toList()
-                learningPipeline.onTaskSuccess(
-                    TaskContext(
-                        instruction = task.rawPrompt,
-                        successCriteria = resolvedCriteria,
-                        taskId = task.id,
-                        lastScreenState = finalScreen
-                    ),
-                    trajectory
+            ).toMetricSnapshot(taskId = task.id, stepIndex = currentStep + 1).also { snapshot ->
+                app.eventLogger.info(
+                    "AniobMetrics",
+                    "SNAPSHOT{task=${snapshot.taskId},provider=${snapshot.provider}," +
+                        "screenReads=${snapshot.screenReads},actions=${snapshot.actions}," +
+                        "escalations=${snapshot.escalations},routing=${snapshot.lastRoutingReason}}"
                 )
+            }
+
+        }
+
+        fun publishCompletion() {
+            val summaryCard = buildSummary(
+                prompt = task.rawPrompt,
+                outcome = closedOutcome,
+                steps = currentStep + 1,
+                durationMs = totalDuration,
+                provider = primaryProvider,
+                evidence = evidenceItems,
+                reason = terminalReason.ifBlank { null }
+            )
+            postSummaryCard(summaryCard)
+            // Step 1 invariant: SUCCESS survives only with observer-made evidence; otherwise UNVERIFIED.
+            recordSealedOutcome(
+                task.id,
+                AniobOutcomeBridge.seal(
+                    outcome = closedOutcome ?: Outcome.FAILED,
+                    reason = terminalReason.ifBlank { resultSummary },
+                    evaluations = criteriaEvaluations
+                )
+            )
+            setPhase(AgentPhase.IDLE)
+            clearRunningMarker()
+
+            AniobBackgroundController.onTaskFinished(
+                app,
+                resultSummary,
+                isSuccess = isSuccess,
+                unverified = closedOutcome == Outcome.UNVERIFIED,
+                openChat = closedOutcome == Outcome.FAILED || closedOutcome == Outcome.UNVERIFIED,
+                wasStopped = closedOutcome == Outcome.STOPPED,
+                resultTitle = outcomeCopy.title
+            )
+
+            val chatBadge = when (closedOutcome) {
+                Outcome.SUCCESS -> "Success"
+                Outcome.UNVERIFIED -> "Unverified"
+                Outcome.STOPPED -> "Stopped"
+                Outcome.INTERRUPTED -> "Interrupted"
+                Outcome.FAILED -> "Failed"
+            }
+            val assistantMessage = ChatMessage(
+                id = "msg_asst_${java.util.UUID.randomUUID()}",
+                role = "assistant",
+                content = outcomeCopy.message,
+                badge = chatBadge,
+                stepIndex = currentStep + 1
+            )
+
+            if (researchMode.immediateCompletion) app.researchTelemetry.prepareBackgroundClosure(task.id)
+            updateToIdle {
+                it.copy(
+                    statusMessage = resultSummary,
+                    lastProviderUsed = primaryProvider,
+                    chatMessages = it.chatMessages + assistantMessage,
+                    researchStatusLine = researchLine ?: it.researchStatusLine,
+                    researchLastRun = researchRun ?: it.researchLastRun,
+                    researchSummary = researchSummaryRow ?: it.researchSummary
+                )
+            }
+            app.researchTelemetry.recordCompletionMessageShown(task.id)
+        }
+        com.aniob.core.execution.CompletionPublication.complete(
+            immediate = researchMode.immediateCompletion,
+            publish = ::publishCompletion,
+            bookkeeping = {
+                if (researchMode.immediateCompletion) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        kotlinx.coroutines.supervisorScope {
+                            launch { runCatching { recordExecSnapshot() } }
+                            bookkeeping()
+                        }
+                    }
+                } else {
+                    bookkeeping()
+                    recordExecSnapshot()
+                }
+            }
+        )
+        if (!researchMode.immediateCompletion) {
+            val row = app.researchTelemetry.endTask(com.aniob.app.research.ResearchOutcome.valueOf(closedOutcome.name),
+                researchFailureReason, runId = task.id)
+            if (row != null) {
+                val line = app.researchTelemetry.hudLine(row)
+                val summary = app.researchTelemetry.summaryFor(row.mode)
+                _uiState.update { it.copy(researchLastRun = row, researchStatusLine = line, researchSummary = summary) }
             }
         }
 
-        updateToIdle {
-            it.copy(
-                statusMessage = resultSummary,
-                lastProviderUsed = primaryProvider,
-                chatMessages = it.chatMessages + assistantMessage,
-                researchStatusLine = researchLine ?: it.researchStatusLine,
-                researchLastRun = researchRun ?: it.researchLastRun,
-                researchSummary = researchSummaryRow ?: it.researchSummary
-            )
-        }
     }
 
     private fun addStepRecord(step: AniobStepRecord) {
@@ -4300,9 +4424,9 @@ class AniobViewModel(
     ): DeterministicVerifier.VerificationResult =
         DeterministicVerifier.verifyFinish(criteria, finalScreen, steps)
 
-    private suspend fun executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction, expectedTreeHash: String? = null): Boolean {
+    private suspend fun executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction, expectedTreeHash: String? = null, waitForIdle: Boolean = true): Boolean {
         // Block until the UI is quiescent so we never dispatch into a running animation.
-        AniobWaitForIdle.waitForIdle(1000)
+        if (waitForIdle) AniobWaitForIdle.waitForIdle(fast = activeRunMode.fastIdleWait)
         if (accessibility == null) return false
         val deferred = CompletableDeferred<Boolean>()
         accessibility.executeAction(action, expectedTreeHash) { success ->
@@ -4335,8 +4459,9 @@ class AniobViewModel(
             preAction = currentScreen,
             expectedTexts = FastVerify.expectedTexts(action, null),
             windowEvents = { accessibility?.windowEventSequence() },
-            capturePoll = { accessibility?.captureCurrentScreenState() },
-            screenshot = { captureVerifyScreenshot() }
+            capturePoll = { accessibility?.captureCurrentScreenState()?.also { app.researchTelemetry.recordTreeRead() } },
+            screenshot = { captureVerifyScreenshot() },
+                        finalCaptureAtTimeout = activeRunMode.fastDeltaVerify
         )
         val screenAfter = fast.screen ?: accessibility?.captureCurrentScreenState() ?: currentScreen
         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
@@ -4496,8 +4621,9 @@ class AniobViewModel(
             preAction = revealedScreen,
             expectedTexts = FastVerify.expectedTexts(retryAction, null),
             windowEvents = { service.windowEventSequence() },
-            capturePoll = { service.captureCurrentScreenState() },
-            screenshot = { captureVerifyScreenshot() }
+            capturePoll = { service.captureCurrentScreenState().also { app.researchTelemetry.recordTreeRead() } },
+            screenshot = { captureVerifyScreenshot() },
+                        finalCaptureAtTimeout = activeRunMode.fastDeltaVerify
         )
         val screenAfter = retryWait.screen ?: service.captureCurrentScreenState()
         val verification = DeterministicVerifier.verify(retryAction, revealedScreen, screenAfter)

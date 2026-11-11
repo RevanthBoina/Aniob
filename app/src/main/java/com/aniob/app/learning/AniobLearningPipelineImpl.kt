@@ -101,6 +101,23 @@ class AniobLearningPipelineImpl(
         }
     }
 
+    override fun onUserAttestedTask(ctx: TaskContext, trajectory: List<AniobAction>) {
+        if (trajectory.isEmpty()) return
+        // Retain the corrected example without inventing pre-action fingerprints or replacing
+        // an existing machine-verified macro. It remains reviewable user-attested knowledge.
+        kotlinx.coroutines.runBlocking {
+            database.appKnowledgeBaseDao().saveMacro(AppKnowledgeBaseEntity(
+                taskSignature = ctx.instruction.lowercase() + "#user_attested",
+                packageName = ctx.lastScreenState?.packageName.orEmpty(), macroStepsJson = "",
+                successCount = 0, kind = "USER_ATTESTED", reviewState = "USER_ATTESTATION",
+                artifactJson = com.aniob.core.auth.AniobAuthJson.toJson(linkedMapOf(
+                    "provenance" to "USER_ATTESTATION", "taskId" to ctx.taskId,
+                    "actions" to trajectory.map { com.aniob.core.domain.AniobActionSchema.toActionJson(it) }
+                ))
+            ))
+        }
+    }
+
     override fun onTaskEnd(taskId: String) {
         endTask(taskId)
     }

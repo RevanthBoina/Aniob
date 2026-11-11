@@ -21,7 +21,8 @@ data class StepResult(
     /** Node that was resolved on the live tree, when the action targeted an element. */
     val resolvedNode: AniobNode? = null,
     val tokensUsed: Int = 0,
-    val latencyMs: Long = 0L
+    val latencyMs: Long = 0L,
+    val verificationSkippedFast: Boolean = false
 ) {
     enum class TerminalState { CONTINUE, SUCCESS, FAIL }
 

@@ -4,6 +4,7 @@ package com.aniob.core.auth
 data class AniobUsage(val inputTokens: Long?, val outputTokens: Long?)
 
 sealed interface AniobStreamEvent {
+    data class ItemDoneText(val text: String) : AniobStreamEvent
     data class TextDelta(val text: String) : AniobStreamEvent
     data class ToolCallStarted(val itemId: String, val callId: String?, val name: String?) : AniobStreamEvent
     data class ToolCallArgumentsDelta(val itemId: String, val delta: String) : AniobStreamEvent
@@ -106,6 +107,14 @@ class AniobSseParser {
 
             "response.output_item.done" -> {
                 val item = AniobAuthJson.obj(json["item"]) ?: return
+                if (AniobAuthJson.str(item["type"]) == "message") {
+                    val text = (item["content"] as? List<*>).orEmpty()
+                        .mapNotNull(AniobAuthJson::obj)
+                        .filter { AniobAuthJson.str(it["type"]) == "output_text" }
+                        .mapNotNull { AniobAuthJson.str(it["text"]) }
+                        .joinToString("")
+                    if (text.isNotBlank()) out += AniobStreamEvent.ItemDoneText(text)
+                }
                 if (AniobAuthJson.str(item["type"]) == "function_call") {
                     val id = AniobAuthJson.str(item["id"]) ?: AniobAuthJson.str(item["call_id"]) ?: return
                     out += AniobStreamEvent.ToolCallDone(
@@ -146,6 +155,7 @@ class AniobSseParser {
 /** Folds a finished event list into the one string the app's provider interface returns. */
 class AniobStreamAccumulator {
     private val text = StringBuilder()
+    private var completedItemText: String? = null
     var usage: AniobUsage? = null
         private set
     var failure: AniobStreamEvent.Failed? = null
@@ -157,11 +167,12 @@ class AniobStreamAccumulator {
     /** Returns the new text, if the event carried any. */
     fun accept(event: AniobStreamEvent): String? = when (event) {
         is AniobStreamEvent.TextDelta -> { text.append(event.text); event.text }
+        is AniobStreamEvent.ItemDoneText -> { if (completedItemText == null) completedItemText = event.text; null }
         is AniobStreamEvent.Completed -> { completed = true; usage = event.usage; null }
         is AniobStreamEvent.Failed -> { if (failure == null) failure = event; null }
         is AniobStreamEvent.ToolCallDone -> { toolCalls += event; null }
         else -> null
     }
 
-    fun text(): String = text.toString()
+    fun text(): String = if (text.isNotEmpty()) text.toString() else completedItemText.orEmpty()
 }

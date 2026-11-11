@@ -22,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.AniobBuild
 import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.research.FeatureSelection
+import com.aniob.app.research.ExecutionFeature
 import com.aniob.app.research.AblationMode
 import com.aniob.app.research.StudyPass
 import com.aniob.app.ui.AniobUiState
@@ -38,6 +40,7 @@ fun AniobSettingsScreen(
     onTestConnection: (String, String) -> Unit,
     onCloudInputChanged: () -> Unit = {},
     onAutoRouterModeChanged: (String) -> Unit = {},
+    onFeaturesChanged: (FeatureSelection) -> Unit = {},
     onAblationModeChanged: (AblationMode) -> Unit = {},
     onStudyPassChanged: (StudyPass) -> Unit = {},
     onSeedRememberCache: () -> Unit = {},
@@ -135,6 +138,26 @@ fun AniobSettingsScreen(
                     }
                 }
             }
+            Card(modifier = Modifier.fillMaxWidth().testTag("card_execution_features")) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Execution features", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text("Select any combination. Changes apply to the next task. Single-feature runs are research; multiple active features are recorded separately in the combination database.", style = MaterialTheme.typography.bodySmall)
+                    ExecutionFeature.entries.forEach { feature ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(feature.label, fontWeight = FontWeight.SemiBold)
+                                Text(feature.description, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(checked = uiState.featureSelection.enabled(feature),
+                                onCheckedChange = { onFeaturesChanged(uiState.featureSelection.with(feature, it)) },
+                                modifier = Modifier.testTag("feature_${feature.name}"))
+                        }
+                    }
+                    OutlinedButton(onClick = { onFeaturesChanged(FeatureSelection.FULL_SPEED) },
+                        modifier = Modifier.fillMaxWidth().testTag("full_speed")) { Text("FULL_SPEED — enable all five") }
+                    Text("Active: ${uiState.featureSelection.key}", modifier = Modifier.testTag("active_features"))
+                }
+            }
             // Experimental switches and benchmark controls do not ship in release builds.
             if (AniobBuild.isDeveloperBuild(context)) {
                 Card(modifier = Modifier.fillMaxWidth().testTag("card_ablation_mode")) {
@@ -142,46 +165,8 @@ fun AniobSettingsScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = "Research mode",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "Pick the condition before a test batch. It changes how the agent works, not what it can do.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    AblationMode.entries.forEach { mode ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onAblationModeChanged(mode) }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = uiState.ablationMode == mode,
-                                onClick = { onAblationModeChanged(mode) },
-                                modifier = Modifier.testTag("radio_ablation_${mode.id}")
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = mode.label,
-                                    fontWeight = FontWeight.SemiBold,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    text = mode.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
+                    Text("Research reporting", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text("Single-feature runs only. Historical preset results keep their original labels.", style = MaterialTheme.typography.bodySmall)
 
                     HorizontalDivider()
 
@@ -510,8 +495,8 @@ fun AniobSettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Reuse verified tasks", fontWeight = FontWeight.SemiBold)
-                            Text("0-token instant execution for previously verified workflows", style = MaterialTheme.typography.bodySmall)
+                            Text("FastPath/remember replay", fontWeight = FontWeight.SemiBold)
+                            Text("Same replay setting as Execution features above", style = MaterialTheme.typography.bodySmall)
                         }
                         Switch(
                             checked = uiState.fastPathEnabled,

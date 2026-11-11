@@ -70,6 +70,11 @@ class RememberCache(
         }
         val usable = actions.filter { it.isUsable || it.kind == RememberAction.BACK || it.kind == RememberAction.SCROLL }
         if (usable.isEmpty()) return false
+        // A generalized purpose may never retain an old person's input or message. If the
+        // explicit grammar cannot bind an input exactly, plan it anew instead of caching it.
+        if (parsed.template.startsWith("purpose:") && usable.any {
+            it.kind == RememberAction.INPUT && parsed.indexOfValue(it.inputText) == null
+        }) return false
 
         val key = keyOf(normalized, packageName, preActionScreenHash)
         val previous = entries[key]
@@ -128,7 +133,18 @@ class RememberCache(
 
         // The trace is stored with {PARAM_n} for the values that came from the prompt; a goal that
         // cannot fill one of them is a different task and must miss rather than tap a stale value.
-        val actions = entry.actions.map { it.injected(parsed.params) ?: return null }
+        val actions = entry.actions.map { stored ->
+            val injected = stored.injected(parsed.params) ?: return null
+            // A shared profile-row resource ID is not evidence of the requested person. Dynamic
+            // recipient labels must agree too, even when the generic view ID still exists.
+            if (RememberTemplate.isPlaceholder(stored.text) || RememberTemplate.isPlaceholder(stored.contentDescription)) {
+                val node = resolve(injected, screen) ?: return null
+                if (RememberTemplate.isPlaceholder(stored.text) && !node.text.equals(injected.text, ignoreCase = true)) return null
+                if (RememberTemplate.isPlaceholder(stored.contentDescription) &&
+                    !node.contentDescription.equals(injected.contentDescription, ignoreCase = true)) return null
+            }
+            injected
+        }
         return actions.map { replayOf(it, screen) ?: return null }
     }
 
@@ -136,7 +152,7 @@ class RememberCache(
     @Synchronized
     fun entryFor(goal: String, screen: AniobScreenState): Entry? {
         val goalKey = RememberTemplate.keyOf(goal)
-        val hash = screenKey(screen.screenHash.ifBlank { screen.treeHash })
+        val hash = screenKey(navigationScreenKey(goal, screen))
         if (goalKey.isBlank() || hash.isBlank()) return null
         return entries[keyOf(goalKey, screen.packageName, hash)]
             ?: entries[keyOf(goalKey, screen.packageName, WILDCARD_SCREEN)]
@@ -172,6 +188,29 @@ class RememberCache(
             "$goalKeywords$KEY_SEPARATOR$packageName$KEY_SEPARATOR${screenKey(screenHash)}"
 
         /** The hash component of a key: the screen hash, or the tree hash when it is blank. */
+        fun navigationScreenKey(goal: String, screen: AniobScreenState): String {
+            val parsed = RememberTemplate.parse(goal)
+            val legacy = screen.screenHash.ifBlank { screen.treeHash }
+            if (!parsed.template.startsWith("purpose:")) return legacy
+            fun abstract(value: String): String {
+                var result = value.lowercase()
+                parsed.params.sortedByDescending { it.length }.forEach { parameter ->
+                    result = result.replace(parameter.lowercase(), "{slot}")
+                }
+                return result
+            }
+            val structure = buildString {
+                append(screen.packageName).append('|').append(screen.activityName)
+                screen.nodes.forEach { node ->
+                    append('|').append(node.viewId).append(':').append(node.className)
+                    append(':').append(abstract(node.text)).append(':').append(abstract(node.contentDescription))
+                    append(':').append(node.isClickable).append(':').append(node.isEditable)
+                }
+            }
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(structure.toByteArray(Charsets.UTF_8))
+            return "nav1:" + digest.joinToString("") { "%02x".format(it) }
+        }
+
         fun screenKey(hash: String): String = hash.trim()
 
         /**

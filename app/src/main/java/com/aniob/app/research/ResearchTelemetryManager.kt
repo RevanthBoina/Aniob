@@ -38,7 +38,10 @@ import java.util.concurrent.atomic.AtomicLong
 class ResearchTelemetryManager(
     context: Context,
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
-    private val logger: (String) -> Unit = { message -> Log.i(TAG, message) }
+    private val logger: (String) -> Unit = { message -> Log.i(TAG, message) },
+    private val combinationDao: () -> com.aniob.app.db.FeatureCombinationDao = {
+        com.aniob.app.db.AniobDatabase.getDatabase(context.applicationContext).featureCombinationDao()
+    }
 ) {
 
     private data class ActiveRun(
@@ -67,16 +70,26 @@ class ResearchTelemetryManager(
         var fastpathSteps: Int = 0,
         var replayValidated: Boolean = false,
         var replayDiverged: Boolean = false,
-        var setupLatencyMs: Long = 0L
+        var setupLatencyMs: Long = 0L,
+        val runId: String = "",
+        val featureMask: Int? = null,
+        var lastActionCompletedMs: Long? = null,
+        var messageDelayMs: Long = 0L,
+        var questionsBeforeStart: Int = 0,
+        var fastSkippedSteps: Int = 0,
+        var userCorrected: Boolean = false,
+        var endedElapsedMs: Long? = null
     )
 
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val store = ResearchRunStore(appContext.getExternalFilesDir(null) ?: appContext.filesDir, logger)
+    private val combinations by lazy(combinationDao)
     private val lock = Any()
     private val runCounter = AtomicLong(0)
 
     private var active: ActiveRun? = null
+    private val closing = mutableMapOf<String, ActiveRun>()
 
     @Volatile
     private var lastCompleted: ResearchRun? = null
@@ -90,6 +103,21 @@ class ResearchTelemetryManager(
         set(value) {
             prefs.edit().putString(KEY_MODE, value.id).apply()
         }
+
+    var featureSelection: FeatureSelection
+        get() = if (prefs.contains("execution_features_v1")) FeatureSelection(
+            prefs.getInt("execution_features_v1", 31).coerceIn(0, 31)) else FeatureSelection.fromLegacy(mode).let { legacy ->
+            if (appContext.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+                    .getBoolean("fastpath_enabled", true)) legacy
+            else legacy.with(ExecutionFeature.REMEMBER, false)
+        }
+        set(value) { prefs.edit().putInt("execution_features_v1", value.mask).apply() }
+
+    private fun saveCombination(run: ResearchRun) {
+        val mask = requireNotNull(run.featureMask)
+        combinations.upsert(com.aniob.app.db.FeatureCombinationEntity(run.runId, mask,
+            FeatureSelection(mask).key, run.timestampMs, run.toCsvRow()))
+    }
 
     /**
      * Active study pass (warm-up vs measured), persisted across process death.
@@ -120,7 +148,9 @@ class ResearchTelemetryManager(
     fun startTask(
         goal: String,
         mode: AblationMode = this.mode,
-        pass: StudyPass = this.studyPass
+        pass: StudyPass = this.studyPass,
+        runId: String = "",
+        featureMask: Int? = null
     ) {
         synchronized(lock) {
             active?.let {
@@ -128,6 +158,8 @@ class ResearchTelemetryManager(
             }
             active = ActiveRun(
                 goal = goal.trim(),
+                runId = runId,
+                featureMask = featureMask,
                 mode = mode,
                 pass = pass,
                 startElapsedMs = clock(),
@@ -157,7 +189,6 @@ class ResearchTelemetryManager(
         synchronized(lock) {
             active?.let {
                 it.treeReads++
-                it.screenshots++
             }
         }
     }
@@ -167,14 +198,27 @@ class ResearchTelemetryManager(
         synchronized(lock) {
             active?.let {
                 it.bitmaps++
+                it.screenshots++
             }
         }
     }
 
     /** Increments the screenshot capture counter. Kept for backwards compatibility. */
+    @Deprecated("Use recordTreeRead or recordBitmapCapture explicitly")
     fun recordScreenCapture() {
         recordTreeRead()
     }
+
+    fun recordActionCompleted() = synchronized(lock) { active?.let { it.lastActionCompletedMs = clock() } }
+
+    fun recordCompletionMessageShown(runId: String = "") = synchronized(lock) {
+        val run = if (runId.isBlank()) active else closing[runId] ?: active?.takeIf { it.runId == runId }
+        run?.lastActionCompletedMs?.let { run.messageDelayMs = (clock() - it).coerceAtLeast(0L) }
+    }
+
+    fun recordQuestionsBeforeStart(count: Int) = synchronized(lock) { active?.let { it.questionsBeforeStart = count.coerceAtLeast(0) } }
+
+    fun recordFastSkippedStep() = synchronized(lock) { active?.let { it.fastSkippedSteps++ } }
 
     fun recordBurst(planned: Int, run: Int, suspended: Boolean) {
         synchronized(lock) {
@@ -258,16 +302,18 @@ class ResearchTelemetryManager(
      * Closes the run, appends it to `research_runs.csv`, rewrites `research_summary_table.csv` and
      * logs the summary. Returns the row that was written, or `null` when no task was active.
      */
-    fun endTask(isSuccess: Boolean, failureReason: String = ""): ResearchRun? {
+    fun endTask(isSuccess: Boolean, failureReason: String = ""): ResearchRun? =
+        endTask(if (isSuccess) ResearchOutcome.SUCCESS else ResearchOutcome.FAILED, failureReason)
+
+    fun endTask(outcomeCategory: ResearchOutcome, failureReason: String = "", runId: String = ""): ResearchRun? {
+        val isSuccess = outcomeCategory == ResearchOutcome.SUCCESS
         val run: ResearchRun
         val summaryRow: ResearchSummaryRow?
         synchronized(lock) {
-            val current = active ?: run {
-                logger("RESEARCH_WARN endTask ignored: no task was started")
-                return null
-            }
-            active = null
-            val elapsedMs = (clock() - current.startElapsedMs).coerceAtLeast(0L)
+            val current = if (runId.isNotBlank()) closing.remove(runId) ?: active?.takeIf { it.runId == runId } else active
+            if (current == null) return null
+            if (current === active) active = null
+            val elapsedMs = ((current.endedElapsedMs ?: clock()) - current.startElapsedMs).coerceAtLeast(0L)
             run = ResearchRun(
                 timestampMs = current.startedAtWallMs,
                 mode = current.mode,
@@ -296,22 +342,32 @@ class ResearchTelemetryManager(
                 fastpathSteps = current.fastpathSteps,
                 replayValidated = current.replayValidated,
                 replayDiverged = current.replayDiverged,
-                setupLatencyMs = current.setupLatencyMs
+                setupLatencyMs = current.setupLatencyMs,
+                runId = current.runId,
+                originalOutcomeCategory = outcomeCategory,
+                outcomeCategory = if (current.userCorrected && outcomeCategory in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED)) ResearchOutcome.SUCCESS else outcomeCategory,
+                userCorrected = current.userCorrected && outcomeCategory in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED),
+                messageDelayMs = current.messageDelayMs,
+                questionsBeforeStart = current.questionsBeforeStart,
+                fastSkippedSteps = current.fastSkippedSteps,
+                featureMask = current.featureMask
             )
-            store.append(run)
-            store.rewriteSummary()
+            if (run.isCombination) saveCombination(run) else {
+                store.append(run)
+                store.rewriteSummary()
+            }
             lastCompleted = run
             runCounter.incrementAndGet()
             summaryRow = ResearchSummaryTable.rowFor(store.read(), run.mode)
         }
-        val line = summaryRow?.hudLine() ?: fallbackHudLine(run)
+        val line = if (run.isCombination) hudLine(run) else summaryRow?.hudLine() ?: fallbackHudLine(run)
         logger(line)
         logger(
             "TASK_END mode=${run.mode.id} pass=${run.studyPass.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
                 "llm_calls=${run.llmCalls} local_inferences=${run.localInferences} steps=${run.steps} " +
                 "screenshots=${run.screenshots} prompt_tokens=${run.promptTokens} " +
                 "success=${run.success} intent_shortcut=${run.intentShortcutUsed} " +
-                "remember_cache_hit=${run.rememberCacheHit} failure_reason=\"${run.failureReason.take(120)}\""
+                "feature_mask=${run.featureMask} remember_cache_hit=${run.rememberCacheHit} failure_reason=\"${run.failureReason.take(120)}\""
         )
         return run
     }
@@ -323,10 +379,14 @@ class ResearchTelemetryManager(
      * given reason instead of vanishing from the denominator. No-op when the run was already closed
      * by [endTask] on the normal path.
      */
-    fun endTaskIfActive(failureReason: String): ResearchRun? {
-        val stillActive = synchronized(lock) { active != null }
+    fun endTaskIfActive(failureReason: String, runId: String = ""): ResearchRun? {
+        val stillActive = synchronized(lock) { active != null && (runId.isBlank() || active?.runId == runId) }
         if (!stillActive) return null
-        return endTask(isSuccess = false, failureReason = failureReason)
+        return endTask(outcomeCategory = when (failureReason) {
+            "stopped" -> ResearchOutcome.STOPPED
+            "interrupted", "superseded" -> ResearchOutcome.INTERRUPTED
+            else -> ResearchOutcome.FAILED
+        }, failureReason = failureReason, runId = runId)
     }
 
     /**
@@ -343,6 +403,15 @@ class ResearchTelemetryManager(
             if (active != null) {
                 logger("RESEARCH_WARN override rejected while a task is running")
                 return null
+            }
+            val combination = lastCompleted?.takeIf { it.isCombination }
+            if (combination != null) {
+                val changed = combination.copy(success = isSuccess, manuallyOverridden = true,
+                    failureReason = if (isSuccess) "" else combination.failureReason.ifBlank { "Marked failed by researcher" })
+                saveCombination(changed)
+                lastCompleted = changed
+                runCounter.incrementAndGet()
+                return changed
             }
             val runs = store.read()
             if (runs.isEmpty()) return null
@@ -368,10 +437,45 @@ class ResearchTelemetryManager(
         return updated
     }
 
+    /** Detach counters before publishing so a new task cannot steal background closure. No IO. */
+    fun prepareBackgroundClosure(runId: String) = synchronized(lock) {
+        active?.takeIf { it.runId == runId }?.let {
+            it.endedElapsedMs = clock()
+            closing[runId] = it
+            active = null
+        }
+    }
+
+    /** A user attestation targets a task ID, never the most recent row. */
+    fun markUserCorrected(runId: String): ResearchRun? = synchronized(lock) {
+        if (runId.isBlank()) return null
+        active?.takeIf { it.runId == runId }?.let { it.userCorrected = true; return null }
+        closing[runId]?.let { it.userCorrected = true; return null }
+        val runs = store.read()
+        val index = runs.indexOfFirst { it.runId == runId }
+        if (index < 0) {
+            val previous = combinations.find(runId)?.runCsv?.let(ResearchRun::fromCsvRow) ?: return null
+            if (previous.originalOutcomeCategory !in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED)) return null
+            val updated = previous.copy(success = false, outcomeCategory = ResearchOutcome.SUCCESS, userCorrected = true)
+            saveCombination(updated)
+            if (lastCompleted?.runId == runId) lastCompleted = updated
+            return updated
+        }
+        val previous = runs[index]
+        if (previous.originalOutcomeCategory !in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED)) return null
+        val updated = previous.copy(success = false, outcomeCategory = ResearchOutcome.SUCCESS,
+            userCorrected = true, manuallyOverridden = false)
+        store.rewrite(runs.toMutableList().apply { this[index] = updated })
+        store.rewriteSummary()
+        if (lastCompleted?.runId == runId) lastCompleted = updated
+        updated
+    }
+
     /** Deletes both CSV files. Intended for "start a clean batch". */
     fun clearAll() {
         synchronized(lock) {
             active = null
+            closing.clear()
             lastCompleted = null
             store.clear()
         }
@@ -399,7 +503,8 @@ class ResearchTelemetryManager(
     fun allRuns(): List<ResearchRun> = synchronized(lock) { store.read() }
 
     /** The exact research status line; always available even if the CSV write failed. */
-    fun hudLine(run: ResearchRun): String =
+    fun hudLine(run: ResearchRun): String = if (run.isCombination)
+        "[${FeatureSelection(requireNotNull(run.featureMask)).key}] Saved separately to combination database" else
         summaryFor(run.mode)?.hudLine() ?: fallbackHudLine(run)
 
     fun runsFile(): File = store.runsFile()

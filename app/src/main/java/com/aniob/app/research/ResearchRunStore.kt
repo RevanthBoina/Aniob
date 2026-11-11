@@ -30,6 +30,7 @@ internal class ResearchRunStore(
             if (!file.exists() || file.length() == 0L) {
                 file.writeText(ResearchRun.HEADER + "\n")
             }
+            if (file.useLines { it.firstOrNull() } != ResearchRun.HEADER) rewrite(read())
             file.appendText(run.toCsvRow() + "\n")
         }.onFailure { report("append", it) }
     }

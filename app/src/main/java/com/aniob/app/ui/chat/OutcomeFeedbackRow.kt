@@ -46,8 +46,8 @@ fun OutcomeFeedbackRow(
             OutlinedButton(
                 onClick = { onDecision(UserDecision.YES) },
                 enabled = chosen == null,
-                modifier = Modifier.testTag("outcome_yes").semantics { contentDescription = "Yes, it worked" }
-            ) { Text(UserDecision.YES.emoji + if (chosen == UserDecision.YES) " Thanks" else "") }
+                modifier = Modifier.testTag("outcome_yes").semantics { contentDescription = "Mark as correct" }
+            ) { Text(if (outcome.outcome in setOf(RunOutcome.FAILED, RunOutcome.UNVERIFIED)) "Mark correct" else UserDecision.YES.emoji + if (chosen == UserDecision.YES) " Thanks" else "") }
             OutlinedButton(
                 onClick = { onDecision(UserDecision.NO) },
                 enabled = chosen == null,

@@ -259,7 +259,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 contentChangedSinceLastStep = true
-                com.aniob.core.policy.AniobWaitForIdle.onContentChanged()
+                com.aniob.core.policy.AniobWaitForIdle.onContentChanged(sourceClass = event.className, ignoreVisualNoise = researchFastDeltaVerifyEnabled)
             }
         }
     }
