@@ -38,7 +38,10 @@ import java.util.concurrent.atomic.AtomicLong
 class ResearchTelemetryManager(
     context: Context,
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
-    private val logger: (String) -> Unit = { message -> Log.i(TAG, message) }
+    private val logger: (String) -> Unit = { message -> Log.i(TAG, message) },
+    private val combinationDao: () -> com.aniob.app.db.FeatureCombinationDao = {
+        com.aniob.app.db.AniobDatabase.getDatabase(context.applicationContext).featureCombinationDao()
+    }
 ) {
 
     private data class ActiveRun(
@@ -81,7 +84,7 @@ class ResearchTelemetryManager(
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val store = ResearchRunStore(appContext.getExternalFilesDir(null) ?: appContext.filesDir, logger)
-    private val combinations by lazy { com.aniob.app.db.AniobDatabase.getDatabase(appContext).featureCombinationDao() }
+    private val combinations by lazy(combinationDao)
     private val lock = Any()
     private val runCounter = AtomicLong(0)
 
@@ -353,10 +356,10 @@ class ResearchTelemetryManager(
             runCounter.incrementAndGet()
             summaryRow = ResearchSummaryTable.rowFor(store.read(), run.mode)
         }
-        val line = summaryRow?.hudLine() ?: fallbackHudLine(run)
+        val line = if (run.isCombination) hudLine(run) else summaryRow?.hudLine() ?: fallbackHudLine(run)
         logger(line)
         logger(
-            "TASK_END mode=${run.mode.id} pass=${run.studyPass.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
+            "TASK_END mode=${run.mode.id} feature_mask=${run.featureMask} pass=${run.studyPass.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
                 "llm_calls=${run.llmCalls} local_inferences=${run.localInferences} steps=${run.steps} " +
                 "screenshots=${run.screenshots} prompt_tokens=${run.promptTokens} " +
                 "success=${run.success} intent_shortcut=${run.intentShortcutUsed} " +
@@ -396,6 +399,15 @@ class ResearchTelemetryManager(
             if (active != null) {
                 logger("RESEARCH_WARN override rejected while a task is running")
                 return null
+            }
+            val combination = lastCompleted?.takeIf { it.isCombination }
+            if (combination != null) {
+                val changed = combination.copy(success = isSuccess, manuallyOverridden = true,
+                    failureReason = if (isSuccess) "" else combination.failureReason.ifBlank { "Marked failed by researcher" })
+                saveCombination(changed)
+                lastCompleted = changed
+                runCounter.incrementAndGet()
+                return changed
             }
             val runs = store.read()
             if (runs.isEmpty()) return null

@@ -631,10 +631,10 @@ class AniobViewModel(
         skillHydrationJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
-                semanticSkillMatcher.loadAndIndexDirectory(skillsDir)
                 app.assets.list("aniob_skill_library/skills").orEmpty().filter { it.endsWith(".yaml") || it.endsWith(".yml") || it.endsWith(".json") }.forEach { name ->
                     app.assets.open("aniob_skill_library/skills/$name").use { semanticSkillMatcher.loadAndIndexStream(it) }
                 }
+                semanticSkillMatcher.loadAndIndexDirectory(skillsDir)
             }
         }
 
@@ -2662,6 +2662,7 @@ class AniobViewModel(
         val researchMode = app.researchTelemetry.featureSelection
         val researchPass = if (researchControlsEnabled) app.researchTelemetry.studyPass else StudyPass.MEASURED
         activeRunMode = researchMode
+        executionRouter.beginTask()
         applyFeatureSelection(researchMode)
         if (researchMode.skillsEnabled) skillHydrationJob?.join()
         if (researchMode.rememberReplay) rememberCacheLoadJob?.join()

@@ -28,6 +28,27 @@ class AniobExecutionRouterTest {
         AniobLaunchHub.clearMemory()
     }
 
+    @Test fun `skill uses verified local cursor rather than global task step`() {
+        val engine = com.aniob.core.skills.AniobSkillEngine()
+        engine.registerSkill(com.aniob.core.skills.AniobSkill("cursor-test", description = "cursor",
+            triggerKeywords = listOf("cursor task"), steps = listOf(
+                com.aniob.core.skills.SkillStep(0, "wait", waitDuration = 20),
+                com.aniob.core.skills.SkillStep(1, "wait", waitDuration = 40))))
+        val router = AniobExecutionRouter(skillMatcher = com.aniob.core.skills.AniobSkillMatcher(engine))
+        router.intentShortcutsEnabled = false
+        router.fastPathEnabled = false
+        fun plan(step: Int) = router.planStep("cursor task", screen, step, "cursor task", power)
+        val first = plan(5) as AniobExecutionRouter.ExecutionPlanResult.SkillStepExecution
+        assertEquals(20L, (first.action as AniobAction.Wait).durationMs)
+        val retry = plan(6) as AniobExecutionRouter.ExecutionPlanResult.SkillStepExecution
+        assertEquals(20L, (retry.action as AniobAction.Wait).durationMs)
+        router.onSkillStepRecorded(true)
+        val second = plan(7) as AniobExecutionRouter.ExecutionPlanResult.SkillStepExecution
+        assertEquals(40L, (second.action as AniobAction.Wait).durationMs)
+        router.onSkillStepRecorded(false)
+        assertTrue(plan(8) is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
     @Test
     fun `model dispatch carries condensed progress summary when planning agent present`() {
         val router = AniobExecutionRouter(planningAgent = AniobPlanningAgent())

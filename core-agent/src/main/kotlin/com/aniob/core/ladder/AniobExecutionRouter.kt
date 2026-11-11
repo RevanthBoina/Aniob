@@ -69,6 +69,14 @@ class AniobExecutionRouter(
     private var skillCursor = 0
     private val failedSkills = mutableSetOf<String>()
 
+    /** Explicit task boundary also resets progress when the user repeats the same prompt. */
+    fun beginTask() {
+        skillTask = null
+        activeSkill = null
+        skillCursor = 0
+        failedSkills.clear()
+    }
+
     /** Advance a skill only from the shared pipeline's verified recording callback. */
     fun onSkillStepRecorded(verified: Boolean) {
         val name = activeSkill ?: return
