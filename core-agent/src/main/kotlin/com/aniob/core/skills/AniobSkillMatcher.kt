@@ -44,7 +44,7 @@ class AniobSkillMatcher(
             }
         }
         if (bestSkill != null) {
-            val slots = extractSlots(cleanPrompt, bestSkill)
+            val slots = extractSlots(prompt, bestSkill)
             return MatchResult(
                 matched = true,
                 skill = bestSkill,
@@ -66,7 +66,7 @@ class AniobSkillMatcher(
                             matched = true,
                             skill = skill,
                             confidence = 0.90f,
-                            extractedSlots = extractSlots(cleanPrompt, skill),
+                            extractedSlots = extractSlots(prompt, skill),
                             reason = "Tier 1.5 YAML skill matched: '${skill.name}' via pattern (0 LLM calls)"
                         )
                     }

@@ -44,6 +44,13 @@ class AniobSemanticSkillMatcher(
     }
 
     @Synchronized
+    fun loadAndIndexStream(stream: java.io.InputStream): Boolean = runCatching {
+        val skill = skillEngine.loadFromStream(stream)
+        indexSkills()
+        true
+    }.getOrDefault(false)
+
+    @Synchronized
     fun removeSkill(name: String) {
         if (skillEngine.removeSkill(name)) {
             embeddingStore.clear()
@@ -57,9 +64,8 @@ class AniobSemanticSkillMatcher(
         val kw = keywordMatcher.match(prompt, disabledSkills)
         if (kw.matched) return kw
         val qVec = if (embeddingProvider.isAvailable()) embeddingProvider.embed(prompt) else AniobEmbeddingStore.generatePseudoEmbedding(prompt)
-        val matches = embeddingStore.search(qVec, topK = 1, threshold = 0.60f)
-        if (matches.isNotEmpty()) {
-            val best = matches.first()
+        val matches = embeddingStore.search(qVec, topK = skillEngine.getActiveCatalog().size.coerceAtLeast(1), threshold = 0.60f)
+        for (best in matches) {
             val skill = skillEngine.getActiveCatalog().firstOrNull { it.name == best.id && !disabledSkills.contains(it.name) }
             if (skill != null) return AniobSkillMatcher.MatchResult(
                 matched = true,

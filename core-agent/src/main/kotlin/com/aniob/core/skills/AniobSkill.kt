@@ -74,6 +74,26 @@ data class SkillStep(
         }
     }
 
+    /** Unbound slots are a routing miss, never literal text to type or send. */
+    fun toAniobAction(slots: Map<String, String>): AniobAction? {
+        val pattern = Regex("""\{([A-Za-z][A-Za-z0-9_]*)\}""")
+        fun bind(value: String?): String? {
+            if (value == null) return null
+            var missing = false
+            val result = pattern.replace(value) { match ->
+                slots[match.groupValues[1]] ?: run { missing = true; match.value }
+            }
+            return if (missing) null else result
+        }
+        val boundText = if (text == null) null else bind(text) ?: return null
+        val boundTarget = when (val t = target) {
+            is SemanticTarget.Text -> t.copy(text = bind(t.text) ?: return null)
+            is SemanticTarget.ContentDesc -> t.copy(desc = bind(t.desc) ?: return null)
+            else -> t
+        }
+        return runCatching { copy(text = boundText, target = boundTarget).toAniobAction() }.getOrNull()
+    }
+
     /**
      * Resolves the semantic target, falling back to the legacy node id. Legacy skills keep
      * working; the deprecation is logged by the loader so authors migrate to `target:`.

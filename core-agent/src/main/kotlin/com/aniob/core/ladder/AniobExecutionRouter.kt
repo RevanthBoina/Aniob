@@ -25,6 +25,14 @@ class AniobExecutionRouter(
     private val planningAgent: AniobPlanningAgent? = null,
     private val memoryStore: AniobEmbeddingStore? = null
 ) {
+    private fun modelFallbackForUnboundSkill(prompt: String, screen: AniobScreenState, step: Int,
+        signature: String, power: DevicePowerState, model: String?, failures: Int, missing: Boolean,
+        progress: TaskProgress?, mode: String, observed: String?, sticky: RouteTarget?, skill: String): ExecutionPlanResult {
+        failedSkills += skill
+        activeSkill = null
+        return planStep(prompt, screen, step, signature, power, model, failures, missing, progress, mode, observed, sticky)
+    }
+
     /** Shared with the learning pipeline so hydration and replay hit the same store. */
     val fastPathEngine: AniobReplayEngine get() = replayEngine
 
@@ -55,6 +63,17 @@ class AniobExecutionRouter(
      * when this exact transition was never solved. Kept as a callback so the ladder stays pure.
      */
     var rememberLookup: ((String, AniobScreenState) -> List<AniobAction>?)? = null
+
+    private var skillTask: String? = null
+    private var activeSkill: String? = null
+    private var skillCursor = 0
+    private val failedSkills = mutableSetOf<String>()
+
+    /** Advance a skill only from the shared pipeline's verified recording callback. */
+    fun onSkillStepRecorded(verified: Boolean) {
+        val name = activeSkill ?: return
+        if (verified) skillCursor++ else { failedSkills += name; activeSkill = null; skillCursor = 0 }
+    }
 
     /** Task the dispatch memory below belongs to; a new signature starts a new memory. */
     private var shortcutSignature: String? = null
@@ -156,6 +175,12 @@ class AniobExecutionRouter(
         /** Per-task provider lock; see [AniobAutoRouter.decideRoute]. */
         taskStickyTarget: RouteTarget? = null
     ): ExecutionPlanResult {
+        if (skillTask != taskSignature) {
+            skillTask = taskSignature
+            activeSkill = null
+            skillCursor = 0
+            failedSkills.clear()
+        }
         // ----------------------------------------------------------------------------------- //
         // Step 0 / app switch: opening an app is a LOOKUP, never a model call.
         //
@@ -289,7 +314,7 @@ class AniobExecutionRouter(
 
         // Step 2: Tier 1.5 YAML or Semantic Skill Match (BL-1)
         if (skillsEnabled) {
-            val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt, disabledSkills) ?: skillMatcher.match(taskPrompt, disabledSkills)
+            val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt, disabledSkills + failedSkills) ?: skillMatcher.match(taskPrompt, disabledSkills + failedSkills)
             // UX-5: a disabled or draft skill never participates, so user routing and quality switches are real.
             val skillUsable = skillMatch.skill != null &&
                 skillMatch.skill.status == com.aniob.core.skills.SkillStatus.ACTIVE &&
@@ -297,9 +322,13 @@ class AniobExecutionRouter(
                 !disabledSkills.contains(skillMatch.skill.name)
             if (skillMatch.matched && skillUsable) {
                 val skill = skillMatch.skill!!
-                val step = skill.steps.getOrNull(stepIndex)
+                if (activeSkill != skill.name) { activeSkill = skill.name; skillCursor = 0 }
+                val step = skill.steps.getOrNull(skillCursor)
                 if (step != null) {
-                    val action = step.toAniobAction()
+                    val action = step.toAniobAction(skillMatch.extractedSlots) ?: return modelFallbackForUnboundSkill(
+                        taskPrompt, screenState, stepIndex, taskSignature, powerState, installedModelId,
+                        lastLocalFailCount, isModelFileMissing, previousProgress, userRoutingMode,
+                        lastObservedResult, taskStickyTarget, skill.name)
                     val target = action.semanticTarget()
                     if (target is SemanticTarget.SomIndex && screenState.findNodeById(target.index) == null) {
                         val fallbackNode = findSemanticFallbackNode(taskPrompt, screenState)

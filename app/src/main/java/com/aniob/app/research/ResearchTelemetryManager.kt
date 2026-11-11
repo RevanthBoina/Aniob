@@ -69,6 +69,7 @@ class ResearchTelemetryManager(
         var replayDiverged: Boolean = false,
         var setupLatencyMs: Long = 0L,
         val runId: String = "",
+        val featureMask: Int? = null,
         var lastActionCompletedMs: Long? = null,
         var messageDelayMs: Long = 0L,
         var questionsBeforeStart: Int = 0,
@@ -80,6 +81,7 @@ class ResearchTelemetryManager(
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val store = ResearchRunStore(appContext.getExternalFilesDir(null) ?: appContext.filesDir, logger)
+    private val combinations by lazy { com.aniob.app.db.AniobDatabase.getDatabase(appContext).featureCombinationDao() }
     private val lock = Any()
     private val runCounter = AtomicLong(0)
 
@@ -98,6 +100,17 @@ class ResearchTelemetryManager(
         set(value) {
             prefs.edit().putString(KEY_MODE, value.id).apply()
         }
+
+    var featureSelection: FeatureSelection
+        get() = if (prefs.contains("execution_features_v1")) FeatureSelection(
+            prefs.getInt("execution_features_v1", 31).coerceIn(0, 31)) else FeatureSelection.fromLegacy(mode)
+        set(value) { prefs.edit().putInt("execution_features_v1", value.mask).apply() }
+
+    private fun saveCombination(run: ResearchRun) {
+        val mask = requireNotNull(run.featureMask)
+        combinations.upsert(com.aniob.app.db.FeatureCombinationEntity(run.runId, mask,
+            FeatureSelection(mask).key, run.timestampMs, run.toCsvRow()))
+    }
 
     /**
      * Active study pass (warm-up vs measured), persisted across process death.
@@ -129,7 +142,8 @@ class ResearchTelemetryManager(
         goal: String,
         mode: AblationMode = this.mode,
         pass: StudyPass = this.studyPass,
-        runId: String = ""
+        runId: String = "",
+        featureMask: Int? = null
     ) {
         synchronized(lock) {
             active?.let {
@@ -138,6 +152,7 @@ class ResearchTelemetryManager(
             active = ActiveRun(
                 goal = goal.trim(),
                 runId = runId,
+                featureMask = featureMask,
                 mode = mode,
                 pass = pass,
                 startElapsedMs = clock(),
@@ -327,10 +342,13 @@ class ResearchTelemetryManager(
                 userCorrected = current.userCorrected && outcomeCategory in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED),
                 messageDelayMs = current.messageDelayMs,
                 questionsBeforeStart = current.questionsBeforeStart,
-                fastSkippedSteps = current.fastSkippedSteps
+                fastSkippedSteps = current.fastSkippedSteps,
+                featureMask = current.featureMask
             )
-            store.append(run)
-            store.rewriteSummary()
+            if (run.isCombination) saveCombination(run) else {
+                store.append(run)
+                store.rewriteSummary()
+            }
             lastCompleted = run
             runCounter.incrementAndGet()
             summaryRow = ResearchSummaryTable.rowFor(store.read(), run.mode)
@@ -419,7 +437,14 @@ class ResearchTelemetryManager(
         closing[runId]?.let { it.userCorrected = true; return null }
         val runs = store.read()
         val index = runs.indexOfFirst { it.runId == runId }
-        if (index < 0) return null
+        if (index < 0) {
+            val previous = combinations.find(runId)?.runCsv?.let(ResearchRun::fromCsvRow) ?: return null
+            if (previous.originalOutcomeCategory !in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED)) return null
+            val updated = previous.copy(success = false, outcomeCategory = ResearchOutcome.SUCCESS, userCorrected = true)
+            saveCombination(updated)
+            if (lastCompleted?.runId == runId) lastCompleted = updated
+            return updated
+        }
         val previous = runs[index]
         if (previous.originalOutcomeCategory !in setOf(ResearchOutcome.FAILED, ResearchOutcome.UNVERIFIED)) return null
         val updated = previous.copy(success = false, outcomeCategory = ResearchOutcome.SUCCESS,
@@ -462,7 +487,8 @@ class ResearchTelemetryManager(
     fun allRuns(): List<ResearchRun> = synchronized(lock) { store.read() }
 
     /** The exact research status line; always available even if the CSV write failed. */
-    fun hudLine(run: ResearchRun): String =
+    fun hudLine(run: ResearchRun): String = if (run.isCombination)
+        "[${FeatureSelection(requireNotNull(run.featureMask)).key}] Saved separately to combination database" else
         summaryFor(run.mode)?.hudLine() ?: fallbackHudLine(run)
 
     fun runsFile(): File = store.runsFile()

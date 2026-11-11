@@ -78,7 +78,7 @@ object ResearchSummaryTable {
      * stable between rewrites. Warm-up runs are excluded from this summary.
      */
     fun build(runs: List<ResearchRun>): List<ResearchSummaryRow> {
-        val measuredRuns = runs.filter { it.studyPass == StudyPass.MEASURED }
+        val measuredRuns = runs.filter { it.studyPass == StudyPass.MEASURED && !it.isCombination }
         val baselineRuns = measuredRuns.filter { it.mode == AblationMode.BASELINE }
         val baselineMeanLatency = if (baselineRuns.isNotEmpty()) {
             baselineRuns.sumOf { it.latencySeconds } / baselineRuns.size

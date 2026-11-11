@@ -245,6 +245,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onCloudInputChanged = { viewModel.clearCloudTestResult() },
                 onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
                 onAblationModeChanged = { mode -> viewModel.setAblationMode(mode) },
+                onFeaturesChanged = { viewModel.setFeatureSelection(it) },
                 onStudyPassChanged = { pass -> viewModel.setStudyPass(pass) },
                 onSeedRememberCache = { viewModel.seedRememberPresets() },
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },

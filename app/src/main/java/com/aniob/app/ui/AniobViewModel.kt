@@ -18,6 +18,8 @@ import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.research.FeatureSelection
+import com.aniob.app.research.ExecutionFeature
 import com.aniob.app.research.AblationMode
 import com.aniob.app.research.ResearchRun
 import com.aniob.app.research.ResearchSummaryRow
@@ -183,6 +185,7 @@ data class AniobUiState(
     /** Result of the last Cloud AI save / connection test, rendered as a banner in Settings. */
     val cloudTest: CloudTestUiState = CloudTestUiState(),
     /** Research: ablation condition that the next task will run under. */
+    val featureSelection: FeatureSelection = FeatureSelection.FULL_SPEED,
     val ablationMode: AblationMode = AblationMode.DEFAULT,
     /** Research: study pass (warm-up vs measured). */
     val studyPass: StudyPass = StudyPass.MEASURED,
@@ -285,6 +288,7 @@ class AniobViewModel(
 
     val uiState: StateFlow<AniobUiState> = _uiState.asStateFlow()
 
+    private var skillHydrationJob: kotlinx.coroutines.Job? = null
     private val semanticSkillMatcher = AniobSemanticSkillMatcher()
     private val grillMeEngine by lazy { AniobGrillMeEngine(llmClient = buildGrillLlmClient()) }
     private val planningAgent = AniobPlanningAgent()
@@ -520,9 +524,7 @@ class AniobViewModel(
         // Only developer builds may select experimental conditions. Release always starts in the
         // full-capability condition, even if this app data was previously used by a debug build.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
-        val researchMode = if (researchControlsEnabled) app.researchTelemetry.mode else AblationMode.DEFAULT.also {
-            app.researchTelemetry.mode = it
-        }
+        val researchMode = app.researchTelemetry.featureSelection.mode
         val researchPass = if (researchControlsEnabled) app.researchTelemetry.studyPass else StudyPass.MEASURED.also {
             app.researchTelemetry.studyPass = it
         }
@@ -586,6 +588,7 @@ class AniobViewModel(
                 fastPathEnabled = prefs.getBoolean("fastpath_enabled", true),
                 disabledSkills = disabledSkills.toSet(),
                 ablationMode = researchMode,
+                featureSelection = app.researchTelemetry.featureSelection,
                 studyPass = researchPass,
                 researchLastRun = lastResearchRun,
                 researchStatusLine = lastResearchRun?.let { app.researchTelemetry.hudLine(it) },
@@ -595,7 +598,7 @@ class AniobViewModel(
 
         // Research conditions never change release capabilities; the persisted ask posture is
         // applied exactly as chosen, including OFF, before the first task can start.
-        applyAblationMode(_uiState.value.ablationMode)
+        applyFeatureSelection(_uiState.value.featureSelection)
         applyAskLevel(_uiState.value.safetyLevel)
 
         _isReadyToRender.value = true
@@ -625,11 +628,14 @@ class AniobViewModel(
                 .onFailure { app.eventLogger.warn("AniobViewModel", "FastPath hydration failed: ${it.message}") }
         }
 
-        // Hydrate learned skills consolidated into the runtime skill_library/skills directory
-        viewModelScope.launch(Dispatchers.IO) {
+        // Hydrate packaged and learned skills once; skills-only tasks await this same job.
+        skillHydrationJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
                 semanticSkillMatcher.loadAndIndexDirectory(skillsDir)
+                app.assets.list("aniob_skill_library/skills").orEmpty().filter { it.endsWith(".yaml") || it.endsWith(".yml") || it.endsWith(".json") }.forEach { name ->
+                    app.assets.open("aniob_skill_library/skills/$name").use { semanticSkillMatcher.loadAndIndexStream(it) }
+                }
             }
         }
 
@@ -1075,10 +1081,10 @@ class AniobViewModel(
     fun setFastPathEnabled(enabled: Boolean) {
         app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("fastpath_enabled", enabled).apply()
-        _uiState.update { it.copy(fastPathEnabled = enabled) }
+        setFeatureSelection(_uiState.value.featureSelection.with(ExecutionFeature.REMEMBER, enabled))
         // Re-derive the effective replay flag: a mode without remember-replay keeps it off even
         // when the user switch is on.
-        if (!_uiState.value.isRunning) applyAblationMode(_uiState.value.ablationMode)
+        if (!_uiState.value.isRunning) applyFeatureSelection(_uiState.value.featureSelection)
     }
 
     // =========================================================================================
@@ -1091,9 +1097,17 @@ class AniobViewModel(
      * Persisted in the telemetry manager's prefs (not `aniob_prefs`) so the CSV and the mode that
      * produced it cannot drift apart. The change is applied to the real switches immediately.
      */
+    fun setFeatureSelection(selection: FeatureSelection) {
+        app.researchTelemetry.featureSelection = selection
+        _uiState.update { it.copy(featureSelection = selection, ablationMode = selection.mode,
+            fastPathEnabled = selection.rememberReplay, researchStatusLine = null) }
+        if (!_uiState.value.isRunning) applyFeatureSelection(selection)
+    }
+
     fun setAblationMode(mode: AblationMode) {
         if (!com.aniob.app.AniobBuild.isDeveloperBuild(app)) return
         app.researchTelemetry.mode = mode
+        setFeatureSelection(FeatureSelection.fromLegacy(mode))
         if (!_uiState.value.isRunning) applyAblationMode(mode)
         _uiState.update { it.copy(ablationMode = mode, researchStatusLine = null) }
         // The summary lives on disk; refresh it off the main thread.
@@ -1147,19 +1161,16 @@ class AniobViewModel(
      * Applies a mode to the mechanisms that exist today. Called on init, on every mode change and
      * at the start of each task, so a stale switch can never survive into a measured run.
      */
-    internal fun applyAblationMode(mode: AblationMode) {
-        val effective = if (com.aniob.app.AniobBuild.isDeveloperBuild(app)) mode else AblationMode.DEFAULT
+    internal fun applyAblationMode(mode: AblationMode) = applyFeatureSelection(FeatureSelection.fromLegacy(mode))
+
+    internal fun applyFeatureSelection(effective: FeatureSelection) {
         executionRouter.intentShortcutsEnabled = effective.intentShortcuts
         executionRouter.skillsEnabled = effective.skillsEnabled
-        executionRouter.fastPathEnabled = effective.rememberReplay && _uiState.value.fastPathEnabled
-        observationPolicy.setBurstLimit(
-            if (effective.actionBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
-        )
-        // The release default is the full-capability condition; developer builds may select a
-        // measured condition for the next task.
+        executionRouter.fastPathEnabled = effective.rememberReplay
+        executionRouter.rememberReplayEnabled = effective.rememberReplay
+        observationPolicy.setBurstLimit(if (effective.actionBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP)
         AniobAccessibilityService.setFastObservation(effective.fastObservation)
         AniobAccessibilityService.setResearchFastDeltaVerify(effective.fastDeltaVerify)
-        executionRouter.rememberReplayEnabled = effective.rememberReplay && _uiState.value.fastPathEnabled
     }
 
     /**
@@ -1201,12 +1212,12 @@ class AniobViewModel(
      * mid-task cannot seed a cache the run never read.
      */
     private fun persistRememberTransitions(
-        mode: AblationMode,
+        mode: FeatureSelection,
         goal: String,
         transitions: List<RememberTransition>
     ) {
         if (transitions.isEmpty()) return
-        if (!mode.rememberReplay || !_uiState.value.fastPathEnabled) return
+        if (!mode.rememberReplay) return
 
         // Drop undone transitions (e.g. BACK key) to keep minimal path (F-1)
         val pruned = mutableListOf<RememberTransition>()
@@ -1510,7 +1521,7 @@ class AniobViewModel(
         val screen: AniobScreenState?,
         val actions: List<AniobAction>,
         val transitions: List<RememberTransition>,
-        val mode: AblationMode,
+        val mode: FeatureSelection,
         val episode: List<AniobHippocampusTracker.HippocampusStep>
     )
     private var lastCompletedLearningSnapshot: CompletedLearningSnapshot? = null
@@ -2643,22 +2654,24 @@ class AniobViewModel(
      */
     private val questionsBeforeStart = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
-    @Volatile private var activeRunMode: AblationMode = AblationMode.DEFAULT
+    @Volatile private var activeRunMode: FeatureSelection = FeatureSelection.FULL_SPEED
 
     private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
         if (taskGeneration != activeGeneration) return
         // A release run always uses the full-capability condition; ablations are developer-only.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
-        val researchMode = if (researchControlsEnabled) app.researchTelemetry.mode else AblationMode.DEFAULT
+        val researchMode = app.researchTelemetry.featureSelection
         val researchPass = if (researchControlsEnabled) app.researchTelemetry.studyPass else StudyPass.MEASURED
         activeRunMode = researchMode
-        applyAblationMode(researchMode)
-        rememberCacheLoadJob?.join()
+        applyFeatureSelection(researchMode)
+        if (researchMode.skillsEnabled) skillHydrationJob?.join()
+        if (researchMode.rememberReplay) rememberCacheLoadJob?.join()
         app.researchTelemetry.startTask(
             task.clarifiedGoal.ifBlank { task.rawPrompt },
-            researchMode,
+            researchMode.mode,
             researchPass,
-            runId = task.id
+            runId = task.id,
+            featureMask = researchMode.mask
         )
         app.researchTelemetry.recordQuestionsBeforeStart(questionsBeforeStart.remove(task.id) ?: 0)
         persistRunningMarker(task, 0, "Task started")
@@ -2719,7 +2732,7 @@ class AniobViewModel(
         // Learned state (skills, FastPath trajectories) hydrates in parallel with the first
         // capture instead of in front of it. A cold cache must not delay step 0; the first task
         // after install simply plans from the model.
-        val hydration = if (researchMode.skillsEnabled && _uiState.value.fastPathEnabled) {
+        val hydration = if (researchMode.rememberReplay) {
             viewModelScope.async(Dispatchers.Default) {
                 learningPipeline.awaitHydration(HYDRATION_BUDGET_MS)
             }
@@ -2804,6 +2817,7 @@ class AniobViewModel(
             learning = learningPipeline,
             reflectionAgent = reflectionAgent,
             recordStep = { stepRecord ->
+                if (stepRecord.provider == "SKILL") executionRouter.onSkillStepRecorded(stepRecord.verified)
                 if (stepRecord.dispatched) app.researchTelemetry.recordActionCompleted()
                 if (stepRecord.verificationSkippedFast) app.researchTelemetry.recordFastSkippedStep()
                 val node = stepRecord.resolvedNode
@@ -3024,7 +3038,7 @@ class AniobViewModel(
                     executionRouter.rememberReplayEnabled = false
                     ladderResult = planLadder()
                     executionRouter.rememberReplayEnabled =
-                        researchMode.rememberReplay && _uiState.value.fastPathEnabled
+                        researchMode.rememberReplay
                 }
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
                     taskProgress = ladderResult.progress ?: taskProgress
