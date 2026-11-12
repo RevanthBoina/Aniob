@@ -463,7 +463,35 @@ class AniobViewModel(
 
     private fun isOmniRouteReady(): Boolean = isCloudConfigured()
 
-    private fun getOmniRouteProvider(sessionId: String? = null): AniobOmniRouteProvider {
+    /** One gateway provider per session (task id, conversation id, "grill"), not one per step. */
+    private val omniRouteProviders = com.aniob.app.provider.AniobProviderRegistry { sessionId ->
+        buildOmniRouteProvider(sessionId)
+    }
+
+    /** One account client per task for UI steps. Released when the task ends. */
+    private val accountStepClients = com.aniob.app.provider.AniobProviderRegistry { sessionId ->
+        app.accountAuth.newClient(sessionId) { app.researchTelemetry.recordLlmCall() }
+    }
+
+    /** Settings the gateway provider is built from; a change yields a fresh instance. */
+    private fun omniRouteFingerprint(): String = listOf(
+        _uiState.value.omnirouteApiKey.hashCode().toString(),
+        _uiState.value.omnirouteBaseUrl,
+        _uiState.value.omnirouteModel
+    ).joinToString("|")
+
+    private fun getOmniRouteProvider(sessionId: String? = null): AniobOmniRouteProvider =
+        if (sessionId == null) buildOmniRouteProvider(null)
+        else omniRouteProviders.get(sessionId, omniRouteFingerprint())
+
+    /** Forgets a finished task's providers and logs how many it created (expected: at most 1). */
+    private fun releaseTaskProviders(taskId: String) {
+        val built = omniRouteProviders.release(taskId) + accountStepClients.release(taskId)
+        if (built > 0) app.eventLogger.info("AniobViewModel", "Cloud provider instances for $taskId: $built")
+        if (built > 1) app.eventLogger.warn("AniobViewModel", "Task $taskId rebuilt its cloud provider ${built - 1} time(s)")
+    }
+
+    private fun buildOmniRouteProvider(sessionId: String?): AniobOmniRouteProvider {
         return AniobOmniRouteProvider(
             apiKey = _uiState.value.omnirouteApiKey,
             baseUrl = AniobProviderConfig.normalizeBaseUrl(_uiState.value.omnirouteBaseUrl)
@@ -518,7 +546,8 @@ class AniobViewModel(
     /** UI-step provider for the chosen cloud source. */
     private fun getActionStepProvider(sessionId: String? = null): com.aniob.core.external.AniobActionStepProvider =
         if (cloudSource() == com.aniob.core.auth.AniobCloudSource.ACCOUNT) {
-            app.accountAuth.newClient(sessionId) { app.researchTelemetry.recordLlmCall() }
+            if (sessionId == null) app.accountAuth.newClient(null) { app.researchTelemetry.recordLlmCall() }
+            else accountStepClients.get(sessionId, "account")
         } else {
             getOmniRouteProvider(sessionId)
         }
@@ -1395,11 +1424,12 @@ class AniobViewModel(
      * Warms DNS/TLS/HTTP-2 for the gateway. Never throws and never counts as a model call: the
      * request is a plain `GET /models`, so the first real action reuses the open connection.
      */
-    private suspend fun prewarmGateway() {
+    private suspend fun prewarmGateway(sessionId: String? = null) {
         if (!isCloudConfigured()) return
         // Only the gateway has a prewarm; opening a connection to the account service is not free.
         if (cloudSource() != com.aniob.core.auth.AniobCloudSource.OMNIROUTE) return
-        runCatching { getOmniRouteProvider().prewarm() }
+        // With a session id this warms the very instance the task's steps will use.
+        runCatching { getOmniRouteProvider(sessionId).prewarm() }
     }
 
     /**
@@ -2904,8 +2934,8 @@ class AniobViewModel(
             null
         }
         // Warm the gateway again at task start: the user may have been idle long enough for the
-        // connection pool to drop the socket.
-        viewModelScope.launch(Dispatchers.IO) { prewarmGateway() }
+        // connection pool to drop the socket. Once per task, on the task's own provider.
+        viewModelScope.launch(Dispatchers.IO) { prewarmGateway(task.id) }
 
         // Background automation integrity: minimize Aniob chat UI and run foreground service
         AniobBackgroundController.onTaskStarted(app, task.clarifiedGoal.ifBlank { task.rawPrompt })
@@ -3065,6 +3095,9 @@ class AniobViewModel(
         // A shortcut this run switched off (an action the device does not have) is restored when
         // the run ends, so one failed dispatch cannot degrade every later task in the batch.
         val shortcutsWereEnabled = executionRouter.intentShortcutsEnabled
+        // Model routing for this task: one on-device attempt, then cloud, and cloud stays chosen.
+        var cloudEscalationAllowed = false
+        val executionLlm = com.aniob.core.ladder.ExecutionLlmGateway { cloudEscalationAllowed }
         // Pre-observe scrolls already made in this run, per screen identity.
         val preObservedScreens = HashMap<String, Int>()
         // Viewport merged after that scroll, handed to the next planning pass.
@@ -3868,25 +3901,42 @@ class AniobViewModel(
                         val canEscalateToCloud = userRouting != "local-only" && isCloudConfigured() && powerState.isNetworkAvailable
 
                         val plannedAction = if (localCanDrive) {
-                            setPhase(AgentPhase.PLANNING, ThinkSource.MODEL_LOCAL)
-                            app.researchTelemetry.recordLocalInference()
-                            val gen = localLlmClient.generateStepResult(
-                                systemPrompt,
-                                activePrompt
-                            )
-                            val localPromptEst = (systemPrompt.length + activePrompt.length) / 4
-                            app.researchTelemetry.recordPromptTokens(localPromptEst)
-                            totalTokens += localPromptEst.coerceAtLeast(80)
-                            if (gen is AniobGenerationResult.Ready) {
-                                android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
-                            }
-                            val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
-                            if (structured.usedFallback) {
-                                app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
-                                if (canEscalateToCloud) {
+                            cloudEscalationAllowed = canEscalateToCloud
+                            val cloudWasSticky = executionLlm.stickyCloud
+                            executionLlm.plan(
+                                request = com.aniob.core.ladder.ExecutionLlmGateway.Request(systemPrompt, activePrompt),
+                                local = { request ->
+                                    setPhase(AgentPhase.PLANNING, ThinkSource.MODEL_LOCAL)
+                                    app.researchTelemetry.recordLocalInference()
+                                    val gen = localLlmClient.generateStepResult(
+                                        request.systemPrompt,
+                                        request.userPrompt
+                                    )
+                                    val localPromptEst = (request.systemPrompt.length + request.userPrompt.length) / 4
+                                    app.researchTelemetry.recordPromptTokens(localPromptEst)
+                                    totalTokens += localPromptEst.coerceAtLeast(80)
+                                    if (gen is AniobGenerationResult.Ready) {
+                                        android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
+                                    }
+                                    val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
+                                    if (structured.usedFallback) {
+                                        app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
+                                    }
+                                    com.aniob.core.ladder.ExecutionLlmGateway.LocalAttempt(
+                                        structured.action, structured.usedFallback, structured.reason
+                                    )
+                                },
+                                cloud = { _ ->
+                                    // Same system and user prompt as the on-device attempt; the
+                                    // screen is not captured again.
                                     primaryProvider = "OMNIROUTE_CLOUD"
+                                    taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
                                     escalations++
-                                    decisionReason = "Escalated to OmniRoute Cloud after local output fallback"
+                                    decisionReason = if (!cloudWasSticky) {
+                                        "Escalated to OmniRoute Cloud after local output fallback"
+                                    } else {
+                                        "Staying on OmniRoute Cloud after an earlier local fallback"
+                                    }
                                     _uiState.update {
                                         it.copy(
                                             statusMessage = "Escalating to Cloud...",
@@ -3895,12 +3945,8 @@ class AniobViewModel(
                                         )
                                     }
                                     runOmniRouteStep(allowLocalFallback = false)
-                                } else {
-                                    structured.action
                                 }
-                            } else {
-                                structured.action
-                            }
+                            ).action
                         } else if (decision.target == RouteTarget.LOCAL_SLM && canEscalateToCloud) {
                             primaryProvider = "OMNIROUTE_CLOUD"
                             taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
@@ -4473,6 +4519,7 @@ class AniobViewModel(
             // A shortcut disabled mid-run because this device could not dispatch it is a property
             // of the run, not of the session.
             executionRouter.intentShortcutsEnabled = shortcutsWereEnabled
+            releaseTaskProviders(task.id)
             AniobAccessibilityService.isTaskActive = false
             if (!researchMode.immediateCompletion || !currentCoroutineContext().isActive) learningPipeline.onTaskEnd(task.id)
         }
