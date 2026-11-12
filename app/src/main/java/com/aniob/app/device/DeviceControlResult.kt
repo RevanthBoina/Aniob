@@ -18,5 +18,11 @@ data class DeviceControlResult(
      * "media_session: paused". Null when nothing was observed. The ViewModel turns this into an EvidenceRef;
      * a command that returns ok=true with evidence=null can never produce a VERIFIED run.
      */
-    val evidence: String? = null
+    val evidence: String? = null,
+    /**
+     * Set when the command could not choose for the user (for example no file matched). The app
+     * shows it as a clarifying question and restarts the task with the answer; [message] stays a
+     * plain sentence for the model and the chat.
+     */
+    val clarify: com.aniob.core.grillme.GrillQuestion? = null
 )

@@ -341,6 +341,9 @@ class AniobViewModel(
     private var activeTaskJob: kotlinx.coroutines.Job? = null
     @Volatile private var activeGeneration: Long = 0L
 
+    /** Question raised by the last device command that failed because it needed a choice. */
+    @Volatile private var pendingDeviceClarify: com.aniob.core.grillme.GrillQuestion? = null
+
     // Conversation memory state. Declared above `init`, which restores the last open chat.
     private val conversationStore by lazy {
         com.aniob.app.db.ConversationStore(app.database.conversationDao())
@@ -4013,6 +4016,8 @@ class AniobViewModel(
                         }
                         act is AniobAction.DeviceControl -> {
                             val result = runDeviceCommand(act.command, act.args)
+                            // A command that could not choose for the user (no file matched) asks.
+                            pendingDeviceClarify = result.clarify
                             postDeviceResult(result)
                             actionsDispatched++
                             // The result text is what the model reads next; a silent command leaves the
@@ -4413,7 +4418,10 @@ class AniobViewModel(
                         continue
                     }
                     // GRILL-ME for the model: "FAIL: ASK_USER: question | opt | opt" becomes the Grill sheet, once per task.
-                    val parsedAsk = com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
+                    val deviceAsk = pendingDeviceClarify
+                    pendingDeviceClarify = null
+                    val parsedAsk = deviceAsk
+                        ?: com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
                     if (parsedAsk != null && task.grillAnswers.isEmpty()) {
                         val ask = grillMeEngine.sanitizeQuestion(parsedAsk)
                         setPhase(AgentPhase.ASKING)
