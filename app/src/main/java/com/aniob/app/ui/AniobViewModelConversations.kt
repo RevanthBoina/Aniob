@@ -49,7 +49,7 @@ internal fun AniobViewModel.restoreActiveConversation() {
         _uiState.update { state ->
             // Never overwrite a chat the user has already started typing into.
             if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" }) {
-                state.copy(chatMessages = state.chatMessages + stored.map(this::storedMessageToChat))
+                state.copy(chatMessages = state.chatMessages + stored.map({ storedMessageToChat(it) }))
             } else state
         }
     }
@@ -64,7 +64,7 @@ fun AniobViewModel.openConversation(id: String) {
         setActiveConversation(id)
         _uiState.update {
             it.copy(
-                chatMessages = stored.map(this::storedMessageToChat),
+                chatMessages = stored.map({ storedMessageToChat(it) }),
                 steps = emptyList(),
                 stepEvents = emptyList(),
                 lastNarration = "",

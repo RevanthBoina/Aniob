@@ -107,7 +107,7 @@ internal fun AniobViewModel.isLaunchablePackage(packageName: String): Boolean =
     runCatching { app.packageManager.getLaunchIntentForPackage(packageName) != null }.getOrDefault(false)
 
 internal fun AniobViewModel.checkDoctorPreflight(prompt: String): com.aniob.core.tools.DoctorResult =
-    checkDoctorPreflight(prompt, AniobIntentResolver.resolve(prompt, this::isLaunchablePackage))
+    checkDoctorPreflight(prompt, AniobIntentResolver.resolve(prompt, { isLaunchablePackage(it) }))
 
 /**
  * @param resolvedShortcut the shortcut for [prompt], when the caller already resolved it.
@@ -270,7 +270,7 @@ fun AniobViewModel.onGrillAnswersSubmitted(answers: Map<String, String>, remembe
 
     val gen = activeGeneration
     activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
-        val resolvedShortcut = AniobIntentResolver.resolve(clarifiedPrompt, this::isLaunchablePackage)
+        val resolvedShortcut = AniobIntentResolver.resolve(clarifiedPrompt, { isLaunchablePackage(it) })
         if (!runDoctorPreflight(updatedTask, clarifiedPrompt, resolvedShortcut)) {
             return@launch
         }

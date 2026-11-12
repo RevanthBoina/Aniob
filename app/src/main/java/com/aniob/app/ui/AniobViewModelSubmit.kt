@@ -87,7 +87,7 @@ fun AniobViewModel.submitTask(prompt: String) {
         // Resolve the effective goal and direct device/app capabilities before any chooser,
         // clarification, Doctor advice, or model route.
         val alternative = if (AniobLaunchHub.isSwitchToOther(trimmed))
-            AniobLaunchHub.plan(trimmed, AniobAppRegistry.getInstance(), this::isLaunchablePackage) else null
+            AniobLaunchHub.plan(trimmed, AniobAppRegistry.getInstance(), { isLaunchablePackage(it) }) else null
         val effectivePrompt = alternative?.let { "open ${it.packageName}" } ?: resolveContextualGoal(trimmed)
         val effectiveTask = task.copy(clarifiedGoal = effectivePrompt)
         // Safety is enforced by AskPolicy DECISIONS at action time, not narrated into
@@ -95,7 +95,7 @@ fun AniobViewModel.submitTask(prompt: String) {
         // confirmation sheets still fire before payments, secrets, deletion, sending,
         // posting, sharing, or calling.
         _uiState.update { it.copy(activeTask = effectiveTask) }
-        val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt, this::isLaunchablePackage)
+        val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt, { isLaunchablePackage(it) })
         // FAST LANE: a solved launch / instant reflex needs no understanding echo,
         // feasibility court, Grill-Me pass or Doctor preflight. AskPolicy DECISIONS
         // still apply at dispatch time. "Solved" means the shortcut answers the WHOLE
@@ -110,7 +110,7 @@ fun AniobViewModel.submitTask(prompt: String) {
         val workflowDecision = if (resolvedShortcut == null) {
             com.aniob.core.workflow.WorkflowRouter.route(
                 effectivePrompt,
-                isAppLaunchable = this::isLaunchablePackage
+                isAppLaunchable = { isLaunchablePackage(it) }
             )
         } else {
             com.aniob.core.workflow.WorkflowDecision.DelegateToExisting(effectivePrompt)

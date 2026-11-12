@@ -233,7 +233,7 @@ class AniobViewModel(
         // App launches are a LOOKUP, never a model call. Both hooks read the same registry the
         // intent resolver reads, so "open clock" means the same package everywhere in the ladder.
         // The platform's launchable check keeps a stale cache entry from opening a removed app.
-        val isLaunchable: (String) -> Boolean = this::isLaunchablePackage
+        val isLaunchable: (String) -> Boolean = { isLaunchablePackage(it) }
         executionRouter.appIsLaunchable = isLaunchable
         // Step 0: the app named at the start of the task ("open Clock and set an alarm").
         executionRouter.appLaunchResolver = { goal ->
