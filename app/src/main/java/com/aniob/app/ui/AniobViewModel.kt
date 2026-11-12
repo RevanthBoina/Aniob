@@ -115,8 +115,6 @@ import com.aniob.core.verifier.AniobReflectionAgent
 import com.aniob.core.verifier.AniobWatchdog
 import com.aniob.core.verifier.DeterministicVerifier
 import java.io.File
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -3067,8 +3065,8 @@ class AniobViewModel(
         // A shortcut this run switched off (an action the device does not have) is restored when
         // the run ends, so one failed dispatch cannot degrade every later task in the batch.
         val shortcutsWereEnabled = executionRouter.intentShortcutsEnabled
-        // Screen identities that already spent their one pre-observe scroll in this run.
-        val preObservedScreens = HashSet<String>()
+        // Pre-observe scrolls already made in this run, per screen identity.
+        val preObservedScreens = HashMap<String, Int>()
         // Viewport merged after that scroll, handed to the next planning pass.
         var preObservedScreen: AniobScreenState? = null
         // Set once a burst's target vanished mid-burst. The screen in front is dynamic (search
@@ -4046,11 +4044,34 @@ class AniobViewModel(
                             var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash ?: dispatchOrigin.screenHash.ifBlank { dispatchOrigin.treeHash }, waitForIdle = false) else true
                             actionsDispatched++
                             var screenAfter = if (researchMode.skipFastStepVerification) null else awaitTransition(act)
+                            // A target named by its text can be searched for directly: scroll the
+                            // container that should hold it until it shows, then run the SAME step
+                            // again. No model call is spent on "it is further down".
+                            val namedTarget = act.semanticTarget()
+                            val namedText = AniobScrollHelper.textOf(namedTarget)
+                            var namedSearchTried = false
                             if (!ok && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
+                                namedText != null
+                            ) {
+                                namedSearchTried = true
+                                val found = scrollUntilTargetVisible(accessibility, dispatchOrigin, namedTarget, namedText)
+                                if (found?.found == true) {
+                                    ok = executeActionSync(accessibility, act)
+                                    screenAfter = awaitTransition(act) ?: found.screen
+                                    app.eventLogger.info(
+                                        "AniobViewModel",
+                                        "Scroll-until-visible revealed '${namedText.take(40)}' after ${found.swipes} steps"
+                                    )
+                                } else if (found?.screen != null) {
+                                    // Not there in either direction: let the next plan see where the search ended.
+                                    preObservedScreen = found.screen
+                                }
+                            }
+                            if (!ok && !namedSearchTried && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
                                 com.aniob.core.perception.PreObserveScroll
                                     .shouldScroll(dispatchOrigin, preObservedScreens)
                             ) {
-                                preObservedScreens += FastVerify.screenIdentity(dispatchOrigin)
+                                preObservedScreens.merge(FastVerify.screenIdentity(dispatchOrigin), 1, Int::plus)
                                 val scrollQuiet = windowQuiet(accessibility, requireMovement = true)
                                 if (accessibility.scrollForwardOnce()) {
                                     // Was a fixed SETTLE_MS. Expected effect: the scroll produced
@@ -4953,12 +4974,9 @@ class AniobViewModel(
             }
         }
 
-        val scrollResult = AniobScrollHelper.scrollUntilFound(
-            screenState = currentScreen,
-            targetPredicate = ::matches,
-            taskPrompt = taskPrompt,
-            capture = { service.captureCurrentScreenState() },
-            executeSwipe = { swipe -> executeActionBlocking(service, swipe) }
+        val startForward = AniobScrollHelper.getSemanticDirection(taskPrompt) != com.aniob.core.domain.SwipeDirection.UP
+        val scrollResult = scrollContainersUntil(
+            service, currentScreen, AniobScrollHelper.textOf(action.semanticTarget()).orEmpty(), startForward, ::matches
         )
         if (!scrollResult.found) return null
 
@@ -4990,15 +5008,52 @@ class AniobViewModel(
         return VerifiedStep(screenAfter, retryAction, verification, true)
     }
 
-    private fun executeActionBlocking(service: AniobAccessibilityService, action: AniobAction): Boolean {
-        val latch = CountDownLatch(1)
-        var success = false
-        service.executeAction(action) { result ->
-            success = result
-            latch.countDown()
+    /** Scroll-until-visible for a target named by text. Null when nothing on the screen scrolls. */
+    private suspend fun scrollUntilTargetVisible(
+        service: AniobAccessibilityService,
+        screen: AniobScreenState,
+        target: SemanticTarget?,
+        targetText: String
+    ): com.aniob.core.tools.ScrollResult? {
+        if (AniobScrollHelper.chooseContainer(screen, targetText) == null) return null
+        return scrollContainersUntil(service, screen, targetText, startForward = true) {
+            AniobScrollHelper.matches(it, target)
         }
-        latch.await(SWIPE_CALLBACK_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        return success
+    }
+
+    /**
+     * Searches the most specific container first (see [AniobScrollHelper.chooseContainer]); if the
+     * target is not in it, the largest container on the screen it ended on gets one search too,
+     * so a small carousel never hides a target that sits in the main list.
+     */
+    private suspend fun scrollContainersUntil(
+        service: AniobAccessibilityService,
+        screen: AniobScreenState,
+        targetHint: String,
+        startForward: Boolean,
+        matches: (AniobNode) -> Boolean
+    ): com.aniob.core.tools.ScrollResult {
+        suspend fun search(from: AniobScreenState, container: AniobNode?) = AniobScrollHelper.scrollUntilFound(
+            screen = from,
+            targetPredicate = matches,
+            container = container,
+            capture = { service.captureCurrentScreenState().also { app.researchTelemetry.recordTreeRead() } },
+            scrollNode = { node, forward, dyPx ->
+                val quiet = windowQuiet(service, requireMovement = true)
+                val moved = withContext(Dispatchers.IO) { service.scrollNode(node, forward, dyPx) }
+                if (moved) until(com.aniob.core.perception.PreObserveScroll.SETTLE_MS) { quiet.settled() }
+                moved
+            },
+            startForward = startForward
+        )
+        val first = search(screen, AniobScrollHelper.chooseContainer(screen, targetHint))
+        if (first.found) return first
+        val endedOn = first.screen ?: screen
+        val largest = com.aniob.core.perception.PreObserveScroll.scrollableContainer(endedOn)
+        val triedBounds = AniobScrollHelper.chooseContainer(screen, targetHint)?.bounds
+        if (largest == null || largest.bounds == triedBounds) return first
+        val second = search(endedOn, largest)
+        return second.copy(swipes = first.swipes + second.swipes)
     }
 
     private fun promptKeywords(taskPrompt: String): List<String> =
