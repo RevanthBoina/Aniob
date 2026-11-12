@@ -2704,8 +2704,9 @@ class AniobViewModel(
         activeRunMode = researchMode
         executionRouter.beginTask()
         applyFeatureSelection(researchMode)
-        if (researchMode.skillsEnabled) skillHydrationJob?.join()
-        if (researchMode.rememberReplay) rememberCacheLoadJob?.join()
+        // Skill and remember-cache hydration keep running in the background; the rungs consume
+        // whatever is ready. A cache that is not hydrated yet simply misses on the very first
+        // task, which is the cold-cache outcome anyway - without blocking dispatch on it.
         app.researchTelemetry.startTask(
             task.clarifiedGoal.ifBlank { task.rawPrompt },
             researchMode.mode,
@@ -2724,14 +2725,13 @@ class AniobViewModel(
         // Honest completion (no fake SUCCESS): extract deterministic success criteria BEFORE step 0
         // so a provisional Finish can be verified against evidence. Without criteria a Finish could
         // be declared on an unchanged screen.
-        val appCatalog = try {
-            com.aniob.core.knowledge.AniobAppCatalog.getInstance().getAll()
-                .filter { it.appName.isNotBlank() }
-                .associate { entry ->
-                    entry.appName.lowercase() to entry.packageName
-                }
-        } catch (_: Exception) {
-            emptyMap()
+        // Lazy: a task that arrives with its criteria already resolved never builds the map.
+        val appCatalog by lazy(LazyThreadSafetyMode.NONE) {
+            runCatching {
+                com.aniob.core.knowledge.AniobAppCatalog.getInstance().getAll()
+                    .filter { it.appName.isNotBlank() }
+                    .associate { it.appName.lowercase() to it.packageName }
+            }.getOrDefault(emptyMap())
         }
         // The goal the runner acts on MUST carry the resolved device noun; otherwise the criteria
         // extractor cannot see a torch/install assertion for a context-resolved bare toggle.
@@ -4432,8 +4432,14 @@ class AniobViewModel(
                 }.getOrNull()
             }
             launch { runCatching {
-                if (isSuccess) persistRememberTransitions(researchMode,
-                    task.clarifiedGoal.ifBlank { task.rawPrompt }, transitionsSnapshot)
+                if (isSuccess) {
+                    // The cache file load no longer blocks dispatch, so it is awaited here, after
+                    // the run: recording into (and saving) the not-yet-loaded empty cache would
+                    // overwrite the persisted one.
+                    if (researchMode.rememberReplay) rememberCacheLoadJob?.join()
+                    persistRememberTransitions(researchMode,
+                        task.clarifiedGoal.ifBlank { task.rawPrompt }, transitionsSnapshot)
+                }
             } }
             launch { runCatching {
                 app.metricsCollector.recordSession(taskId = task.id, prompt = task.rawPrompt, isSuccess = isSuccess,
