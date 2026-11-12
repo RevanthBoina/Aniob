@@ -341,6 +341,15 @@ class AniobViewModel(
     private var activeTaskJob: kotlinx.coroutines.Job? = null
     @Volatile private var activeGeneration: Long = 0L
 
+    // Conversation memory state. Declared above `init`, which restores the last open chat.
+    private val conversationStore by lazy {
+        com.aniob.app.db.ConversationStore(app.database.conversationDao())
+    }
+    private val conversationPrefs by lazy { app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE) }
+
+    /** Id of the chat thread the next answer is filed under. Stable across restarts. */
+    @Volatile private var conversationId: String = ""
+
     // UX-3: cooperative pause; checked at the loop head and inside settle waits.
     @Volatile private var pauseRequested = false
 
@@ -706,14 +715,6 @@ class AniobViewModel(
     // ---- Conversation memory -------------------------------------------------------------
     // The answer path sends the earlier turns of the active conversation to the model and saves
     // each answered exchange, so a follow-up question has context and a chat survives a restart.
-
-    private val conversationStore by lazy {
-        com.aniob.app.db.ConversationStore(app.database.conversationDao())
-    }
-    private val conversationPrefs by lazy { app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE) }
-
-    /** Id of the chat thread the next answer is filed under. Stable across restarts. */
-    @Volatile private var conversationId: String = ""
 
     /** Saved chats for the previous-chats sheet, pinned first, then newest. */
     val conversations: kotlinx.coroutines.flow.Flow<List<com.aniob.app.db.ConversationEntity>>
