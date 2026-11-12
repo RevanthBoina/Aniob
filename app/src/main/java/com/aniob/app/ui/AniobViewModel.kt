@@ -85,6 +85,7 @@ import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
 import com.aniob.core.run.AniobFastLane
+import com.aniob.core.run.ConditionWait
 import com.aniob.core.run.RunLane
 import com.aniob.core.memory.RememberAction
 import com.aniob.core.memory.RememberCache
@@ -1274,6 +1275,17 @@ class AniobViewModel(
             delay(40)
         }
     }
+
+    /** Wait for a condition with a deadline instead of waiting on a clock. */
+    private suspend fun until(
+        deadlineMs: Long,
+        stepMs: Long = ConditionWait.DEFAULT_STEP_MS,
+        condition: () -> Boolean
+    ): Boolean = ConditionWait.until(deadlineMs = deadlineMs, stepMs = stepMs, condition = condition)
+
+    /** "The window stopped moving", read from the service's window-event counter. Create before the action. */
+    private fun windowQuiet(service: AniobAccessibilityService, requireMovement: Boolean) =
+        ConditionWait.WindowQuiet(requireMovement = requireMovement) { service.windowEventSequence() }
 
     /** Event-driven launch proof: stops the instant the target owns the foreground. */
     private suspend fun confirmLaunched(

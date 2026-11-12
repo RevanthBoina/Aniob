@@ -94,8 +94,9 @@ object AniobFastLane {
         while (true) {
             val observed = runCatching(foreground).getOrNull()
             if (AniobLaunchHub.verifyForeground(target, observed)) return true
-            if (now() >= end) return false
-            delay(stepMs)
+            val left = end - now()
+            if (left <= 0L) return false
+            delay(stepMs.coerceAtMost(left).coerceAtLeast(1L))
         }
     }
 
