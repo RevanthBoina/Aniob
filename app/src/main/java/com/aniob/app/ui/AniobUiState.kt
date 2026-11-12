@@ -1,5 +1,6 @@
 package com.aniob.app.ui
 
+import com.aniob.core.domain.*
 import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.provider.AniobProviderConfig
 import com.aniob.app.research.FeatureSelection

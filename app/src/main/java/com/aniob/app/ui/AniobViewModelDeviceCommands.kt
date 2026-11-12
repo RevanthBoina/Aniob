@@ -1,5 +1,6 @@
 package com.aniob.app.ui
 
+import com.aniob.core.domain.*
 import android.content.Context
 import android.content.Intent
 import android.hardware.camera2.CameraManager

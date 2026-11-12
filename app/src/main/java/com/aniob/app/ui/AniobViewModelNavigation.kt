@@ -1,5 +1,6 @@
 package com.aniob.app.ui
 
+import com.aniob.core.domain.*
 import android.content.Context
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobOmniRouteProvider
