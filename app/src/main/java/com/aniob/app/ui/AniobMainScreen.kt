@@ -44,6 +44,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showWhyModelDialog by remember { mutableStateOf(false) }
     var showClearChatDialog by remember { mutableStateOf(false) }
+    var showPreviousChats by remember { mutableStateOf(false) }
     var lastBackPress by remember { mutableStateOf(0L) }
     var reducedMotion by remember { mutableStateOf(false) }
 
@@ -122,7 +123,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             )
 
                             IconButton(
-                                onClick = { viewModel.navigateTo(AniobRoute.HISTORY) },
+                                onClick = { showPreviousChats = true },
                                 modifier = Modifier.testTag("history_button")
                             ) {
                                 Icon(Icons.Default.History, contentDescription = "Previous chats")
@@ -338,6 +339,17 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             }
         }
         else -> {}
+    }
+
+    if (showPreviousChats) {
+        val savedChats by viewModel.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
+        com.aniob.app.ui.chat.PreviousChatsSheet(
+            conversations = savedChats,
+            canSwitch = !uiState.isRunning,
+            onOpen = { id -> showPreviousChats = false; viewModel.openConversation(id) },
+            onDelete = { id -> viewModel.deleteConversation(id) },
+            onDismiss = { showPreviousChats = false }
+        )
     }
 
     if (showClearChatDialog) {

@@ -6,6 +6,7 @@ import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.tools.DevicePowerState
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -161,5 +162,90 @@ class AniobExternalAiTriggerTest {
         // Ensure no model was called
         org.junit.Assert.assertFalse(local.chatCalled)
         org.junit.Assert.assertFalse(cloud.generateCalled)
+    }
+
+    /** Records the exact message list a provider with a native message list would send. */
+    private class RecordingCloudProvider : AniobCloudLlmProvider {
+        override val name = "RECORDING_CLOUD"
+        val requests = mutableListOf<List<Pair<String, String>>>()
+        var reply = ""
+
+        override suspend fun generate(prompt: String, systemPrompt: String): String = reply
+        override suspend fun generateStreaming(prompt: String, systemPrompt: String, onDelta: (String) -> Unit): String =
+            error("the multi-turn overload must be used")
+
+        override suspend fun generateStreaming(
+            turns: List<ChatTurn>,
+            systemPrompt: String,
+            onDelta: (String) -> Unit
+        ): String {
+            requests += listOf("system" to systemPrompt) + turns.map { it.role to it.content }
+            return reply
+        }
+    }
+
+    @Test
+    fun `second message carries the first exchange to the cloud provider`() = runBlocking {
+        val cloud = RecordingCloudProvider()
+        val trigger = AniobExternalAiTrigger(cloud, null, FakeKnowledgeStore())
+        val history = mutableListOf<ChatTurn>()
+
+        cloud.reply = "Nice to meet you, Ravi."
+        val first = trigger.query(
+            prompt = "My name is Ravi", intent = AniobIntent.EXTERNAL_AI_QUERY,
+            powerState = defaultPower, autoMode = "cloud-only", history = history.toList()
+        )
+        history += ChatTurn(ChatTurn.USER, "My name is Ravi")
+        history += ChatTurn(ChatTurn.ASSISTANT, first.answer)
+
+        cloud.reply = "Ravi."
+        trigger.query(
+            prompt = "What is my name?", intent = AniobIntent.EXTERNAL_AI_QUERY,
+            powerState = defaultPower, autoMode = "cloud-only", history = history.toList()
+        )
+
+        assertEquals(listOf("system", "user"), cloud.requests[0].map { it.first })
+        val second = cloud.requests[1]
+        assertEquals(listOf("system", "user", "assistant", "user"), second.map { it.first })
+        assertEquals(
+            listOf("My name is Ravi", "Nice to meet you, Ravi.", "What is my name?"),
+            second.drop(1).map { it.second }
+        )
+    }
+
+    @Test
+    fun `on-device model receives the earlier turns in its single prompt`() = runBlocking {
+        val seen = mutableListOf<String>()
+        val local = object : AniobLocalLlmProvider {
+            override fun chatStreaming(prompt: String, onDelta: (String) -> Unit): String {
+                seen += prompt
+                return "Ravi."
+            }
+            override fun isAvailable() = true
+            override fun release() {}
+        }
+        val trigger = AniobExternalAiTrigger(null, local, FakeKnowledgeStore())
+
+        trigger.query("hello", AniobIntent.EXTERNAL_AI_QUERY, defaultPower, "local-only")
+        trigger.query(
+            prompt = "What is my name?", intent = AniobIntent.EXTERNAL_AI_QUERY,
+            powerState = defaultPower, autoMode = "local-only",
+            history = listOf(ChatTurn(ChatTurn.USER, "My name is Ravi"), ChatTurn(ChatTurn.ASSISTANT, "Hi Ravi."))
+        )
+
+        assertEquals("hello", seen[0])
+        assertEquals(
+            "Conversation so far:\nUser: My name is Ravi\nAssistant: Hi Ravi.\n\nUser: What is my name?",
+            seen[1]
+        )
+    }
+
+    @Test
+    fun `flatten keeps only the newest turns`() {
+        val turns = (1..20).map { ChatTurn(if (it % 2 == 1) ChatTurn.USER else ChatTurn.ASSISTANT, "t$it") }
+        val flat = ChatTurn.flatten(turns)
+        assertFalse(flat.contains("t8"))
+        assertTrue(flat.contains("User: t9"))
+        assertTrue(flat.endsWith("User: t20"))
     }
 }

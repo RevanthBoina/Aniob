@@ -8,6 +8,7 @@ import com.aniob.core.domain.SwipeDirection
 import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.core.external.AniobActionStepProvider
 import com.aniob.core.external.AniobCloudLlmProvider
+import com.aniob.core.external.ChatTurn
 import com.aniob.core.external.AniobGatewayClassifier
 import com.aniob.core.external.AniobGatewayException
 import com.aniob.core.external.AniobGatewayHealth
@@ -87,22 +88,17 @@ class AniobOmniRouteProvider(
     @Volatile
     private var streamingSupported = true
 
-    override suspend fun generate(prompt: String, systemPrompt: String): String = withContext(Dispatchers.IO) {
+    override suspend fun generate(prompt: String, systemPrompt: String): String =
+        generate(listOf(ChatTurn(ChatTurn.USER, prompt)), systemPrompt)
+
+    override suspend fun generate(turns: List<ChatTurn>, systemPrompt: String): String = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         if (apiKey.isBlank() && !isLocalGateway(baseUrl)) {
             return@withContext "Omniroute API key is not configured. Please add it in Settings."
         }
         try {
-            val messages = JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "system")
-                    put("content", systemPrompt)
-                })
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", prompt)
-                })
-            }
+            val messages = buildMessages(systemPrompt, turns, null)
+            val promptChars = turns.takeLast(ChatTurn.MAX_TURNS).sumOf { it.content.length }
             val effectiveModel = AniobProviderConfig.coerceModel(model)
             val payload = buildChatPayload(effectiveModel, messages, maxTokens = 1024, enforceJsonObject = jsonMode)
             val endpoints = admittedEndpoints()
@@ -125,7 +121,7 @@ class AniobOmniRouteProvider(
                         AniobEgressLedger.record(
                             name,
                             routedModel,
-                            prompt.length + systemPrompt.length,
+                            promptChars + systemPrompt.length,
                             fullContent.length,
                             System.currentTimeMillis() - startTime
                         )
@@ -150,14 +146,20 @@ class AniobOmniRouteProvider(
         prompt: String,
         systemPrompt: String,
         onDelta: (String) -> Unit
-    ): String = streamingResult(prompt, systemPrompt, null, onDelta)
+    ): String = streamingResult(listOf(ChatTurn(ChatTurn.USER, prompt)), systemPrompt, null, onDelta)
+
+    override suspend fun generateStreaming(
+        turns: List<ChatTurn>,
+        systemPrompt: String,
+        onDelta: (String) -> Unit
+    ): String = streamingResult(turns, systemPrompt, null, onDelta)
 
     suspend fun generateStreaming(
         prompt: String,
         systemPrompt: String,
         screenshotBase64: String?,
         onDelta: (String) -> Unit
-    ): String = streamingResult(prompt, systemPrompt, screenshotBase64, onDelta)
+    ): String = streamingResult(listOf(ChatTurn(ChatTurn.USER, prompt)), systemPrompt, screenshotBase64, onDelta)
 
     /** Whether this provider instance enforces structured JSON output. */
     fun isJsonMode() = jsonMode
@@ -205,7 +207,7 @@ class AniobOmniRouteProvider(
     }
 
     private suspend fun streamingResult(
-        prompt: String,
+        turns: List<ChatTurn>,
         systemPrompt: String,
         screenshotBase64: String?,
         onDelta: (String) -> Unit
@@ -216,7 +218,8 @@ class AniobOmniRouteProvider(
         }
         val startTime = System.currentTimeMillis()
         try {
-            val messages = buildMessages(systemPrompt, prompt, screenshotBase64)
+            val messages = buildMessages(systemPrompt, turns, screenshotBase64)
+            val promptChars = turns.takeLast(ChatTurn.MAX_TURNS).sumOf { it.content.length }
             val effectiveModel = resolveModelForVision(AniobProviderConfig.coerceModel(model), screenshotBase64)
             val payload = buildChatPayload(effectiveModel, messages, maxTokens = 1024, enforceJsonObject = jsonMode)
             val endpoints = admittedEndpoints()
@@ -240,7 +243,7 @@ class AniobOmniRouteProvider(
                         AniobEgressLedger.record(
                             name,
                             routedModel,
-                            prompt.length + systemPrompt.length,
+                            promptChars + systemPrompt.length,
                             full.length,
                             System.currentTimeMillis() - startTime
                         )
@@ -462,9 +465,23 @@ class AniobOmniRouteProvider(
     /** A 4xx on the streaming shape; the caller retries once without `stream`. */
     private class StreamingRejected(message: String) : IOException(message)
 
-    private fun buildMessages(systemPrompt: String, userPrompt: String, screenshotBase64: String?): JSONArray {
+    private fun buildMessages(systemPrompt: String, userPrompt: String, screenshotBase64: String?): JSONArray =
+        buildMessages(systemPrompt, listOf(ChatTurn(ChatTurn.USER, userPrompt)), screenshotBase64)
+
+    /**
+     * System prompt, then the newest [ChatTurn.MAX_TURNS] turns oldest first. A screenshot is
+     * attached to the final turn only; with a single turn the result is identical to the
+     * request this provider has always sent.
+     */
+    internal fun buildMessages(systemPrompt: String, turns: List<ChatTurn>, screenshotBase64: String?): JSONArray {
         val messages = JSONArray()
         messages.put(JSONObject().apply { put("role", "system"); put("content", systemPrompt) })
+        val window = turns.takeLast(ChatTurn.MAX_TURNS)
+        window.dropLast(1).forEach { turn ->
+            val role = if (turn.role == ChatTurn.ASSISTANT) ChatTurn.ASSISTANT else ChatTurn.USER
+            messages.put(JSONObject().apply { put("role", role); put("content", turn.content) })
+        }
+        val userPrompt = window.lastOrNull()?.content.orEmpty()
         if (!screenshotBase64.isNullOrBlank()) {
             val userContent = JSONArray()
             userContent.put(JSONObject().apply { put("type", "text"); put("text", userPrompt) })

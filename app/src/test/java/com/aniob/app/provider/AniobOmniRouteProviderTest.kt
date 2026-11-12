@@ -19,6 +19,44 @@ class AniobOmniRouteProviderTest {
     }
 
     @Test
+    fun secondMessageIsSentAsSystemUserAssistantUser() {
+        val turns = listOf(
+            com.aniob.core.external.ChatTurn("user", "My name is Ravi"),
+            com.aniob.core.external.ChatTurn("assistant", "Nice to meet you, Ravi."),
+            com.aniob.core.external.ChatTurn("user", "What is my name?")
+        )
+        val messages = AniobOmniRouteProvider(apiKey = "k").buildMessages("SYS", turns, null)
+        val sent = (0 until messages.length()).map { messages.getJSONObject(it) }
+        assertEquals(listOf("system", "user", "assistant", "user"), sent.map { it.getString("role") })
+        assertEquals(
+            listOf("SYS", "My name is Ravi", "Nice to meet you, Ravi.", "What is my name?"),
+            sent.map { it.getString("content") }
+        )
+    }
+
+    @Test
+    fun messageListKeepsOnlyTheNewestTwelveTurnsAfterTheSystemPrompt() {
+        val turns = (1..30).map {
+            com.aniob.core.external.ChatTurn(if (it % 2 == 1) "user" else "assistant", "t$it")
+        } + com.aniob.core.external.ChatTurn("user", "latest")
+        val messages = AniobOmniRouteProvider(apiKey = "k").buildMessages("SYS", turns, null)
+        assertEquals(13, messages.length())
+        assertEquals("system", messages.getJSONObject(0).getString("role"))
+        assertEquals("t20", messages.getJSONObject(1).getString("content"))
+        assertEquals("latest", messages.getJSONObject(12).getString("content"))
+    }
+
+    @Test
+    fun singleTurnWithScreenshotKeepsTheImageOnTheUserMessage() {
+        val messages = AniobOmniRouteProvider(apiKey = "k")
+            .buildMessages("SYS", listOf(com.aniob.core.external.ChatTurn("user", "look")), "abc")
+        assertEquals(2, messages.length())
+        val parts = messages.getJSONObject(1).getJSONArray("content")
+        assertEquals("look", parts.getJSONObject(0).getString("text"))
+        assertEquals("data:image/jpeg;base64,abc", parts.getJSONObject(1).getJSONObject("image_url").getString("url"))
+    }
+
+    @Test
     fun withJsonModeReturnsJsonEnforcingInstance() {
         val p = AniobOmniRouteProvider(apiKey = "k")
         val json = p.withJsonMode()

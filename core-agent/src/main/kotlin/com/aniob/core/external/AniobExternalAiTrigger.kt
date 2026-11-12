@@ -6,6 +6,32 @@ import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.tools.DevicePowerState
 import kotlinx.coroutines.CancellationException
 
+/** One turn of a conversation, oldest first. [role] is "user" or "assistant". */
+data class ChatTurn(val role: String, val content: String) {
+    companion object {
+        const val USER = "user"
+        const val ASSISTANT = "assistant"
+
+        /** How many turns (including the new user turn) a provider sends per request. */
+        const val MAX_TURNS = 12
+
+        /**
+         * Renders [turns] as one prompt for a provider that only accepts a single string.
+         * A lone user turn is returned unchanged, so a first message is byte-identical to the
+         * request sent before conversation memory existed.
+         */
+        fun flatten(turns: List<ChatTurn>): String {
+            val window = turns.takeLast(MAX_TURNS)
+            if (window.size <= 1) return window.firstOrNull()?.content.orEmpty()
+            val earlier = window.dropLast(1).joinToString("\n") { turn ->
+                val speaker = if (turn.role == ASSISTANT) "Assistant" else "User"
+                "$speaker: ${turn.content}"
+            }
+            return "Conversation so far:\n$earlier\n\nUser: ${window.last().content}"
+        }
+    }
+}
+
 /**
  * Interface for Cloud AI Providers (Omniroute etc.) in core-agent.
  */
@@ -14,6 +40,20 @@ interface AniobCloudLlmProvider {
     val isConfigured: Boolean get() = true
     suspend fun generate(prompt: String, systemPrompt: String): String
     suspend fun generateStreaming(prompt: String, systemPrompt: String, onDelta: (String) -> Unit): String
+
+    /**
+     * Multi-turn variants. [turns] is the conversation oldest first and ends with the new user
+     * turn. The default folds the turns into one prompt, so a provider with no native message
+     * list still remembers the conversation; providers that have one should override.
+     */
+    suspend fun generate(turns: List<ChatTurn>, systemPrompt: String): String =
+        generate(ChatTurn.flatten(turns), systemPrompt)
+
+    suspend fun generateStreaming(
+        turns: List<ChatTurn>,
+        systemPrompt: String,
+        onDelta: (String) -> Unit
+    ): String = generateStreaming(ChatTurn.flatten(turns), systemPrompt, onDelta)
 }
 
 sealed interface ExternalAiResult {
@@ -62,9 +102,14 @@ class AniobExternalAiTrigger(
         intent: AniobIntent,
         powerState: DevicePowerState,
         autoMode: String = "auto",
+        /** Earlier turns of this conversation, oldest first, WITHOUT [prompt]. */
+        history: List<ChatTurn> = emptyList(),
         onDelta: (String) -> Unit = {}
     ): ExternalAiResult {
         val startMs = System.currentTimeMillis()
+        val turns = history + ChatTurn(ChatTurn.USER, prompt)
+        // The on-device model takes one string, so it gets the same window flattened.
+        val localPrompt = ChatTurn.flatten(turns)
 
         // VAULT_QUERY -> check SharedKnowledgeStore first
         if (intent == AniobIntent.VAULT_QUERY) {
@@ -136,7 +181,7 @@ class AniobExternalAiTrigger(
         val result: ExternalAiResult = try {
             if (isLocalModeOnly) {
                 if (isLocalReady) {
-                    queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
+                    queryLocal(localProvider!!, localPrompt, intent, startMs, onDelta)
                 } else {
                     val reason = "Local-only mode active: local model is missing or not installed"
                     val answer = "⚠️ $reason"
@@ -150,9 +195,9 @@ class AniobExternalAiTrigger(
                     )
                 }
             } else if (useLocal && isLocalReady) {
-                queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
+                queryLocal(localProvider!!, localPrompt, intent, startMs, onDelta)
             } else if (isCloudReady) {
-                val fullAnswer = cloudProvider!!.generateStreaming(prompt, systemPrompt) { delta ->
+                val fullAnswer = cloudProvider!!.generateStreaming(turns, systemPrompt) { delta ->
                     onDelta(delta)
                 }
                 val isProviderError = fullAnswer.startsWith("Omniroute API key is not configured") ||
@@ -160,7 +205,7 @@ class AniobExternalAiTrigger(
                     fullAnswer.startsWith("Request failed:")
                 if (isProviderError) {
                     if (isLocalReady) {
-                        queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
+                        queryLocal(localProvider!!, localPrompt, intent, startMs, onDelta)
                     } else {
                         ExternalAiResult.Error(
                             answer = fullAnswer,
@@ -179,7 +224,7 @@ class AniobExternalAiTrigger(
                     )
                 }
             } else if (isLocalReady) {
-                queryLocal(localProvider!!, prompt, intent, startMs, onDelta)
+                queryLocal(localProvider!!, localPrompt, intent, startMs, onDelta)
             } else {
                 val reason = "No AI provider or on-device model is configured to answer this question. Download an on-device model in Models or configure an API key in Settings."
                 val answer = "⚠️ $reason"

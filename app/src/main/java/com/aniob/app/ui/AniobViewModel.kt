@@ -654,6 +654,8 @@ class AniobViewModel(
             )
         }
 
+        restoreActiveConversation()
+
         // UX-6: a marker still present at cold start means the OS killed us mid-task. Report it
         // honestly instead of letting the run look like it silently succeeded.
         restoreInterruptedSummary()
@@ -701,7 +703,99 @@ class AniobViewModel(
         }
     }
 
+    // ---- Conversation memory -------------------------------------------------------------
+    // The answer path sends the earlier turns of the active conversation to the model and saves
+    // each answered exchange, so a follow-up question has context and a chat survives a restart.
+
+    private val conversationStore by lazy {
+        com.aniob.app.db.ConversationStore(app.database.conversationDao())
+    }
+    private val conversationPrefs by lazy { app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE) }
+
+    /** Id of the chat thread the next answer is filed under. Stable across restarts. */
+    @Volatile private var conversationId: String = ""
+
+    /** Saved chats for the previous-chats sheet, pinned first, then newest. */
+    val conversations: kotlinx.coroutines.flow.Flow<List<com.aniob.app.db.ConversationEntity>>
+        get() = conversationStore.observeAll()
+
+    private fun activeConversationId(): String {
+        if (conversationId.isBlank()) startNewConversation()
+        return conversationId
+    }
+
+    private fun startNewConversation() {
+        setActiveConversation(java.util.UUID.randomUUID().toString())
+    }
+
+    private fun setActiveConversation(id: String) {
+        conversationId = id
+        conversationPrefs.edit().putString(KEY_ACTIVE_CONVERSATION, id).apply()
+    }
+
+    private fun storedMessageToChat(message: com.aniob.app.db.ChatMessageEntity) = ChatMessage(
+        id = message.id,
+        role = message.role,
+        content = message.content,
+        timestamp = message.timestamp,
+        badge = if (message.role == "assistant") "💬 AI Answer" else null,
+        provider = message.provider
+    )
+
+    /** Cold start: show the chat that was open when the app last closed. */
+    private fun restoreActiveConversation() {
+        val saved = conversationPrefs.getString(KEY_ACTIVE_CONVERSATION, null)
+        if (saved.isNullOrBlank()) return
+        conversationId = saved
+        viewModelScope.launch(Dispatchers.IO) {
+            val stored = runCatching { conversationStore.messages(saved) }.getOrElse { emptyList() }
+            if (stored.isEmpty()) return@launch
+            _uiState.update { state ->
+                // Never overwrite a chat the user has already started typing into.
+                if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" }) {
+                    state.copy(chatMessages = state.chatMessages + stored.map(::storedMessageToChat))
+                } else state
+            }
+        }
+    }
+
+    /** Opens a saved chat: its messages replace the screen and follow-ups continue that thread. */
+    fun openConversation(id: String) {
+        if (_uiState.value.isRunning) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val stored = runCatching { conversationStore.messages(id) }.getOrElse { emptyList() }
+            if (stored.isEmpty() || _uiState.value.isRunning) return@launch
+            setActiveConversation(id)
+            _uiState.update {
+                it.copy(
+                    chatMessages = stored.map(::storedMessageToChat),
+                    steps = emptyList(),
+                    stepEvents = emptyList(),
+                    lastNarration = "",
+                    lastSummary = null,
+                    momentChips = emptyList(),
+                    streamingBubbleText = "",
+                    isStreaming = false,
+                    queuedPrompt = null
+                )
+            }
+        }
+    }
+
+    /** Deletes a saved chat. Deleting the open one also clears the screen. */
+    fun deleteConversation(id: String) {
+        val wasActive = id == conversationId
+        if (wasActive && _uiState.value.isRunning) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { conversationStore.delete(id) }
+                .onFailure { app.eventLogger.warn("AniobViewModel", "Could not delete chat: ${it.message}") }
+            if (wasActive && id == conversationId) clearChat()
+        }
+    }
+
     fun clearChat() {
+        // The cleared chat stays in the previous-chats list; new messages start a new thread.
+        startNewConversation()
         _uiState.update {
             it.copy(
                 chatMessages = emptyList(),
@@ -2304,10 +2398,15 @@ class AniobViewModel(
                         lastProviderUsed = "EXTERNAL_AI"
                     )
                 }
+                val chatId = activeConversationId()
+                val history = runCatching {
+                    conversationStore.historyForLlm(chatId, maxTurns = com.aniob.core.external.ChatTurn.MAX_TURNS)
+                }.getOrElse { emptyList() }
                 // Do not initialize native memory for an explicitly cloud-only request.
                 if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
-                    cloudProvider = if (isCloudConfigured()) getCloudProvider(sessionId = taskId) else null,
+                    // Keyed to the conversation, not the task, so the gateway sees one session per chat.
+                    cloudProvider = if (isCloudConfigured()) getCloudProvider(sessionId = chatId) else null,
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
@@ -2320,6 +2419,7 @@ class AniobViewModel(
                     intent = intent,
                     powerState = powerState,
                     autoMode = autoMode,
+                    history = history,
                     onDelta = { delta ->
                         if (generation == activeGeneration) {
                             _uiState.update { it.copy(streamingBubbleText = it.streamingBubbleText + delta, isStreaming = true) }
@@ -2347,6 +2447,10 @@ class AniobViewModel(
                         chatMessages = it.chatMessages + assistantMessage,
                         lastProviderUsed = result.provider
                     )
+                }
+                if (answered && chatId == conversationId) {
+                    runCatching { conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider) }
+                        .onFailure { app.eventLogger.warn("AniobViewModel", "Could not save chat turn: ${it.message}") }
                 }
 
                 // Record Session Telemetry for analytics and audit
@@ -5195,6 +5299,7 @@ class AniobViewModel(
     }
 
     companion object {
+        private const val KEY_ACTIVE_CONVERSATION = "active_conversation_id"
         /** Upper bound for a single gesture callback before we give up on it. */
         const val SWIPE_CALLBACK_TIMEOUT_SECONDS = 5L
 
