@@ -46,8 +46,20 @@ jobs:
           diagnostics = compiler + failures
           if not diagnostics:
               annotate('\n'.join(lines[-40:]))
-          for line in diagnostics[:20]:
-              annotate(line)
+          # One annotation per ~2,800 characters: a step may publish only a few annotations,
+          # so packing lines keeps a long compiler report readable from the Checks API.
+          chunk = ''
+          chunks = []
+          for line in diagnostics[:400]:
+              line = line[:400]
+              if chunk and len(chunk) + len(line) + 1 > 2800:
+                  chunks.append(chunk)
+                  chunk = ''
+              chunk = line if not chunk else chunk + '\n' + line
+          if chunk:
+              chunks.append(chunk)
+          for chunk in chunks[:8]:
+              annotate(chunk)
           for path in sorted(glob.glob('**/build/test-results/test*/TEST-*.xml', recursive=True)):
               root = ET.parse(path).getroot()
               for case in root.iter('testcase'):
