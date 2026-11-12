@@ -3941,8 +3941,11 @@ class AniobViewModel(
                                     .shouldScroll(dispatchOrigin, preObservedScreens)
                             ) {
                                 preObservedScreens += FastVerify.screenIdentity(dispatchOrigin)
+                                val scrollQuiet = windowQuiet(accessibility, requireMovement = true)
                                 if (accessibility.scrollForwardOnce()) {
-                                    delay(com.aniob.core.perception.PreObserveScroll.SETTLE_MS)
+                                    // Was a fixed SETTLE_MS. Expected effect: the scroll produced
+                                    // window events and they have stopped.
+                                    until(com.aniob.core.perception.PreObserveScroll.SETTLE_MS) { scrollQuiet.settled() }
                                     val revealed = accessibility.captureCurrentScreenState()
                                     // Retry through a stable identity (view id -> text -> content
                                     // description): replaying a SoM index against the tree the
