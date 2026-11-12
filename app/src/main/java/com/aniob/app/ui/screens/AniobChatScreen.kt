@@ -82,6 +82,8 @@ fun AniobChatScreen(
     onContinueInWebsite: (String) -> Unit = {},
     onConsumePendingPrefill: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onGrillConfirm: (Map<String, String>, Set<String>) -> Unit = { _, _ -> },
+    onGrillCancel: () -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
@@ -549,6 +551,18 @@ fun AniobChatScreen(
                     label = { Text(recent.take(24), style = MaterialTheme.typography.labelSmall) }
                 )
             }
+        }
+
+        // 7b. Clarifying questions sit directly above the composer; the chat stays visible.
+        val grillResult = uiState.grillMeResult
+        if (uiState.showGrillMeSheet && grillResult != null) {
+            com.aniob.app.ui.chat.GrillMeInlineCard(
+                grillResult = grillResult,
+                rememberedKeys = uiState.grillRememberedKeys,
+                onConfirm = onGrillConfirm,
+                onDismiss = onGrillCancel,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
         }
 
         // 8. Input Composer (PROMPT 2)

@@ -205,6 +205,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onContinueInWebsite = { taskId -> viewModel.onContinueInWebsite(taskId) },
                         onConsumePendingPrefill = { viewModel.consumePendingInputPrefill() },
                         onOpenSettings = { viewModel.navigateTo(AniobRoute.SETTINGS) },
+                        onGrillConfirm = { answers, rememberKeys -> viewModel.onGrillAnswersSubmitted(answers, rememberKeys) },
+                        onGrillCancel = { viewModel.cancelGrillMe() },
                         renderWindow = { viewModel.renderWindow() }
                     )
                 }
@@ -299,14 +301,12 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
         MomentChipRow(chips = uiState.momentChips, onDismiss = { viewModel.clearMomentChips() })
     }
 
-    // Grill-Me 2.0 (UX-2): remembers which questions were answered from the vault.
-    if (uiState.showGrillMeSheet && uiState.grillMeResult != null) {
-        AniobGrillMeSheet(
-            grillResult = uiState.grillMeResult!!,
-            rememberedKeys = uiState.grillRememberedKeys,
-            onConfirm = { answers, rememberKeys -> viewModel.onGrillAnswersSubmitted(answers, rememberKeys) },
-            onDismiss = { viewModel.cancelGrillMe() }
-        )
+    // Clarifying questions render as an inline card on the chat screen (above the composer).
+    // Bring that screen forward so a question raised while another screen is open is not missed.
+    LaunchedEffect(uiState.showGrillMeSheet, uiState.grillMeResult) {
+        if (uiState.showGrillMeSheet && uiState.grillMeResult != null && route != AniobRoute.CHAT) {
+            viewModel.resetToChat()
+        }
     }
 
     val confirmRequest = uiState.confirmRequest
