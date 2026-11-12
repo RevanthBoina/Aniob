@@ -3156,10 +3156,17 @@ class AniobViewModel(
                 if (reuseCheck != null && !reuseCheck.valid && liveService != null) {
                     if (foregroundBefore == "com.aniob.app") {
                         app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
+                        val revealQuiet = windowQuiet(liveService, requireMovement = false)
                         AniobBackgroundController.currentActivity?.runOnUiThread {
                             AniobBackgroundController.currentActivity?.moveTaskToBack(true)
                         }
-                        delay(600)
+                        // Was a fixed 600 ms. Expected effect: another app owns the foreground and
+                        // its window has stopped moving.
+                        until(SESSION_REVEAL_WAIT_MS) {
+                            val quiet = revealQuiet.settled()
+                            val front = liveService.currentForegroundPackage()
+                            quiet && !front.isNullOrBlank() && front != "com.aniob.app"
+                        }
                         currentScreen = liveService.captureCurrentScreenState()
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     } else if (foregroundBefore != null && foregroundBefore != captured.packageName) {
@@ -5185,6 +5192,9 @@ class AniobViewModel(
 
         /** Lets a dynamic screen finish animating before the post-plan re-observation. */
         const val BURST_REPLAN_SETTLE_MS = 250L
+
+        /** Cap on waiting for the chat window to reveal the app behind it (was a fixed sleep). */
+        const val SESSION_REVEAL_WAIT_MS = 600L
 
         /** Plans that cannot execute even one member before the run stops batching. */
         const val BURST_MAX_ZERO_PROGRESS_REPLANS = 2
