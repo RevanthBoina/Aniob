@@ -14,6 +14,6 @@ agent:
   fastpath_enabled: true
   intent_shortcuts_enabled: true
   grill_me_threshold_confidence: 0.75
-  settle_timeout_ms: 1500
+  settle_timeout_ms: 600
   min_wait_ms: 200
-  max_wait_ms: 5000
+  max_wait_ms: 2000
