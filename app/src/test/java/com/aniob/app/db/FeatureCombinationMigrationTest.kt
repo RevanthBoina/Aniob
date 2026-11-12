@@ -37,7 +37,7 @@ class FeatureCombinationMigrationTest {
             old.version = 6
         }
         val db = Room.databaseBuilder(context, AniobDatabase::class.java, name)
-            .addMigrations(AniobDatabase.MIGRATION_6_7).allowMainThreadQueries().build()
+            .addMigrations(AniobDatabase.MIGRATION_6_7, ConversationStore.MIGRATION_7_8).allowMainThreadQueries().build()
         try {
             db.openHelper.writableDatabase.query("SELECT taskId FROM session_scores").use { cursor ->
                 assertTrue(cursor.moveToFirst())

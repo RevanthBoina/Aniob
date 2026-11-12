@@ -50,7 +50,7 @@ class AuditInteractionTest {
         compose.mainClock.autoAdvance = false
         compose.setContent {
             MaterialTheme {
-                AniobGrillMeSheet(AniobGrillMeResult(true, listOf(
+                com.aniob.app.ui.chat.GrillMeInlineCard(AniobGrillMeResult(true, listOf(
                     GrillQuestion("recipient", "Who should receive this?", listOf("A", "B"))
                 )), onConfirm = { _, _ -> submissions++ }, onDismiss = {})
             }

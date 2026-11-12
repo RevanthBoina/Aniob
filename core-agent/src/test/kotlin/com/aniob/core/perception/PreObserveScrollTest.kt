@@ -39,20 +39,24 @@ class PreObserveScrollTest {
     @Test
     fun scrollsWhenTheScreenHasAContainerAndNothingWasTried() {
         val s = screen("com.android.settings", "h1", node(1, "Settings", scrollable = true), node(2, "Network"))
-        assertTrue(PreObserveScroll.shouldScroll(s, emptySet()))
+        assertTrue(PreObserveScroll.shouldScroll(s, emptyMap()))
         assertTrue(PreObserveScroll.scrollableContainer(s)?.isScrollable == true)
     }
 
     @Test
-    fun neverScrollsTheSameScreenTwice() {
+    fun stopsAfterEightScrollsOfTheSameScreenUnlessATextTargetIsPending() {
         val s = screen("com.android.settings", "h1", node(1, "Settings", scrollable = true))
-        assertFalse(PreObserveScroll.shouldScroll(s, setOf("h1")))
+        assertEquals(8, PreObserveScroll.MAX_SCROLLS_PER_SCREEN)
+        assertTrue(PreObserveScroll.shouldScroll(s, mapOf("h1" to 7)))
+        assertFalse(PreObserveScroll.shouldScroll(s, mapOf("h1" to 8)))
+        assertTrue(PreObserveScroll.shouldScroll(s, mapOf("h1" to 8), textTargetPending = true))
+        assertTrue(PreObserveScroll.shouldScroll(s, mapOf("other" to 8)))
     }
 
     @Test
     fun doesNothingWhenNothingScrolls() {
         val s = screen("com.android.settings", "h1", node(1, "Settings"))
-        assertFalse(PreObserveScroll.shouldScroll(s, emptySet()))
+        assertFalse(PreObserveScroll.shouldScroll(s, emptyMap()))
     }
 
     @Test

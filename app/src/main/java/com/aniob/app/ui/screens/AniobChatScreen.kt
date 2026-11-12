@@ -19,7 +19,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -37,6 +36,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.service.AniobAccessibilityService
@@ -82,6 +82,8 @@ fun AniobChatScreen(
     onContinueInWebsite: (String) -> Unit = {},
     onConsumePendingPrefill: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onGrillConfirm: (Map<String, String>, Set<String>) -> Unit = { _, _ -> },
+    onGrillCancel: () -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
@@ -551,12 +553,25 @@ fun AniobChatScreen(
             }
         }
 
+        // 7b. Clarifying questions sit directly above the composer; the chat stays visible.
+        val grillResult = uiState.grillMeResult
+        if (uiState.showGrillMeSheet && grillResult != null) {
+            com.aniob.app.ui.chat.GrillMeInlineCard(
+                grillResult = grillResult,
+                rememberedKeys = uiState.grillRememberedKeys,
+                onConfirm = onGrillConfirm,
+                onDismiss = onGrillCancel,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        }
+
         // 8. Input Composer (PROMPT 2)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            // Bottom-aligned so the buttons stay beside the last line as the bar grows.
+            verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedTextField(
@@ -568,22 +583,15 @@ fun AniobChatScreen(
                 placeholder = {
                     Text(if (uiState.isRunning) "Queue next task..." else "Message or command...")
                 },
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(20.dp),
                 enabled = true,
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(
-                    onSend = {
-                        if (promptInput.isNotBlank()) {
-                            val cmd = promptInput.trim()
-                            promptInput = ""
-                            if (uiState.isRunning) {
-                                onQueueFollowUp(cmd)
-                            } else {
-                                onSubmitTask(cmd)
-                            }
-                        }
-                    }
+                // Enter inserts a newline; sending is the submit button's job. The bar grows to
+                // ten lines and scrolls inside itself after that.
+                singleLine = false,
+                maxLines = 10,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    imeAction = ImeAction.Default
                 )
             )
 

@@ -60,6 +60,33 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
 
         /** Bounds on the scrollable-container walk used by the pre-observe scroll. */
         private const val SCROLL_SEARCH_DEPTH = 12
+        private const val CONTAINER_SWIPE_TIMEOUT_MS = 1500L
+        private const val CONTAINER_SWIPE_MIN_PX = 40
+        private const val CONTAINER_SWIPE_MAX_FRACTION = 0.8
+
+        /**
+         * A swipe of about [dyPx] that stays inside [bounds]. Wide, short containers (carousels)
+         * are swiped horizontally. Null when the container has no usable area.
+         */
+        internal fun containerSwipe(bounds: AniobRect, forward: Boolean, dyPx: Int): DispatchCommand.SwipeGesture? {
+            if (bounds.isEmpty) return null
+            val width = bounds.right - bounds.left
+            val height = bounds.bottom - bounds.top
+            val horizontal = width > height * 2
+            val extent = if (horizontal) width else height
+            val maxTravel = (extent * CONTAINER_SWIPE_MAX_FRACTION).toInt()
+            if (maxTravel < CONTAINER_SWIPE_MIN_PX) return null
+            val half = dyPx.coerceIn(CONTAINER_SWIPE_MIN_PX, maxTravel) / 2
+            val cx = (bounds.left + bounds.right) / 2
+            val cy = (bounds.top + bounds.bottom) / 2
+            // Later content is revealed by moving the finger towards the start of the container.
+            val from = if (forward) half else -half
+            return if (horizontal) {
+                DispatchCommand.SwipeGesture(cx + from, cy, cx - from, cy, 250L, "scroll inside container")
+            } else {
+                DispatchCommand.SwipeGesture(cx, cy + from, cx, cy - from, 250L, "scroll inside container")
+            }
+        }
         private const val SCROLL_SEARCH_NODES = 8
 
         /**
@@ -1186,6 +1213,38 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         } finally {
             recycleQuietly(root)
         }
+    }
+
+    /**
+     * Scrolls one specific container by about [dyPx]. [forward] reveals later content.
+     *
+     * The node's own `ACTION_SCROLL_FORWARD` / `ACTION_SCROLL_BACKWARD` is preferred: it cannot
+     * leak into a neighbouring list. When the node is gone or refuses, a swipe is dispatched that
+     * starts and ends inside the container's bounds. Must be called off the main thread, because
+     * the gesture result is delivered there.
+     */
+    fun scrollNode(node: AniobNode, forward: Boolean, dyPx: Int): Boolean {
+        val root = runCatching { rootInActiveWindow }.getOrNull()
+        val target = root?.let { runCatching { findAccessibilityNodeByBounds(it, node.bounds) }.getOrNull() }
+        val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+        else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        val viaAction = target != null && target.isScrollable &&
+            runCatching { target.performAction(action) }.getOrDefault(false)
+        if (target != null && target !== root) recycleQuietly(target)
+        root?.let { recycleQuietly(it) }
+        if (viaAction) return true
+
+        val swipe = containerSwipe(node.bounds, forward, dyPx) ?: return false
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            dispatchGesturePath(swipe) {}
+            return true
+        }
+        val done = java.util.concurrent.CountDownLatch(1)
+        var completed = false
+        val dispatched = runCatching { dispatchGesturePath(swipe) { ok -> completed = ok; done.countDown() } }.isSuccess
+        if (!dispatched) return false
+        done.await(CONTAINER_SWIPE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        return completed
     }
 
     private fun collectScrollable(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>, depth: Int) {

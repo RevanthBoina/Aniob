@@ -44,6 +44,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showWhyModelDialog by remember { mutableStateOf(false) }
     var showClearChatDialog by remember { mutableStateOf(false) }
+    var showPreviousChats by remember { mutableStateOf(false) }
     var lastBackPress by remember { mutableStateOf(0L) }
     var reducedMotion by remember { mutableStateOf(false) }
 
@@ -122,7 +123,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             )
 
                             IconButton(
-                                onClick = { viewModel.navigateTo(AniobRoute.HISTORY) },
+                                onClick = { showPreviousChats = true },
                                 modifier = Modifier.testTag("history_button")
                             ) {
                                 Icon(Icons.Default.History, contentDescription = "Previous chats")
@@ -204,6 +205,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onContinueInWebsite = { taskId -> viewModel.onContinueInWebsite(taskId) },
                         onConsumePendingPrefill = { viewModel.consumePendingInputPrefill() },
                         onOpenSettings = { viewModel.navigateTo(AniobRoute.SETTINGS) },
+                        onGrillConfirm = { answers, rememberKeys -> viewModel.onGrillAnswersSubmitted(answers, rememberKeys) },
+                        onGrillCancel = { viewModel.cancelGrillMe() },
                         renderWindow = { viewModel.renderWindow() }
                     )
                 }
@@ -298,14 +301,12 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
         MomentChipRow(chips = uiState.momentChips, onDismiss = { viewModel.clearMomentChips() })
     }
 
-    // Grill-Me 2.0 (UX-2): remembers which questions were answered from the vault.
-    if (uiState.showGrillMeSheet && uiState.grillMeResult != null) {
-        AniobGrillMeSheet(
-            grillResult = uiState.grillMeResult!!,
-            rememberedKeys = uiState.grillRememberedKeys,
-            onConfirm = { answers, rememberKeys -> viewModel.onGrillAnswersSubmitted(answers, rememberKeys) },
-            onDismiss = { viewModel.cancelGrillMe() }
-        )
+    // Clarifying questions render as an inline card on the chat screen (above the composer).
+    // Bring that screen forward so a question raised while another screen is open is not missed.
+    LaunchedEffect(uiState.showGrillMeSheet, uiState.grillMeResult) {
+        if (uiState.showGrillMeSheet && uiState.grillMeResult != null && route != AniobRoute.CHAT) {
+            viewModel.resetToChat()
+        }
     }
 
     val confirmRequest = uiState.confirmRequest
@@ -338,6 +339,17 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             }
         }
         else -> {}
+    }
+
+    if (showPreviousChats) {
+        val savedChats by viewModel.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
+        com.aniob.app.ui.chat.PreviousChatsSheet(
+            conversations = savedChats,
+            canSwitch = !uiState.isRunning,
+            onOpen = { id -> showPreviousChats = false; viewModel.openConversation(id) },
+            onDelete = { id -> viewModel.deleteConversation(id) },
+            onDismiss = { showPreviousChats = false }
+        )
     }
 
     if (showClearChatDialog) {

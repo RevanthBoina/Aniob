@@ -115,8 +115,6 @@ import com.aniob.core.verifier.AniobReflectionAgent
 import com.aniob.core.verifier.AniobWatchdog
 import com.aniob.core.verifier.DeterministicVerifier
 import java.io.File
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -341,6 +339,18 @@ class AniobViewModel(
     private var activeTaskJob: kotlinx.coroutines.Job? = null
     @Volatile private var activeGeneration: Long = 0L
 
+    /** Question raised by the last device command that failed because it needed a choice. */
+    @Volatile private var pendingDeviceClarify: com.aniob.core.grillme.GrillQuestion? = null
+
+    // Conversation memory state. Declared above `init`, which restores the last open chat.
+    private val conversationStore by lazy {
+        com.aniob.app.db.ConversationStore(app.database.conversationDao())
+    }
+    private val conversationPrefs by lazy { app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE) }
+
+    /** Id of the chat thread the next answer is filed under. Stable across restarts. */
+    @Volatile private var conversationId: String = ""
+
     // UX-3: cooperative pause; checked at the loop head and inside settle waits.
     @Volatile private var pauseRequested = false
 
@@ -453,7 +463,35 @@ class AniobViewModel(
 
     private fun isOmniRouteReady(): Boolean = isCloudConfigured()
 
-    private fun getOmniRouteProvider(sessionId: String? = null): AniobOmniRouteProvider {
+    /** One gateway provider per session (task id, conversation id, "grill"), not one per step. */
+    private val omniRouteProviders = com.aniob.app.provider.AniobProviderRegistry { sessionId ->
+        buildOmniRouteProvider(sessionId)
+    }
+
+    /** One account client per task for UI steps. Released when the task ends. */
+    private val accountStepClients = com.aniob.app.provider.AniobProviderRegistry { sessionId ->
+        app.accountAuth.newClient(sessionId) { app.researchTelemetry.recordLlmCall() }
+    }
+
+    /** Settings the gateway provider is built from; a change yields a fresh instance. */
+    private fun omniRouteFingerprint(): String = listOf(
+        _uiState.value.omnirouteApiKey.hashCode().toString(),
+        _uiState.value.omnirouteBaseUrl,
+        _uiState.value.omnirouteModel
+    ).joinToString("|")
+
+    private fun getOmniRouteProvider(sessionId: String? = null): AniobOmniRouteProvider =
+        if (sessionId == null) buildOmniRouteProvider(null)
+        else omniRouteProviders.get(sessionId, omniRouteFingerprint())
+
+    /** Forgets a finished task's providers and logs how many it created (expected: at most 1). */
+    private fun releaseTaskProviders(taskId: String) {
+        val built = omniRouteProviders.release(taskId) + accountStepClients.release(taskId)
+        if (built > 0) app.eventLogger.info("AniobViewModel", "Cloud provider instances for $taskId: $built")
+        if (built > 1) app.eventLogger.warn("AniobViewModel", "Task $taskId rebuilt its cloud provider ${built - 1} time(s)")
+    }
+
+    private fun buildOmniRouteProvider(sessionId: String?): AniobOmniRouteProvider {
         return AniobOmniRouteProvider(
             apiKey = _uiState.value.omnirouteApiKey,
             baseUrl = AniobProviderConfig.normalizeBaseUrl(_uiState.value.omnirouteBaseUrl)
@@ -508,7 +546,8 @@ class AniobViewModel(
     /** UI-step provider for the chosen cloud source. */
     private fun getActionStepProvider(sessionId: String? = null): com.aniob.core.external.AniobActionStepProvider =
         if (cloudSource() == com.aniob.core.auth.AniobCloudSource.ACCOUNT) {
-            app.accountAuth.newClient(sessionId) { app.researchTelemetry.recordLlmCall() }
+            if (sessionId == null) app.accountAuth.newClient(null) { app.researchTelemetry.recordLlmCall() }
+            else accountStepClients.get(sessionId, "account")
         } else {
             getOmniRouteProvider(sessionId)
         }
@@ -654,6 +693,8 @@ class AniobViewModel(
             )
         }
 
+        restoreActiveConversation()
+
         // UX-6: a marker still present at cold start means the OS killed us mid-task. Report it
         // honestly instead of letting the run look like it silently succeeded.
         restoreInterruptedSummary()
@@ -701,7 +742,91 @@ class AniobViewModel(
         }
     }
 
+    // ---- Conversation memory -------------------------------------------------------------
+    // The answer path sends the earlier turns of the active conversation to the model and saves
+    // each answered exchange, so a follow-up question has context and a chat survives a restart.
+
+    /** Saved chats for the previous-chats sheet, pinned first, then newest. */
+    val conversations: kotlinx.coroutines.flow.Flow<List<com.aniob.app.db.ConversationEntity>>
+        get() = conversationStore.observeAll()
+
+    private fun activeConversationId(): String {
+        if (conversationId.isBlank()) startNewConversation()
+        return conversationId
+    }
+
+    private fun startNewConversation() {
+        setActiveConversation(java.util.UUID.randomUUID().toString())
+    }
+
+    private fun setActiveConversation(id: String) {
+        conversationId = id
+        conversationPrefs.edit().putString(KEY_ACTIVE_CONVERSATION, id).apply()
+    }
+
+    private fun storedMessageToChat(message: com.aniob.app.db.ChatMessageEntity) = ChatMessage(
+        id = message.id,
+        role = message.role,
+        content = message.content,
+        timestamp = message.timestamp,
+        badge = if (message.role == "assistant") "💬 AI Answer" else null,
+        provider = message.provider
+    )
+
+    /** Cold start: show the chat that was open when the app last closed. */
+    private fun restoreActiveConversation() {
+        val saved = conversationPrefs.getString(KEY_ACTIVE_CONVERSATION, null)
+        if (saved.isNullOrBlank()) return
+        conversationId = saved
+        viewModelScope.launch(Dispatchers.IO) {
+            val stored = runCatching { conversationStore.messages(saved) }.getOrElse { emptyList() }
+            if (stored.isEmpty()) return@launch
+            _uiState.update { state ->
+                // Never overwrite a chat the user has already started typing into.
+                if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" }) {
+                    state.copy(chatMessages = state.chatMessages + stored.map(::storedMessageToChat))
+                } else state
+            }
+        }
+    }
+
+    /** Opens a saved chat: its messages replace the screen and follow-ups continue that thread. */
+    fun openConversation(id: String) {
+        if (_uiState.value.isRunning) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val stored = runCatching { conversationStore.messages(id) }.getOrElse { emptyList() }
+            if (stored.isEmpty() || _uiState.value.isRunning) return@launch
+            setActiveConversation(id)
+            _uiState.update {
+                it.copy(
+                    chatMessages = stored.map(::storedMessageToChat),
+                    steps = emptyList(),
+                    stepEvents = emptyList(),
+                    lastNarration = "",
+                    lastSummary = null,
+                    momentChips = emptyList(),
+                    streamingBubbleText = "",
+                    isStreaming = false,
+                    queuedPrompt = null
+                )
+            }
+        }
+    }
+
+    /** Deletes a saved chat. Deleting the open one also clears the screen. */
+    fun deleteConversation(id: String) {
+        val wasActive = id == conversationId
+        if (wasActive && _uiState.value.isRunning) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { conversationStore.delete(id) }
+                .onFailure { app.eventLogger.warn("AniobViewModel", "Could not delete chat: ${it.message}") }
+            if (wasActive && id == conversationId) clearChat()
+        }
+    }
+
     fun clearChat() {
+        // The cleared chat stays in the previous-chats list; new messages start a new thread.
+        startNewConversation()
         _uiState.update {
             it.copy(
                 chatMessages = emptyList(),
@@ -1299,11 +1424,12 @@ class AniobViewModel(
      * Warms DNS/TLS/HTTP-2 for the gateway. Never throws and never counts as a model call: the
      * request is a plain `GET /models`, so the first real action reuses the open connection.
      */
-    private suspend fun prewarmGateway() {
+    private suspend fun prewarmGateway(sessionId: String? = null) {
         if (!isCloudConfigured()) return
         // Only the gateway has a prewarm; opening a connection to the account service is not free.
         if (cloudSource() != com.aniob.core.auth.AniobCloudSource.OMNIROUTE) return
-        runCatching { getOmniRouteProvider().prewarm() }
+        // With a session id this warms the very instance the task's steps will use.
+        runCatching { getOmniRouteProvider(sessionId).prewarm() }
     }
 
     /**
@@ -2304,10 +2430,15 @@ class AniobViewModel(
                         lastProviderUsed = "EXTERNAL_AI"
                     )
                 }
+                val chatId = activeConversationId()
+                val history = runCatching {
+                    conversationStore.historyForLlm(chatId, maxTurns = com.aniob.core.external.ChatTurn.MAX_TURNS)
+                }.getOrElse { emptyList() }
                 // Do not initialize native memory for an explicitly cloud-only request.
                 if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
-                    cloudProvider = if (isCloudConfigured()) getCloudProvider(sessionId = taskId) else null,
+                    // Keyed to the conversation, not the task, so the gateway sees one session per chat.
+                    cloudProvider = if (isCloudConfigured()) getCloudProvider(sessionId = chatId) else null,
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
@@ -2320,6 +2451,7 @@ class AniobViewModel(
                     intent = intent,
                     powerState = powerState,
                     autoMode = autoMode,
+                    history = history,
                     onDelta = { delta ->
                         if (generation == activeGeneration) {
                             _uiState.update { it.copy(streamingBubbleText = it.streamingBubbleText + delta, isStreaming = true) }
@@ -2347,6 +2479,10 @@ class AniobViewModel(
                         chatMessages = it.chatMessages + assistantMessage,
                         lastProviderUsed = result.provider
                     )
+                }
+                if (answered && chatId == conversationId) {
+                    runCatching { conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider) }
+                        .onFailure { app.eventLogger.warn("AniobViewModel", "Could not save chat turn: ${it.message}") }
                 }
 
                 // Record Session Telemetry for analytics and audit
@@ -2798,8 +2934,8 @@ class AniobViewModel(
             null
         }
         // Warm the gateway again at task start: the user may have been idle long enough for the
-        // connection pool to drop the socket.
-        viewModelScope.launch(Dispatchers.IO) { prewarmGateway() }
+        // connection pool to drop the socket. Once per task, on the task's own provider.
+        viewModelScope.launch(Dispatchers.IO) { prewarmGateway(task.id) }
 
         // Background automation integrity: minimize Aniob chat UI and run foreground service
         AniobBackgroundController.onTaskStarted(app, task.clarifiedGoal.ifBlank { task.rawPrompt })
@@ -2959,8 +3095,11 @@ class AniobViewModel(
         // A shortcut this run switched off (an action the device does not have) is restored when
         // the run ends, so one failed dispatch cannot degrade every later task in the batch.
         val shortcutsWereEnabled = executionRouter.intentShortcutsEnabled
-        // Screen identities that already spent their one pre-observe scroll in this run.
-        val preObservedScreens = HashSet<String>()
+        // Model routing for this task: one on-device attempt, then cloud, and cloud stays chosen.
+        var cloudEscalationAllowed = false
+        val executionLlm = com.aniob.core.ladder.ExecutionLlmGateway { cloudEscalationAllowed }
+        // Pre-observe scrolls already made in this run, per screen identity.
+        val preObservedScreens = HashMap<String, Int>()
         // Viewport merged after that scroll, handed to the next planning pass.
         var preObservedScreen: AniobScreenState? = null
         // Set once a burst's target vanished mid-burst. The screen in front is dynamic (search
@@ -3762,25 +3901,42 @@ class AniobViewModel(
                         val canEscalateToCloud = userRouting != "local-only" && isCloudConfigured() && powerState.isNetworkAvailable
 
                         val plannedAction = if (localCanDrive) {
-                            setPhase(AgentPhase.PLANNING, ThinkSource.MODEL_LOCAL)
-                            app.researchTelemetry.recordLocalInference()
-                            val gen = localLlmClient.generateStepResult(
-                                systemPrompt,
-                                activePrompt
-                            )
-                            val localPromptEst = (systemPrompt.length + activePrompt.length) / 4
-                            app.researchTelemetry.recordPromptTokens(localPromptEst)
-                            totalTokens += localPromptEst.coerceAtLeast(80)
-                            if (gen is AniobGenerationResult.Ready) {
-                                android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
-                            }
-                            val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
-                            if (structured.usedFallback) {
-                                app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
-                                if (canEscalateToCloud) {
+                            cloudEscalationAllowed = canEscalateToCloud
+                            val cloudWasSticky = executionLlm.stickyCloud
+                            executionLlm.plan(
+                                request = com.aniob.core.ladder.ExecutionLlmGateway.Request(systemPrompt, activePrompt),
+                                local = { request ->
+                                    setPhase(AgentPhase.PLANNING, ThinkSource.MODEL_LOCAL)
+                                    app.researchTelemetry.recordLocalInference()
+                                    val gen = localLlmClient.generateStepResult(
+                                        request.systemPrompt,
+                                        request.userPrompt
+                                    )
+                                    val localPromptEst = (request.systemPrompt.length + request.userPrompt.length) / 4
+                                    app.researchTelemetry.recordPromptTokens(localPromptEst)
+                                    totalTokens += localPromptEst.coerceAtLeast(80)
+                                    if (gen is AniobGenerationResult.Ready) {
+                                        android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
+                                    }
+                                    val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
+                                    if (structured.usedFallback) {
+                                        app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
+                                    }
+                                    com.aniob.core.ladder.ExecutionLlmGateway.LocalAttempt(
+                                        structured.action, structured.usedFallback, structured.reason
+                                    )
+                                },
+                                cloud = { _ ->
+                                    // Same system and user prompt as the on-device attempt; the
+                                    // screen is not captured again.
                                     primaryProvider = "OMNIROUTE_CLOUD"
+                                    taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
                                     escalations++
-                                    decisionReason = "Escalated to OmniRoute Cloud after local output fallback"
+                                    decisionReason = if (!cloudWasSticky) {
+                                        "Escalated to OmniRoute Cloud after local output fallback"
+                                    } else {
+                                        "Staying on OmniRoute Cloud after an earlier local fallback"
+                                    }
                                     _uiState.update {
                                         it.copy(
                                             statusMessage = "Escalating to Cloud...",
@@ -3789,12 +3945,8 @@ class AniobViewModel(
                                         )
                                     }
                                     runOmniRouteStep(allowLocalFallback = false)
-                                } else {
-                                    structured.action
                                 }
-                            } else {
-                                structured.action
-                            }
+                            ).action
                         } else if (decision.target == RouteTarget.LOCAL_SLM && canEscalateToCloud) {
                             primaryProvider = "OMNIROUTE_CLOUD"
                             taskStickyTarget = RouteTarget.OMNIROUTE_CLOUD
@@ -3908,6 +4060,8 @@ class AniobViewModel(
                         }
                         act is AniobAction.DeviceControl -> {
                             val result = runDeviceCommand(act.command, act.args)
+                            // A command that could not choose for the user (no file matched) asks.
+                            pendingDeviceClarify = result.clarify
                             postDeviceResult(result)
                             actionsDispatched++
                             // The result text is what the model reads next; a silent command leaves the
@@ -3936,11 +4090,34 @@ class AniobViewModel(
                             var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash ?: dispatchOrigin.screenHash.ifBlank { dispatchOrigin.treeHash }, waitForIdle = false) else true
                             actionsDispatched++
                             var screenAfter = if (researchMode.skipFastStepVerification) null else awaitTransition(act)
+                            // A target named by its text can be searched for directly: scroll the
+                            // container that should hold it until it shows, then run the SAME step
+                            // again. No model call is spent on "it is further down".
+                            val namedTarget = act.semanticTarget()
+                            val namedText = AniobScrollHelper.textOf(namedTarget)
+                            var namedSearchTried = false
                             if (!ok && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
+                                namedText != null
+                            ) {
+                                namedSearchTried = true
+                                val found = scrollUntilTargetVisible(accessibility, dispatchOrigin, namedTarget, namedText)
+                                if (found?.found == true) {
+                                    ok = executeActionSync(accessibility, act)
+                                    screenAfter = awaitTransition(act) ?: found.screen
+                                    app.eventLogger.info(
+                                        "AniobViewModel",
+                                        "Scroll-until-visible revealed '${namedText.take(40)}' after ${found.swipes} steps"
+                                    )
+                                } else if (found?.screen != null) {
+                                    // Not there in either direction: let the next plan see where the search ended.
+                                    preObservedScreen = found.screen
+                                }
+                            }
+                            if (!ok && !namedSearchTried && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
                                 com.aniob.core.perception.PreObserveScroll
                                     .shouldScroll(dispatchOrigin, preObservedScreens)
                             ) {
-                                preObservedScreens += FastVerify.screenIdentity(dispatchOrigin)
+                                preObservedScreens.merge(FastVerify.screenIdentity(dispatchOrigin), 1, Int::plus)
                                 val scrollQuiet = windowQuiet(accessibility, requireMovement = true)
                                 if (accessibility.scrollForwardOnce()) {
                                     // Was a fixed SETTLE_MS. Expected effect: the scroll produced
@@ -4308,7 +4485,10 @@ class AniobViewModel(
                         continue
                     }
                     // GRILL-ME for the model: "FAIL: ASK_USER: question | opt | opt" becomes the Grill sheet, once per task.
-                    val parsedAsk = com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
+                    val deviceAsk = pendingDeviceClarify
+                    pendingDeviceClarify = null
+                    val parsedAsk = deviceAsk
+                        ?: com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
                     if (parsedAsk != null && task.grillAnswers.isEmpty()) {
                         val ask = grillMeEngine.sanitizeQuestion(parsedAsk)
                         setPhase(AgentPhase.ASKING)
@@ -4339,6 +4519,7 @@ class AniobViewModel(
             // A shortcut disabled mid-run because this device could not dispatch it is a property
             // of the run, not of the session.
             executionRouter.intentShortcutsEnabled = shortcutsWereEnabled
+            releaseTaskProviders(task.id)
             AniobAccessibilityService.isTaskActive = false
             if (!researchMode.immediateCompletion || !currentCoroutineContext().isActive) learningPipeline.onTaskEnd(task.id)
         }
@@ -4840,12 +5021,9 @@ class AniobViewModel(
             }
         }
 
-        val scrollResult = AniobScrollHelper.scrollUntilFound(
-            screenState = currentScreen,
-            targetPredicate = ::matches,
-            taskPrompt = taskPrompt,
-            capture = { service.captureCurrentScreenState() },
-            executeSwipe = { swipe -> executeActionBlocking(service, swipe) }
+        val startForward = AniobScrollHelper.getSemanticDirection(taskPrompt) != com.aniob.core.domain.SwipeDirection.UP
+        val scrollResult = scrollContainersUntil(
+            service, currentScreen, AniobScrollHelper.textOf(action.semanticTarget()).orEmpty(), startForward, ::matches
         )
         if (!scrollResult.found) return null
 
@@ -4877,15 +5055,52 @@ class AniobViewModel(
         return VerifiedStep(screenAfter, retryAction, verification, true)
     }
 
-    private fun executeActionBlocking(service: AniobAccessibilityService, action: AniobAction): Boolean {
-        val latch = CountDownLatch(1)
-        var success = false
-        service.executeAction(action) { result ->
-            success = result
-            latch.countDown()
+    /** Scroll-until-visible for a target named by text. Null when nothing on the screen scrolls. */
+    private suspend fun scrollUntilTargetVisible(
+        service: AniobAccessibilityService,
+        screen: AniobScreenState,
+        target: SemanticTarget?,
+        targetText: String
+    ): com.aniob.core.tools.ScrollResult? {
+        if (AniobScrollHelper.chooseContainer(screen, targetText) == null) return null
+        return scrollContainersUntil(service, screen, targetText, startForward = true) {
+            AniobScrollHelper.matches(it, target)
         }
-        latch.await(SWIPE_CALLBACK_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        return success
+    }
+
+    /**
+     * Searches the most specific container first (see [AniobScrollHelper.chooseContainer]); if the
+     * target is not in it, the largest container on the screen it ended on gets one search too,
+     * so a small carousel never hides a target that sits in the main list.
+     */
+    private suspend fun scrollContainersUntil(
+        service: AniobAccessibilityService,
+        screen: AniobScreenState,
+        targetHint: String,
+        startForward: Boolean,
+        matches: (AniobNode) -> Boolean
+    ): com.aniob.core.tools.ScrollResult {
+        suspend fun search(from: AniobScreenState, container: AniobNode?) = AniobScrollHelper.scrollUntilFound(
+            screen = from,
+            targetPredicate = matches,
+            container = container,
+            capture = { service.captureCurrentScreenState().also { app.researchTelemetry.recordTreeRead() } },
+            scrollNode = { node, forward, dyPx ->
+                val quiet = windowQuiet(service, requireMovement = true)
+                val moved = withContext(Dispatchers.IO) { service.scrollNode(node, forward, dyPx) }
+                if (moved) until(com.aniob.core.perception.PreObserveScroll.SETTLE_MS) { quiet.settled() }
+                moved
+            },
+            startForward = startForward
+        )
+        val first = search(screen, AniobScrollHelper.chooseContainer(screen, targetHint))
+        if (first.found) return first
+        val endedOn = first.screen ?: screen
+        val largest = com.aniob.core.perception.PreObserveScroll.scrollableContainer(endedOn)
+        val triedBounds = AniobScrollHelper.chooseContainer(screen, targetHint)?.bounds
+        if (largest == null || largest.bounds == triedBounds) return first
+        val second = search(endedOn, largest)
+        return second.copy(swipes = first.swipes + second.swipes)
     }
 
     private fun promptKeywords(taskPrompt: String): List<String> =
@@ -5195,6 +5410,7 @@ class AniobViewModel(
     }
 
     companion object {
+        private const val KEY_ACTIVE_CONVERSATION = "active_conversation_id"
         /** Upper bound for a single gesture callback before we give up on it. */
         const val SWIPE_CALLBACK_TIMEOUT_SECONDS = 5L
 

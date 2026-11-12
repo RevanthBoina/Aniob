@@ -45,6 +45,43 @@ object AniobFileQuery {
         "text/plain"
     )
 
+    /** Words that mean the same document to a person. Matching any one of a group matches all. */
+    private val SYNONYMS = listOf(
+        setOf("resume", "cv", "curriculum"),
+        setOf("bill", "invoice", "receipt"),
+        setOf("id", "aadhaar", "pan", "passport")
+    )
+
+    /** Words that say nothing about a file name and would match almost everything. */
+    private val FILLER = setOf(
+        "the", "and", "for", "from", "with", "that", "this", "file", "files", "document", "documents",
+        "open", "find", "show", "today", "yesterday", "latest", "recent", "new", "old"
+    )
+
+    const val MAX_TERMS = 6
+    private const val MIN_TOKEN_CHARS = 3
+
+    /**
+     * Name fragments to look for, most specific first: the phrase as typed (without a leading
+     * "my"), then its words of at least [MIN_TOKEN_CHARS] characters, then synonyms of its
+     * words (a synonym may be shorter, e.g. "cv"). At most [MAX_TERMS]; empty for a blank query.
+     */
+    fun expand(query: String): List<String> {
+        val phrase = query.trim().lowercase().replace(Regex("\\s+"), " ")
+            .removePrefix("my ").trim()
+        if (phrase.isEmpty()) return emptyList()
+        val words = phrase.split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+        val terms = LinkedHashSet<String>()
+        terms += phrase
+        words.filterTo(terms) { it.length >= MIN_TOKEN_CHARS && it !in FILLER && it != "my" }
+        words.forEach { word ->
+            SYNONYMS.filter { word in it }.forEach { group ->
+                group.filterTo(terms) { it != word }
+            }
+        }
+        return terms.take(MAX_TERMS)
+    }
+
     fun find(context: Context, request: Request, nowMs: Long = System.currentTimeMillis()): List<FileHit> {
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
@@ -81,9 +118,12 @@ object AniobFileQuery {
             where += "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
             args += "%.$ext"
         }
-        if (request.query.isNotBlank()) {
-            where += "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
-            args += "%${request.query.trim()}%"
+        // People name a file by what it is ("my resume"), not by its file name ("CV_2024.pdf"),
+        // so the name is matched against the phrase, its words and their common synonyms.
+        val terms = expand(request.query)
+        if (terms.isNotEmpty()) {
+            where += terms.joinToString(" OR ", "(", ")") { "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?" }
+            args += terms.map { "%$it%" }
         }
         val nowSec = nowMs / 1000
         request.withinHours?.let {

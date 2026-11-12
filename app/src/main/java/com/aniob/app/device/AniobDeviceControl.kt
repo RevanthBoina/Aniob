@@ -896,6 +896,54 @@ object AniobDeviceControl {
         return fail("No matching files found.")
     }
 
+    /**
+     * Nothing matched a file the user asked to open. Guessing a different file would be worse than
+     * asking, so the result carries a question: recent documents as choices, free text allowed.
+     */
+    private fun askWhichFile(context: Context, args: Map<String, String>): DeviceControlResult {
+        val recent = runCatching {
+            AniobFileQuery.find(context, AniobFileQuery.Request(kind = "document", limit = FILE_CHOICE_RECENT))
+        }.getOrElse { emptyList() }.map { it.name }
+        val shared = if (recent.size < FILE_CHOICE_RECENT) {
+            AniobDocumentAccess.listShared(context, FILE_CHOICE_RECENT).map { it.name }
+        } else emptyList()
+        return DeviceControlResult(
+            ok = false,
+            message = "No file matching \"${args["query"].orEmpty()}\" was found, so I asked which one to open.",
+            clarify = fileChoiceQuestion(
+                query = args["query"].orEmpty(),
+                recentNames = recent + shared,
+                allFilesAccess = Environment.isExternalStorageManager()
+            )
+        )
+    }
+
+    const val FILE_CHOICE_ID = "file_choice"
+    const val FILE_CHOICE_PICKER = "Choose from my files"
+    private const val FILE_CHOICE_RECENT = 3
+
+    /**
+     * The question shown when no file matched. Without All-files access most documents are
+     * invisible to the index, so the system picker is offered first.
+     */
+    internal fun fileChoiceQuestion(
+        query: String,
+        recentNames: List<String>,
+        allFilesAccess: Boolean
+    ): com.aniob.core.grillme.GrillQuestion {
+        val names = recentNames.map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(FILE_CHOICE_RECENT)
+        val options = if (allFilesAccess) names + FILE_CHOICE_PICKER else listOf(FILE_CHOICE_PICKER) + names
+        val what = query.trim().take(60)
+        return com.aniob.core.grillme.GrillQuestion(
+            id = FILE_CHOICE_ID,
+            question = if (what.isEmpty()) "Which file should I open?"
+            else "I couldn't find a file named \"$what\". Which one should I open?",
+            options = options,
+            allowFreeText = true,
+            defaultOption = null
+        )
+    }
+
     private fun fileFind(context: Context, args: Map<String, String>): DeviceControlResult {
         val hits = runCatching { AniobFileQuery.find(context, fileRequest(args, args["limit"]?.toIntOrNull() ?: 5)) }
             .getOrElse { return fail("Could not read the file index: ${it.javaClass.simpleName}.") }
@@ -913,7 +961,7 @@ object AniobDeviceControl {
         val hit = if (explicit == null) {
             runCatching { AniobFileQuery.find(context, fileRequest(args, 1)) }
                 .getOrElse { return fail("Could not read the file index: ${it.javaClass.simpleName}.") }
-                .firstOrNull() ?: return noFilesHint(context, args)
+                .firstOrNull() ?: return askWhichFile(context, args)
         } else null
         val uri = explicit ?: hit!!.uri
         val mime = hit?.mimeType ?: runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "*/*"

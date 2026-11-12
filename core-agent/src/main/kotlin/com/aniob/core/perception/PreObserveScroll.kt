@@ -29,8 +29,12 @@ object PreObserveScroll {
     /** Time given to the list animation and the accessibility tree before the second capture. */
     const val SETTLE_MS = 300L
 
-    /** One scroll per screen identity. A second pass would just walk the model down the list. */
-    const val MAX_SCROLLS_PER_SCREEN = 1
+    /**
+     * Blind auto-scrolls allowed per screen identity. Enough to walk a long settings page; the
+     * limit does not apply while a named (text) target is being searched for, which has its own
+     * bounded search in `AniobScrollHelper`.
+     */
+    const val MAX_SCROLLS_PER_SCREEN = 8
 
     /** Nodes that scrolled away are context, not targets; keep the prompt bounded. */
     private const val MAX_CARRIED_NODES = 20
@@ -44,13 +48,19 @@ object PreObserveScroll {
             .maxByOrNull { it.bounds.area }
 
     /**
-     * Whether this screen still has an unspent auto-scroll. [alreadyScrolled] holds the identities
-     * ([FastVerify.screenIdentity]) that were scrolled for already during the current run.
+     * Whether this screen still has an unspent auto-scroll. [scrollCounts] holds, per identity
+     * ([FastVerify.screenIdentity]), how many auto-scrolls the current run has already made.
+     * [textTargetPending] lifts the per-screen limit: a named target is still being looked for.
      */
-    fun shouldScroll(screen: AniobScreenState, alreadyScrolled: Set<String>): Boolean {
+    fun shouldScroll(
+        screen: AniobScreenState,
+        scrollCounts: Map<String, Int>,
+        textTargetPending: Boolean = false
+    ): Boolean {
         if (scrollableContainer(screen) == null) return false
         val identity = FastVerify.screenIdentity(screen)
-        return identity.isNotBlank() && identity !in alreadyScrolled
+        if (identity.isBlank()) return false
+        return textTargetPending || (scrollCounts[identity] ?: 0) < MAX_SCROLLS_PER_SCREEN
     }
 
     /**

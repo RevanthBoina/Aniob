@@ -15,9 +15,11 @@ import androidx.room.RoomDatabase
         WorkflowEntity::class,
         AuditLogEntity::class,
         FeatureCombinationEntity::class,
-        TaskOutcomeEntity::class
+        TaskOutcomeEntity::class,
+        ConversationEntity::class,
+        ChatMessageEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class AniobDatabase : RoomDatabase() {
@@ -30,6 +32,7 @@ abstract class AniobDatabase : RoomDatabase() {
     abstract fun workflowDao(): WorkflowDao
     abstract fun auditLogDao(): AuditLogDao
     abstract fun taskOutcomeDao(): TaskOutcomeDao
+    abstract fun conversationDao(): ConversationDao
 
     companion object {
         @Volatile
@@ -79,7 +82,8 @@ abstract class AniobDatabase : RoomDatabase() {
                     WorkflowDatabaseMigrations.MIGRATION_3_4,
                     MIGRATION_4_5,
                     OutcomeGuard.MIGRATION_5_6,
-                    MIGRATION_6_7
+                    MIGRATION_6_7,
+                    ConversationStore.MIGRATION_7_8
                 ).addCallback(OutcomeGuard.callback).build()
                 INSTANCE = instance
                 instance
