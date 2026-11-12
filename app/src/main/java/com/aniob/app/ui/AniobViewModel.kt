@@ -2155,21 +2155,11 @@ class AniobViewModel(
                 AniobLaunchHub.plan(trimmed, AniobAppRegistry.getInstance(), ::isLaunchablePackage) else null
             val effectivePrompt = alternative?.let { "open ${it.packageName}" } ?: resolveContextualGoal(trimmed)
             val effectiveTask = task.copy(clarifiedGoal = effectivePrompt)
-            val headsUp = com.aniob.core.safety.AskPolicy.taskStartPreview(
-                effectivePrompt,
-                AniobSafetyInterceptor.askLevel
-            )
-            _uiState.update {
-                it.copy(
-                    activeTask = effectiveTask,
-                    chatMessages = it.chatMessages + ChatMessage(
-                    id = "msg_heads_up_${task.id}",
-                    role = "assistant",
-                    content = headsUp,
-                    provider = "ASK_POLICY",
-                    badge = "Heads-up"
-                ))
-            }
+            // Safety is enforced by AskPolicy DECISIONS at action time, not narrated into
+            // the transcript. The interruption level is shown once in Settings; the actual
+            // confirmation sheets still fire before payments, secrets, deletion, sending,
+            // posting, sharing, or calling.
+            _uiState.update { it.copy(activeTask = effectiveTask) }
             val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt, ::isLaunchablePackage)
             val workflowDecision = if (resolvedShortcut == null) {
                 com.aniob.core.workflow.WorkflowRouter.route(

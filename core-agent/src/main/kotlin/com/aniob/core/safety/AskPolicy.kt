@@ -143,29 +143,4 @@ object AskPolicy {
         }
         return verdict.copy(reason = reason, riskTier = tier, requiresConfirmation = true)
     }
-
-    /** Plain, deterministic heads-up shown before routing or dispatch. */
-    fun taskStartPreview(prompt: String, level: AskLevel): String {
-        val likely = buildList {
-            val lower = prompt.lowercase()
-            if (secretPattern.containsMatchIn(lower)) add("secret codes, passwords, or PINs")
-            if (moneyPattern.containsMatchIn(lower)) add("payments")
-            if (deletePattern.containsMatchIn(lower)) add("deletion")
-            if (level != AskLevel.OFF && sendPattern.containsMatchIn(lower)) add("sending, posting, sharing, or calling")
-            if (level == AskLevel.CAREFUL && (prompt.contains("permanent", true) || prompt.contains("cannot undo", true))) {
-                add("other hard-to-reverse actions")
-            }
-        }.distinct().take(3)
-
-        val scope = when (level) {
-            AskLevel.OFF -> "I'll proceed without ordinary-action prompts, but I will pause before payments, secrets, or deletion."
-            AskLevel.BALANCED -> "I'll pause before payments, secrets, deletion, and sending, posting, sharing, or calling."
-            AskLevel.CAREFUL -> "I'll pause before payments, secrets, deletion, sending, posting, sharing, calls, and other consequential actions."
-        }
-        return if (likely.isEmpty()) {
-            "Heads-up: $scope"
-        } else {
-            "Heads-up: For this task I may ask before ${likely.joinToString(", ")}. $scope"
-        }
-    }
 }
