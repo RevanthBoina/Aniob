@@ -283,6 +283,32 @@ object AniobLaunchHub {
     fun stripTrailingClause(remainder: String): String =
         remainder.split(CLAUSE_BREAK, limit = 2).first().trim()
 
+    /**
+     * True when opening [packageName] is the **whole** request ("open clock", "launch the Instagram
+     * app") and not the first hop of a longer goal ("open WhatsApp and send hi to Mom", "open Chrome
+     * browser history").
+     *
+     * [plan] deliberately answers both shapes, because a multi-step task still starts by opening its
+     * app. Anything that wants to *finish* on the launch (the fast lane) must ask this first:
+     * the text after the launch verb has to be an app name and nothing else.
+     */
+    fun isSoleLaunch(
+        prompt: String,
+        packageName: String,
+        registry: AniobAppRegistry = AniobAppRegistry.getInstance()
+    ): Boolean {
+        val trimmed = prompt.trim().trimEnd('?', '.', '!', ',', ';', ' ')
+        val remainder = LAUNCH_VERB.find(trimmed)?.groupValues?.get(1)?.trim() ?: return false
+        if (remainder.isBlank() || stripTrailingClause(remainder) != remainder) return false
+        val withoutAppWord = remainder.replace(APP_WORD_SUFFIX, "").trim()
+        return listOf(remainder, withoutAppWord).distinct().filter { it.isNotBlank() }.any { name ->
+            val found = registry.resolveWithSeed(name)
+            found is AppLookup.Match && found.app.packageName.equals(packageName, ignoreCase = true)
+        }
+    }
+
+    private val APP_WORD_SUFFIX = Regex("\\s+app(?:lication)?$", RegexOption.IGNORE_CASE)
+
     /** True when [text] starts with [word] and the next character is not a letter or digit. */
     private fun startsWithWord(text: String, word: String): Boolean {
         if (!text.startsWith(word)) return false

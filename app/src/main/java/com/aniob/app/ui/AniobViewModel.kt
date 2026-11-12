@@ -84,6 +84,8 @@ import com.aniob.core.ladder.AppLaunchTarget
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
+import com.aniob.core.run.AniobFastLane
+import com.aniob.core.run.RunLane
 import com.aniob.core.memory.RememberAction
 import com.aniob.core.memory.RememberCache
 import com.aniob.core.verify.FastVerify
@@ -2161,6 +2163,17 @@ class AniobViewModel(
             // posting, sharing, or calling.
             _uiState.update { it.copy(activeTask = effectiveTask) }
             val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt, ::isLaunchablePackage)
+            // FAST LANE: a solved launch / instant reflex needs no understanding echo,
+            // feasibility court, Grill-Me pass or Doctor preflight. AskPolicy DECISIONS
+            // still apply at dispatch time. "Solved" means the shortcut answers the WHOLE
+            // prompt: "open WhatsApp and send hi" resolves an app shortcut too, and keeps its gates.
+            val lane = AniobFastLane.decide(
+                prompt = effectivePrompt,
+                shortcut = resolvedShortcut,
+                accessibilityConnected = AniobAccessibilityService.isServiceConnected,
+                hasGatedPlanSteps = planStepsFor(effectivePrompt).isNotEmpty()
+            )
+            lastRunLane = lane
             val workflowDecision = if (resolvedShortcut == null) {
                 com.aniob.core.workflow.WorkflowRouter.route(
                     effectivePrompt,
@@ -2332,77 +2345,17 @@ class AniobViewModel(
                 return@launch
             }
 
-            // Step 0.5 (audit): say what was understood, then check the plan is feasible BEFORE anything is dispatched.
-            setPhase(AgentPhase.UNDERSTANDING)
-            val understood = AniobPromptUnderstanding.understand(effectivePrompt)
-            if (understood.needsEcho) {
-                val echo = ChatMessage(
-                    id = "msg_echo_${System.currentTimeMillis()}",
-                    role = "assistant",
-                    content = understood.echo,
-                    provider = "UNDERSTANDING",
-                    badge = "\uD83D\uDC42 Understood"
-                )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + echo) }
+            // Step 0.5 - 1.5: understanding echo, feasibility, Grill-Me and the Doctor preflight.
+            // The fast lane skips all four; every other task runs them exactly as before.
+            val admitted = AniobFastLane.admit(lane) {
+                runPreExecutionGates(task, effectiveTask, effectivePrompt, resolvedShortcut)
             }
-            when (val feasibility = AniobFeasibility.assess(planStepsFor(effectivePrompt), capabilityEnvelope())) {
-                is Feasibility.Infeasible -> {
-                    val hint = feasibility.enable?.let { " To fix: $it." }.orEmpty()
-                    recordSealedOutcome(task.id, SealedOutcome.failed(feasibility.reason + hint))
-                    val note = ChatMessage(
-                        id = "msg_infeasible_${System.currentTimeMillis()}",
-                        role = "assistant",
-                        content = feasibility.reason + hint,
-                        provider = "FEASIBILITY",
-                        badge = "\u26D4 Not started"
-                    )
-                    setPhase(AgentPhase.IDLE)
-                    updateToIdle { it.copy(chatMessages = it.chatMessages + note, statusMessage = "Not started") }
-                    return@launch
-                }
-                is Feasibility.DelegateToUser -> {
-                    questionsBeforeStart.merge(task.id, 1, Int::plus)
-                    setPhase(AgentPhase.ASKING)
-                    _uiState.update {
-                        it.copy(
-                            grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(feasibility.question)),
-                            showGrillMeSheet = true,
-                            statusMessage = feasibility.whatUserMustDo
-                        )
-                    }
-                    AniobForegroundService.notifyGrillQuestion(app, task.id, feasibility.question, effectivePrompt)
-                    return@launch
-                }
-                Feasibility.Feasible -> Unit
-            }
-
-            // Step 1: Grill-Me Check with remembered vault preferences
-            val grillResult = grillMeEngine.evaluateTask(effectivePrompt, sharedKnowledgeStore.getAll())
-            if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
-                questionsBeforeStart.merge(task.id, grillResult.questions.size, Int::plus)
-                setPhase(AgentPhase.ASKING)
-                _uiState.update {
-                    it.copy(
-                        grillMeResult = grillResult,
-                        showGrillMeSheet = true,
-                        statusMessage = "Awaiting clarification for '$effectivePrompt'"
-                    )
-                }
-                grillResult.questions.firstOrNull()?.let {
-                    AniobForegroundService.notifyGrillQuestion(app, task.id, it, effectivePrompt)
-                }
-                return@launch
-            }
-
-            // Step 1.5: Pre-flight Doctor Check
-            if (!runDoctorPreflight(effectiveTask, effectivePrompt, resolvedShortcut)) {
-                return@launch
-            }
+            if (!admitted) return@launch
 
             // Task is self-contained -> Proceed directly. The finally closes the research run when
             // the pipeline is cancelled (Stop) or throws before its own endTask call.
             try {
-                executeTaskPipeline(effectiveTask, generation)
+                executeTaskPipeline(effectiveTask, generation, lane, resolvedShortcut)
             } finally {
                 publishResearchRun(
                     app.researchTelemetry.endTaskIfActive(
@@ -2412,6 +2365,87 @@ class AniobViewModel(
                 )
             }
         }
+    }
+
+    /**
+     * The pre-execution gates of a standard-lane task, in their original order: understanding echo,
+     * plan feasibility, Grill-Me clarification, Doctor preflight.
+     *
+     * @return false when a gate ended or parked the task (not started, or waiting for an answer).
+     */
+    private suspend fun runPreExecutionGates(
+        task: AniobTask,
+        effectiveTask: AniobTask,
+        effectivePrompt: String,
+        resolvedShortcut: ResolvedIntentShortcut?
+    ): Boolean {
+        // Step 0.5 (audit): say what was understood, then check the plan is feasible BEFORE anything is dispatched.
+        setPhase(AgentPhase.UNDERSTANDING)
+        val understood = AniobPromptUnderstanding.understand(effectivePrompt)
+        if (understood.needsEcho) {
+            val echo = ChatMessage(
+                id = "msg_echo_${System.currentTimeMillis()}",
+                role = "assistant",
+                content = understood.echo,
+                provider = "UNDERSTANDING",
+                badge = "\uD83D\uDC42 Understood"
+            )
+            _uiState.update { it.copy(chatMessages = it.chatMessages + echo) }
+        }
+        when (val feasibility = AniobFeasibility.assess(planStepsFor(effectivePrompt), capabilityEnvelope())) {
+            is Feasibility.Infeasible -> {
+                val hint = feasibility.enable?.let { " To fix: $it." }.orEmpty()
+                recordSealedOutcome(task.id, SealedOutcome.failed(feasibility.reason + hint))
+                val note = ChatMessage(
+                    id = "msg_infeasible_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = feasibility.reason + hint,
+                    provider = "FEASIBILITY",
+                    badge = "\u26D4 Not started"
+                )
+                setPhase(AgentPhase.IDLE)
+                updateToIdle { it.copy(chatMessages = it.chatMessages + note, statusMessage = "Not started") }
+                return false
+            }
+            is Feasibility.DelegateToUser -> {
+                questionsBeforeStart.merge(task.id, 1, Int::plus)
+                setPhase(AgentPhase.ASKING)
+                _uiState.update {
+                    it.copy(
+                        grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(feasibility.question)),
+                        showGrillMeSheet = true,
+                        statusMessage = feasibility.whatUserMustDo
+                    )
+                }
+                AniobForegroundService.notifyGrillQuestion(app, task.id, feasibility.question, effectivePrompt)
+                return false
+            }
+            Feasibility.Feasible -> Unit
+        }
+
+        // Step 1: Grill-Me Check with remembered vault preferences
+        val grillResult = grillMeEngine.evaluateTask(effectivePrompt, sharedKnowledgeStore.getAll())
+        if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
+            questionsBeforeStart.merge(task.id, grillResult.questions.size, Int::plus)
+            setPhase(AgentPhase.ASKING)
+            _uiState.update {
+                it.copy(
+                    grillMeResult = grillResult,
+                    showGrillMeSheet = true,
+                    statusMessage = "Awaiting clarification for '$effectivePrompt'"
+                )
+            }
+            grillResult.questions.firstOrNull()?.let {
+                AniobForegroundService.notifyGrillQuestion(app, task.id, it, effectivePrompt)
+            }
+            return false
+        }
+
+        // Step 1.5: Pre-flight Doctor Check
+        if (!runDoctorPreflight(effectiveTask, effectivePrompt, resolvedShortcut)) {
+            return false
+        }
+        return true
     }
 
     private fun isLaunchablePackage(packageName: String): Boolean =
@@ -2644,6 +2678,9 @@ class AniobViewModel(
     private val questionsBeforeStart = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     @Volatile private var activeRunMode: FeatureSelection = FeatureSelection.FULL_SPEED
+
+    /** Lane chosen for the most recent submitted task; read by tests and diagnostics only. */
+    @Volatile internal var lastRunLane: RunLane = RunLane.STANDARD
 
     private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
         if (taskGeneration != activeGeneration) return
