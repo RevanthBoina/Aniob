@@ -1275,6 +1275,14 @@ class AniobViewModel(
         }
     }
 
+    /** Event-driven launch proof: stops the instant the target owns the foreground. */
+    private suspend fun confirmLaunched(
+        target: String,
+        deadlineMs: Long = AniobFastLane.LAUNCH_CONFIRM_DEADLINE_MS
+    ): Boolean = AniobFastLane.confirmLaunched(target = target, deadlineMs = deadlineMs) {
+        AniobAccessibilityService.instance?.currentForegroundPackage()
+    }
+
     /**
      * Warms DNS/TLS/HTTP-2 for the gateway. Never throws and never counts as a model call: the
      * request is a plain `GET /models`, so the first real action reuses the open connection.
@@ -2682,7 +2690,12 @@ class AniobViewModel(
     /** Lane chosen for the most recent submitted task; read by tests and diagnostics only. */
     @Volatile internal var lastRunLane: RunLane = RunLane.STANDARD
 
-    private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
+    private suspend fun executeTaskPipeline(
+        task: AniobTask,
+        taskGeneration: Long = activeGeneration,
+        lane: RunLane = RunLane.STANDARD,
+        laneShortcut: ResolvedIntentShortcut? = null
+    ) {
         if (taskGeneration != activeGeneration) return
         // Snapshot all five flags once. Settings edits during this task only affect the next task.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
@@ -2776,9 +2789,21 @@ class AniobViewModel(
         val accessibility = AniobAccessibilityService.instance
         // The old fixed 500 ms sleep is now a bounded poll on the foreground package: usually the
         // window manager wins in ~100 ms, and a device that is already backgrounded returns at once.
-        awaitAppBackgrounded(accessibility)
+        // The fast lane does not wait here: a launch backgrounds the chat by itself, and a reflex
+        // has no window to reveal. Both waits happen later if the fast lane falls back.
+        if (!lane.isFast) awaitAppBackgrounded(accessibility)
 
-        var screenBefore: AniobScreenState? = accessibility?.captureCurrentScreenState()
+        // A full tree walk taken purely as a diff baseline. A launch is proven by the foreground
+        // package and a reflex by its dispatch, so neither needs a before-image; every consumer
+        // below already treats a null baseline as "no diff".
+        val fastLaunchTarget = laneShortcut?.targetPackage?.takeIf { lane == RunLane.FAST_LAUNCH && accessibility != null }
+        var screenBefore: AniobScreenState? =
+            if (lane.isFast) null else accessibility?.captureCurrentScreenState()
+        // Set once a fast-lane launch is confirmed in the foreground; the run closes on it.
+        var fastLaunchProof: AniobScreenState? = null
+        // A reflex is planned once from a package-only observation instead of a tree walk. One
+        // shot: anything other than an immediate DirectIntent returns to the full observation path.
+        var fastReflexOpen = lane == RunLane.FAST_REFLEX && executionRouter.intentShortcutsEnabled
 
         fun recordTrajectory(
             stepIndex: Int,
@@ -2935,7 +2960,112 @@ class AniobViewModel(
         app.researchTelemetry.setSetupLatency(setupDurationMs)
 
         try {
-            while (currentStep < maxSteps && _uiState.value.isRunning) {
+            if (fastLaunchTarget != null && accessibility != null && laneShortcut != null &&
+                taskGeneration == activeGeneration && _uiState.value.isRunning
+            ) {
+                val label = laneShortcut.label ?: fastLaunchTarget
+                val openApp = AniobAction.OpenApp(
+                    packageName = fastLaunchTarget,
+                    activityName = AniobLaunchHub.activityClassName(laneShortcut.launchActivity),
+                    thought = "Open $label"
+                )
+                val origin = AniobScreenState(
+                    packageName = accessibility.currentForegroundPackage().orEmpty(),
+                    observationKind = "fast-lane"
+                )
+                // AskPolicy still decides. Anything it wants to block or confirm is not a fast
+                // launch: the standard path below owns the confirmation sheet.
+                val safety = AniobSafetyInterceptor.evaluateAction(
+                    action = openApp,
+                    targetNode = null,
+                    screenState = origin,
+                    screenFingerprint = origin.treeHash
+                )
+                val closingVerdict = AniobFastLane.launchVerdict(resolvedCriteria, fastLaunchTarget)
+                if (safety.isAllowed && !safety.requiresConfirmation && closingVerdict != null) {
+                    setPhase(AgentPhase.PLANNING, ThinkSource.RULES)
+                    primaryProvider = "APP_LAUNCH"
+                    decisionReason = "App shortcut: '$label' resolved by the intent resolver; " +
+                        "foreground package confirmed (0 LLM calls)"
+                    app.researchTelemetry.recordShortcutAttempt(attempted = true)
+                    _uiState.update {
+                        it.copy(
+                            currentStep = 1,
+                            statusMessage = "Opening $label...",
+                            lastRoutingReason = decisionReason,
+                            lastProviderUsed = primaryProvider
+                        )
+                    }
+                    persistRunningMarker(task, 1, openApp.describeAction())
+                    val dispatchedAt = System.currentTimeMillis()
+                    val dispatched = executeActionSync(accessibility, openApp, waitForIdle = false)
+                    if (dispatched) {
+                        actionsDispatched++
+                        app.researchTelemetry.recordStep()
+                        app.researchTelemetry.recordActionCompleted()
+                    }
+                    // Event-driven proof instead of idle-wait + settle + a second tree capture.
+                    val confirmed = dispatched && confirmLaunched(fastLaunchTarget)
+                    val launchLatencyMs = (System.currentTimeMillis() - dispatchedAt).coerceAtLeast(0L)
+                    if (confirmed) {
+                        app.researchTelemetry.markIntentShortcutUsed()
+                        recordTrajectory(
+                            stepIndex = 0,
+                            observation = "foreground $fastLaunchTarget after ${openApp.toolName}",
+                            action = openApp,
+                            provider = primaryProvider,
+                            latencyMs = launchLatencyMs,
+                            screenHash = "",
+                            verified = true,
+                            textEvidence = fastLaunchTarget
+                        )
+                        publishStep(
+                            stepIndex = 0,
+                            action = openApp,
+                            provider = primaryProvider,
+                            latencyMs = launchLatencyMs,
+                            verified = true
+                        )
+                        addStepRecord(
+                            AniobStepRecord(
+                                stepIndex = 0,
+                                screenHash = "",
+                                action = openApp,
+                                provider = primaryProvider,
+                                latencyMs = launchLatencyMs,
+                                tokensUsed = 0,
+                                verifiedSuccess = true,
+                                textEvidence = fastLaunchTarget
+                            )
+                        )
+                        completedByIntent = true
+                        intentVerdict = closingVerdict
+                        finalOutcome = Outcome.SUCCESS
+                        terminalReason = "Opened $label"
+                        fastLaunchProof = AniobScreenState(
+                            packageName = fastLaunchTarget,
+                            observationKind = "fast-lane"
+                        )
+                    } else {
+                        app.researchTelemetry.recordShortcutAttempt(
+                            attempted = true,
+                            degraded = true,
+                            reason = if (dispatched) "Foreground not confirmed" else "Dispatch failed"
+                        )
+                        app.eventLogger.info(
+                            "AniobViewModel",
+                            "Fast-lane launch of $fastLaunchTarget not confirmed in ${launchLatencyMs}ms; using full observation"
+                        )
+                    }
+                }
+                if (fastLaunchProof == null) {
+                    // Not confirmed (or not eligible): the FULL existing observation path, starting
+                    // from the before-image the fast lane skipped.
+                    awaitAppBackgrounded(accessibility)
+                    screenBefore = accessibility.captureCurrentScreenState()
+                }
+            }
+            while (fastLaunchProof == null && currentStep < maxSteps && _uiState.value.isRunning) {
                 // Honest default for each step: no model, until a branch below really calls one.
                 setPhase(AgentPhase.PLANNING, ThinkSource.RULES)
                 if (taskGeneration != activeGeneration || !currentCoroutineContext().isActive) {
@@ -2964,8 +3094,16 @@ class AniobViewModel(
                     System.currentTimeMillis() - screenBefore.timestamp < START_CAPTURE_FRESH_MS
                 // Reuse the last verified planning snapshot only when the observation policy allows;
                 // every dispatch still re-reads/revalidates its target through the shared pipeline.
+                val reflexStub = fastReflexOpen && currentStep == 0 && !wasPaused && screenBefore == null &&
+                    mergedObservation == null
+                fastReflexOpen = false
                 val captured = if (mergedObservation != null) {
                     mergedObservation
+                } else if (reflexStub) {
+                    AniobScreenState(
+                        packageName = accessibility?.currentForegroundPackage() ?: "com.aniob.app",
+                        observationKind = "fast-lane"
+                    )
                 } else if (reuseStartCapture) {
                     // Step 0 already holds a capture from just before the prompt was typed.
                     screenBefore!!
@@ -2989,14 +3127,15 @@ class AniobViewModel(
 
                 // Session validation: do not trust a cached app session blindly.
                 val foregroundBefore = accessibility?.currentForegroundPackage()
-                val reuseCheck = appSessionManager.ensureReusableOrInvalidate(
+                // A package-only fast-lane observation is not a session screen: nothing to validate.
+                val reuseCheck = if (reflexStub) null else appSessionManager.ensureReusableOrInvalidate(
                     packageName = captured.packageName,
                     liveForegroundPackage = foregroundBefore,
                     liveScreenState = captured
                 )
                 var currentScreen = captured
                 val liveService = accessibility
-                if (!reuseCheck.valid && liveService != null) {
+                if (reuseCheck != null && !reuseCheck.valid && liveService != null) {
                     if (foregroundBefore == "com.aniob.app") {
                         app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
                         AniobBackgroundController.currentActivity?.runOnUiThread {
@@ -3023,7 +3162,7 @@ class AniobViewModel(
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     }
                 }
-                appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
+                if (!reflexStub) appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
 
                 // Evaluate Execution Ladder with real power state and on-device model status
                 val powerState = AniobDeviceTelemetry.getRealState(app)
@@ -3032,7 +3171,8 @@ class AniobViewModel(
                 val effectiveModelId = resolvedModelId.takeIf { resolvedFileExists }
                 val isModelFileMissing = !resolvedFileExists
 
-                if (currentStep == 0) {
+                // A reflex is answered by the intent rung, which sits above every learned rung.
+                if (currentStep == 0 && !reflexStub) {
                     hydration?.await()
                 }
 
@@ -3054,6 +3194,17 @@ class AniobViewModel(
                     )
                 }
                 var ladderResult = planLadder()
+                if (reflexStub && ladderResult !is AniobExecutionRouter.ExecutionPlanResult.DirectIntent) {
+                    // The router did not answer with the reflex (already dispatched for this task,
+                    // shortcuts off). Nothing below may plan on a package-only observation: take
+                    // the real capture the fast lane skipped and plan this step again.
+                    awaitAppBackgrounded(accessibility)
+                    screenBefore = accessibility?.captureCurrentScreenState()
+                    if (screenBefore != null) continue
+                    // No accessibility service at all: the standard path's own placeholder applies.
+                    screenBefore = AniobScreenState(packageName = "com.aniob.app", treeHash = "mock_hash_$currentStep")
+                    continue
+                }
                 // A replay that left the screen exactly as it found it must not be replayed again
                 // on that same screen: the cache would keep dispatching the same action. Re-plan
                 // once with the cache off so the model gets the step (the documented fallback).
@@ -4150,7 +4301,19 @@ class AniobViewModel(
         // A confirmed SUCCESS was checked against the screen the pipeline verified. A fresh capture
         // here is the user's *next* screen (or Aniob's own window) and used to flip good runs to
         // "not done". Every other outcome still reports against the live screen.
-        val finalScreen = if (stepResult?.terminalState == StepResult.TerminalState.SUCCESS) {
+        // A fast-lane close was judged on evidence that is not a tree (the foreground package, or
+        // the dispatch itself); walking the tree now would only delay the reported completion.
+        val fastLaneFinalScreen: AniobScreenState? = fastLaunchProof ?: if (
+            lane == RunLane.FAST_REFLEX && completedByIntent && finalOutcome == Outcome.SUCCESS
+        ) {
+            screenBefore ?: AniobScreenState(
+                packageName = accessibility?.currentForegroundPackage() ?: "com.aniob.app",
+                observationKind = "fast-lane"
+            )
+        } else {
+            null
+        }
+        val finalScreen = fastLaneFinalScreen ?: if (stepResult?.terminalState == StepResult.TerminalState.SUCCESS) {
             stepResult.nextCtx.lastScreenState ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
         } else {
             accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
