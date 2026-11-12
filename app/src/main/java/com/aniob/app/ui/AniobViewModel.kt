@@ -3289,7 +3289,21 @@ class AniobViewModel(
                                     // A decomposed sequence ("on … off after 5s") finishes AFTER the
                                     // dispatch. Judging it immediately would read the wrong state
                                     // and mislabel a correct run, so wait out the scheduled leg.
-                                    if (sequenceWaitMs > 0L) delay(sequenceWaitMs + 400L)
+                                    // Was a fixed sleep of the whole budget. The scheduled
+                                    // leg cannot fire before its delay; after that the run is
+                                    // released as soon as the hardware shows the final state. With
+                                    // nothing probeable the full budget still applies.
+                                    if (sequenceWaitMs > 0L) {
+                                        val legScheduledAt = System.currentTimeMillis()
+                                        until(sequenceWaitMs + 400L, stepMs = 50L) {
+                                            System.currentTimeMillis() - legScheduledAt >= sequenceWaitMs &&
+                                                evalDeviceAssertions(resolvedCriteria).let { verdicts ->
+                                                    verdicts.isNotEmpty() && verdicts.all {
+                                                        it.state == com.aniob.core.domain.CriterionState.PASSED
+                                                    }
+                                                }
+                                        }
+                                    }
                                     null
                                 } else {
                                     awaitIntentScreen(beforePackage, INTENT_SETTLE_MS, shortcut.targetPackage)
