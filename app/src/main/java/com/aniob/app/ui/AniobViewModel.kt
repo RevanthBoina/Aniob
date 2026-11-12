@@ -3174,8 +3174,14 @@ class AniobViewModel(
                             "AniobViewModel",
                             "Session invalid (${reuseCheck.reason}) - cold starting $foregroundBefore"
                         )
+                        val relaunchQuiet = windowQuiet(liveService, requireMovement = true)
                         executeActionSync(liveService, AniobAction.OpenApp(packageName = foregroundBefore))
-                        delay(800)
+                        // Was a fixed 800 ms. Expected effect: the relaunch produced window events,
+                        // they have stopped, and the app is the one in front.
+                        until(SESSION_RELAUNCH_WAIT_MS) {
+                            val quiet = relaunchQuiet.settled()
+                            quiet && liveService.currentForegroundPackage() == foregroundBefore
+                        }
                         currentScreen = liveService.captureCurrentScreenState()
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     } else {
@@ -5195,6 +5201,9 @@ class AniobViewModel(
 
         /** Cap on waiting for the chat window to reveal the app behind it (was a fixed sleep). */
         const val SESSION_REVEAL_WAIT_MS = 600L
+
+        /** Cap on waiting for a cold-started session app to draw (was a fixed sleep). */
+        const val SESSION_RELAUNCH_WAIT_MS = 800L
 
         /** Plans that cannot execute even one member before the run stops batching. */
         const val BURST_MAX_ZERO_PROGRESS_REPLANS = 2
