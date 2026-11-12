@@ -98,9 +98,15 @@ class AskPolicyTest {
     }
 
     @Test
-    fun taskStartPreviewExplainsOffIsNotASafetyBypass() {
-        val preview = AskPolicy.taskStartPreview("Pay the bill, enter the OTP, then send a receipt", AskLevel.OFF)
-        assertTrue(preview.contains("without ordinary-action prompts"))
-        assertTrue(preview.contains("payments, secrets, or deletion"))
+    fun `task start produces no chat narration`() {
+        // Decisions stay; narration is gone. AskPolicy must not expose any API whose
+        // purpose is building a task-start "heads-up" transcript string.
+        val narrationApis = AskPolicy::class.java.declaredMethods
+            .map { it.name }
+            .filter { name ->
+                name.contains("taskStartPreview", ignoreCase = true) ||
+                    name.contains("headsUp", ignoreCase = true)
+            }
+        assertTrue("AskPolicy must not build task-start narration: $narrationApis", narrationApis.isEmpty())
     }
 }

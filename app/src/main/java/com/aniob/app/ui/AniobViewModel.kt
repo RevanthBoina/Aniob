@@ -84,6 +84,9 @@ import com.aniob.core.ladder.AppLaunchTarget
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
+import com.aniob.core.run.AniobFastLane
+import com.aniob.core.run.ConditionWait
+import com.aniob.core.run.RunLane
 import com.aniob.core.memory.RememberAction
 import com.aniob.core.memory.RememberCache
 import com.aniob.core.verify.FastVerify
@@ -1273,6 +1276,25 @@ class AniobViewModel(
         }
     }
 
+    /** Wait for a condition with a deadline instead of waiting on a clock. */
+    private suspend fun until(
+        deadlineMs: Long,
+        stepMs: Long = ConditionWait.DEFAULT_STEP_MS,
+        condition: () -> Boolean
+    ): Boolean = ConditionWait.until(deadlineMs = deadlineMs, stepMs = stepMs, condition = condition)
+
+    /** "The window stopped moving", read from the service's window-event counter. Create before the action. */
+    private fun windowQuiet(service: AniobAccessibilityService, requireMovement: Boolean) =
+        ConditionWait.WindowQuiet(requireMovement = requireMovement) { service.windowEventSequence() }
+
+    /** Event-driven launch proof: stops the instant the target owns the foreground. */
+    private suspend fun confirmLaunched(
+        target: String,
+        deadlineMs: Long = AniobFastLane.LAUNCH_CONFIRM_DEADLINE_MS
+    ): Boolean = AniobFastLane.confirmLaunched(target = target, deadlineMs = deadlineMs) {
+        AniobAccessibilityService.instance?.currentForegroundPackage()
+    }
+
     /**
      * Warms DNS/TLS/HTTP-2 for the gateway. Never throws and never counts as a model call: the
      * request is a plain `GET /models`, so the first real action reuses the open connection.
@@ -2149,28 +2171,35 @@ class AniobViewModel(
         activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
             app.taskOwner.attachJob(leaseGen, currentCoroutineContext()[kotlinx.coroutines.Job]!!)
 
+            // Briefly wait for first-run registration; a no-op once the registry is warm. Without
+            // it, a launch typed during the first probe resolves against an empty registry.
+            withTimeoutOrNull(com.aniob.core.knowledge.AniobRegistryBoot.READY_WAIT_MS) {
+                com.aniob.app.knowledge.AniobAppBootstrap.registryReady.await()
+            }
+
             // Resolve the effective goal and direct device/app capabilities before any chooser,
             // clarification, Doctor advice, or model route.
             val alternative = if (AniobLaunchHub.isSwitchToOther(trimmed))
                 AniobLaunchHub.plan(trimmed, AniobAppRegistry.getInstance(), ::isLaunchablePackage) else null
             val effectivePrompt = alternative?.let { "open ${it.packageName}" } ?: resolveContextualGoal(trimmed)
             val effectiveTask = task.copy(clarifiedGoal = effectivePrompt)
-            val headsUp = com.aniob.core.safety.AskPolicy.taskStartPreview(
-                effectivePrompt,
-                AniobSafetyInterceptor.askLevel
-            )
-            _uiState.update {
-                it.copy(
-                    activeTask = effectiveTask,
-                    chatMessages = it.chatMessages + ChatMessage(
-                    id = "msg_heads_up_${task.id}",
-                    role = "assistant",
-                    content = headsUp,
-                    provider = "ASK_POLICY",
-                    badge = "Heads-up"
-                ))
-            }
+            // Safety is enforced by AskPolicy DECISIONS at action time, not narrated into
+            // the transcript. The interruption level is shown once in Settings; the actual
+            // confirmation sheets still fire before payments, secrets, deletion, sending,
+            // posting, sharing, or calling.
+            _uiState.update { it.copy(activeTask = effectiveTask) }
             val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt, ::isLaunchablePackage)
+            // FAST LANE: a solved launch / instant reflex needs no understanding echo,
+            // feasibility court, Grill-Me pass or Doctor preflight. AskPolicy DECISIONS
+            // still apply at dispatch time. "Solved" means the shortcut answers the WHOLE
+            // prompt: "open WhatsApp and send hi" resolves an app shortcut too, and keeps its gates.
+            val lane = AniobFastLane.decide(
+                prompt = effectivePrompt,
+                shortcut = resolvedShortcut,
+                accessibilityConnected = AniobAccessibilityService.isServiceConnected,
+                hasGatedPlanSteps = planStepsFor(effectivePrompt).isNotEmpty()
+            )
+            lastRunLane = lane
             val workflowDecision = if (resolvedShortcut == null) {
                 com.aniob.core.workflow.WorkflowRouter.route(
                     effectivePrompt,
@@ -2342,77 +2371,17 @@ class AniobViewModel(
                 return@launch
             }
 
-            // Step 0.5 (audit): say what was understood, then check the plan is feasible BEFORE anything is dispatched.
-            setPhase(AgentPhase.UNDERSTANDING)
-            val understood = AniobPromptUnderstanding.understand(effectivePrompt)
-            if (understood.needsEcho) {
-                val echo = ChatMessage(
-                    id = "msg_echo_${System.currentTimeMillis()}",
-                    role = "assistant",
-                    content = understood.echo,
-                    provider = "UNDERSTANDING",
-                    badge = "\uD83D\uDC42 Understood"
-                )
-                _uiState.update { it.copy(chatMessages = it.chatMessages + echo) }
+            // Step 0.5 - 1.5: understanding echo, feasibility, Grill-Me and the Doctor preflight.
+            // The fast lane skips all four; every other task runs them exactly as before.
+            val admitted = AniobFastLane.admit(lane) {
+                runPreExecutionGates(task, effectiveTask, effectivePrompt, resolvedShortcut)
             }
-            when (val feasibility = AniobFeasibility.assess(planStepsFor(effectivePrompt), capabilityEnvelope())) {
-                is Feasibility.Infeasible -> {
-                    val hint = feasibility.enable?.let { " To fix: $it." }.orEmpty()
-                    recordSealedOutcome(task.id, SealedOutcome.failed(feasibility.reason + hint))
-                    val note = ChatMessage(
-                        id = "msg_infeasible_${System.currentTimeMillis()}",
-                        role = "assistant",
-                        content = feasibility.reason + hint,
-                        provider = "FEASIBILITY",
-                        badge = "\u26D4 Not started"
-                    )
-                    setPhase(AgentPhase.IDLE)
-                    updateToIdle { it.copy(chatMessages = it.chatMessages + note, statusMessage = "Not started") }
-                    return@launch
-                }
-                is Feasibility.DelegateToUser -> {
-                    questionsBeforeStart.merge(task.id, 1, Int::plus)
-                    setPhase(AgentPhase.ASKING)
-                    _uiState.update {
-                        it.copy(
-                            grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(feasibility.question)),
-                            showGrillMeSheet = true,
-                            statusMessage = feasibility.whatUserMustDo
-                        )
-                    }
-                    AniobForegroundService.notifyGrillQuestion(app, task.id, feasibility.question, effectivePrompt)
-                    return@launch
-                }
-                Feasibility.Feasible -> Unit
-            }
-
-            // Step 1: Grill-Me Check with remembered vault preferences
-            val grillResult = grillMeEngine.evaluateTask(effectivePrompt, sharedKnowledgeStore.getAll())
-            if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
-                questionsBeforeStart.merge(task.id, grillResult.questions.size, Int::plus)
-                setPhase(AgentPhase.ASKING)
-                _uiState.update {
-                    it.copy(
-                        grillMeResult = grillResult,
-                        showGrillMeSheet = true,
-                        statusMessage = "Awaiting clarification for '$effectivePrompt'"
-                    )
-                }
-                grillResult.questions.firstOrNull()?.let {
-                    AniobForegroundService.notifyGrillQuestion(app, task.id, it, effectivePrompt)
-                }
-                return@launch
-            }
-
-            // Step 1.5: Pre-flight Doctor Check
-            if (!runDoctorPreflight(effectiveTask, effectivePrompt, resolvedShortcut)) {
-                return@launch
-            }
+            if (!admitted) return@launch
 
             // Task is self-contained -> Proceed directly. The finally closes the research run when
             // the pipeline is cancelled (Stop) or throws before its own endTask call.
             try {
-                executeTaskPipeline(effectiveTask, generation)
+                executeTaskPipeline(effectiveTask, generation, lane, resolvedShortcut)
             } finally {
                 publishResearchRun(
                     app.researchTelemetry.endTaskIfActive(
@@ -2422,6 +2391,87 @@ class AniobViewModel(
                 )
             }
         }
+    }
+
+    /**
+     * The pre-execution gates of a standard-lane task, in their original order: understanding echo,
+     * plan feasibility, Grill-Me clarification, Doctor preflight.
+     *
+     * @return false when a gate ended or parked the task (not started, or waiting for an answer).
+     */
+    private suspend fun runPreExecutionGates(
+        task: AniobTask,
+        effectiveTask: AniobTask,
+        effectivePrompt: String,
+        resolvedShortcut: ResolvedIntentShortcut?
+    ): Boolean {
+        // Step 0.5 (audit): say what was understood, then check the plan is feasible BEFORE anything is dispatched.
+        setPhase(AgentPhase.UNDERSTANDING)
+        val understood = AniobPromptUnderstanding.understand(effectivePrompt)
+        if (understood.needsEcho) {
+            val echo = ChatMessage(
+                id = "msg_echo_${System.currentTimeMillis()}",
+                role = "assistant",
+                content = understood.echo,
+                provider = "UNDERSTANDING",
+                badge = "\uD83D\uDC42 Understood"
+            )
+            _uiState.update { it.copy(chatMessages = it.chatMessages + echo) }
+        }
+        when (val feasibility = AniobFeasibility.assess(planStepsFor(effectivePrompt), capabilityEnvelope())) {
+            is Feasibility.Infeasible -> {
+                val hint = feasibility.enable?.let { " To fix: $it." }.orEmpty()
+                recordSealedOutcome(task.id, SealedOutcome.failed(feasibility.reason + hint))
+                val note = ChatMessage(
+                    id = "msg_infeasible_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = feasibility.reason + hint,
+                    provider = "FEASIBILITY",
+                    badge = "\u26D4 Not started"
+                )
+                setPhase(AgentPhase.IDLE)
+                updateToIdle { it.copy(chatMessages = it.chatMessages + note, statusMessage = "Not started") }
+                return false
+            }
+            is Feasibility.DelegateToUser -> {
+                questionsBeforeStart.merge(task.id, 1, Int::plus)
+                setPhase(AgentPhase.ASKING)
+                _uiState.update {
+                    it.copy(
+                        grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(feasibility.question)),
+                        showGrillMeSheet = true,
+                        statusMessage = feasibility.whatUserMustDo
+                    )
+                }
+                AniobForegroundService.notifyGrillQuestion(app, task.id, feasibility.question, effectivePrompt)
+                return false
+            }
+            Feasibility.Feasible -> Unit
+        }
+
+        // Step 1: Grill-Me Check with remembered vault preferences
+        val grillResult = grillMeEngine.evaluateTask(effectivePrompt, sharedKnowledgeStore.getAll())
+        if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
+            questionsBeforeStart.merge(task.id, grillResult.questions.size, Int::plus)
+            setPhase(AgentPhase.ASKING)
+            _uiState.update {
+                it.copy(
+                    grillMeResult = grillResult,
+                    showGrillMeSheet = true,
+                    statusMessage = "Awaiting clarification for '$effectivePrompt'"
+                )
+            }
+            grillResult.questions.firstOrNull()?.let {
+                AniobForegroundService.notifyGrillQuestion(app, task.id, it, effectivePrompt)
+            }
+            return false
+        }
+
+        // Step 1.5: Pre-flight Doctor Check
+        if (!runDoctorPreflight(effectiveTask, effectivePrompt, resolvedShortcut)) {
+            return false
+        }
+        return true
     }
 
     private fun isLaunchablePackage(packageName: String): Boolean =
@@ -2655,7 +2705,15 @@ class AniobViewModel(
 
     @Volatile private var activeRunMode: FeatureSelection = FeatureSelection.FULL_SPEED
 
-    private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
+    /** Lane chosen for the most recent submitted task; read by tests and diagnostics only. */
+    @Volatile internal var lastRunLane: RunLane = RunLane.STANDARD
+
+    private suspend fun executeTaskPipeline(
+        task: AniobTask,
+        taskGeneration: Long = activeGeneration,
+        lane: RunLane = RunLane.STANDARD,
+        laneShortcut: ResolvedIntentShortcut? = null
+    ) {
         if (taskGeneration != activeGeneration) return
         // Snapshot all five flags once. Settings edits during this task only affect the next task.
         val researchControlsEnabled = com.aniob.app.AniobBuild.isDeveloperBuild(app)
@@ -2664,8 +2722,9 @@ class AniobViewModel(
         activeRunMode = researchMode
         executionRouter.beginTask()
         applyFeatureSelection(researchMode)
-        if (researchMode.skillsEnabled) skillHydrationJob?.join()
-        if (researchMode.rememberReplay) rememberCacheLoadJob?.join()
+        // Skill and remember-cache hydration keep running in the background; the rungs consume
+        // whatever is ready. A cache that is not hydrated yet simply misses on the very first
+        // task, which is the cold-cache outcome anyway - without blocking dispatch on it.
         app.researchTelemetry.startTask(
             task.clarifiedGoal.ifBlank { task.rawPrompt },
             researchMode.mode,
@@ -2684,14 +2743,13 @@ class AniobViewModel(
         // Honest completion (no fake SUCCESS): extract deterministic success criteria BEFORE step 0
         // so a provisional Finish can be verified against evidence. Without criteria a Finish could
         // be declared on an unchanged screen.
-        val appCatalog = try {
-            com.aniob.core.knowledge.AniobAppCatalog.getInstance().getAll()
-                .filter { it.appName.isNotBlank() }
-                .associate { entry ->
-                    entry.appName.lowercase() to entry.packageName
-                }
-        } catch (_: Exception) {
-            emptyMap()
+        // Lazy: a task that arrives with its criteria already resolved never builds the map.
+        val appCatalog by lazy(LazyThreadSafetyMode.NONE) {
+            runCatching {
+                com.aniob.core.knowledge.AniobAppCatalog.getInstance().getAll()
+                    .filter { it.appName.isNotBlank() }
+                    .associate { it.appName.lowercase() to it.packageName }
+            }.getOrDefault(emptyMap())
         }
         // The goal the runner acts on MUST carry the resolved device noun; otherwise the criteria
         // extractor cannot see a torch/install assertion for a context-resolved bare toggle.
@@ -2749,9 +2807,21 @@ class AniobViewModel(
         val accessibility = AniobAccessibilityService.instance
         // The old fixed 500 ms sleep is now a bounded poll on the foreground package: usually the
         // window manager wins in ~100 ms, and a device that is already backgrounded returns at once.
-        awaitAppBackgrounded(accessibility)
+        // The fast lane does not wait here: a launch backgrounds the chat by itself, and a reflex
+        // has no window to reveal. Both waits happen later if the fast lane falls back.
+        if (!lane.isFast) awaitAppBackgrounded(accessibility)
 
-        var screenBefore: AniobScreenState? = accessibility?.captureCurrentScreenState()
+        // A full tree walk taken purely as a diff baseline. A launch is proven by the foreground
+        // package and a reflex by its dispatch, so neither needs a before-image; every consumer
+        // below already treats a null baseline as "no diff".
+        val fastLaunchTarget = laneShortcut?.targetPackage?.takeIf { lane == RunLane.FAST_LAUNCH && accessibility != null }
+        var screenBefore: AniobScreenState? =
+            if (lane.isFast) null else accessibility?.captureCurrentScreenState()
+        // Set once a fast-lane launch is confirmed in the foreground; the run closes on it.
+        var fastLaunchProof: AniobScreenState? = null
+        // A reflex is planned once from a package-only observation instead of a tree walk. One
+        // shot: anything other than an immediate DirectIntent returns to the full observation path.
+        var fastReflexOpen = lane == RunLane.FAST_REFLEX && executionRouter.intentShortcutsEnabled
 
         fun recordTrajectory(
             stepIndex: Int,
@@ -2908,7 +2978,112 @@ class AniobViewModel(
         app.researchTelemetry.setSetupLatency(setupDurationMs)
 
         try {
-            while (currentStep < maxSteps && _uiState.value.isRunning) {
+            if (fastLaunchTarget != null && accessibility != null && laneShortcut != null &&
+                taskGeneration == activeGeneration && _uiState.value.isRunning
+            ) {
+                val label = laneShortcut.label ?: fastLaunchTarget
+                val openApp = AniobAction.OpenApp(
+                    packageName = fastLaunchTarget,
+                    activityName = AniobLaunchHub.activityClassName(laneShortcut.launchActivity),
+                    thought = "Open $label"
+                )
+                val origin = AniobScreenState(
+                    packageName = accessibility.currentForegroundPackage().orEmpty(),
+                    observationKind = "fast-lane"
+                )
+                // AskPolicy still decides. Anything it wants to block or confirm is not a fast
+                // launch: the standard path below owns the confirmation sheet.
+                val safety = AniobSafetyInterceptor.evaluateAction(
+                    action = openApp,
+                    targetNode = null,
+                    screenState = origin,
+                    screenFingerprint = origin.treeHash
+                )
+                val closingVerdict = AniobFastLane.launchVerdict(resolvedCriteria, fastLaunchTarget)
+                if (safety.isAllowed && !safety.requiresConfirmation && closingVerdict != null) {
+                    setPhase(AgentPhase.PLANNING, ThinkSource.RULES)
+                    primaryProvider = "APP_LAUNCH"
+                    decisionReason = "App shortcut: '$label' resolved by the intent resolver; " +
+                        "foreground package confirmed (0 LLM calls)"
+                    app.researchTelemetry.recordShortcutAttempt(attempted = true)
+                    _uiState.update {
+                        it.copy(
+                            currentStep = 1,
+                            statusMessage = "Opening $label...",
+                            lastRoutingReason = decisionReason,
+                            lastProviderUsed = primaryProvider
+                        )
+                    }
+                    persistRunningMarker(task, 1, openApp.describeAction())
+                    val dispatchedAt = System.currentTimeMillis()
+                    val dispatched = executeActionSync(accessibility, openApp, waitForIdle = false)
+                    if (dispatched) {
+                        actionsDispatched++
+                        app.researchTelemetry.recordStep()
+                        app.researchTelemetry.recordActionCompleted()
+                    }
+                    // Event-driven proof instead of idle-wait + settle + a second tree capture.
+                    val confirmed = dispatched && confirmLaunched(fastLaunchTarget)
+                    val launchLatencyMs = (System.currentTimeMillis() - dispatchedAt).coerceAtLeast(0L)
+                    if (confirmed) {
+                        app.researchTelemetry.markIntentShortcutUsed()
+                        recordTrajectory(
+                            stepIndex = 0,
+                            observation = "foreground $fastLaunchTarget after ${openApp.toolName}",
+                            action = openApp,
+                            provider = primaryProvider,
+                            latencyMs = launchLatencyMs,
+                            screenHash = "",
+                            verified = true,
+                            textEvidence = fastLaunchTarget
+                        )
+                        publishStep(
+                            stepIndex = 0,
+                            action = openApp,
+                            provider = primaryProvider,
+                            latencyMs = launchLatencyMs,
+                            verified = true
+                        )
+                        addStepRecord(
+                            AniobStepRecord(
+                                stepIndex = 0,
+                                screenHash = "",
+                                action = openApp,
+                                provider = primaryProvider,
+                                latencyMs = launchLatencyMs,
+                                tokensUsed = 0,
+                                verifiedSuccess = true,
+                                textEvidence = fastLaunchTarget
+                            )
+                        )
+                        completedByIntent = true
+                        intentVerdict = closingVerdict
+                        finalOutcome = Outcome.SUCCESS
+                        terminalReason = "Opened $label"
+                        fastLaunchProof = AniobScreenState(
+                            packageName = fastLaunchTarget,
+                            observationKind = "fast-lane"
+                        )
+                    } else {
+                        app.researchTelemetry.recordShortcutAttempt(
+                            attempted = true,
+                            degraded = true,
+                            reason = if (dispatched) "Foreground not confirmed" else "Dispatch failed"
+                        )
+                        app.eventLogger.info(
+                            "AniobViewModel",
+                            "Fast-lane launch of $fastLaunchTarget not confirmed in ${launchLatencyMs}ms; using full observation"
+                        )
+                    }
+                }
+                if (fastLaunchProof == null) {
+                    // Not confirmed (or not eligible): the FULL existing observation path, starting
+                    // from the before-image the fast lane skipped.
+                    awaitAppBackgrounded(accessibility)
+                    screenBefore = accessibility.captureCurrentScreenState()
+                }
+            }
+            while (fastLaunchProof == null && currentStep < maxSteps && _uiState.value.isRunning) {
                 // Honest default for each step: no model, until a branch below really calls one.
                 setPhase(AgentPhase.PLANNING, ThinkSource.RULES)
                 if (taskGeneration != activeGeneration || !currentCoroutineContext().isActive) {
@@ -2937,8 +3112,16 @@ class AniobViewModel(
                     System.currentTimeMillis() - screenBefore.timestamp < START_CAPTURE_FRESH_MS
                 // Reuse the last verified planning snapshot only when the observation policy allows;
                 // every dispatch still re-reads/revalidates its target through the shared pipeline.
+                val reflexStub = fastReflexOpen && currentStep == 0 && !wasPaused && screenBefore == null &&
+                    mergedObservation == null
+                fastReflexOpen = false
                 val captured = if (mergedObservation != null) {
                     mergedObservation
+                } else if (reflexStub) {
+                    AniobScreenState(
+                        packageName = accessibility?.currentForegroundPackage() ?: "com.aniob.app",
+                        observationKind = "fast-lane"
+                    )
                 } else if (reuseStartCapture) {
                     // Step 0 already holds a capture from just before the prompt was typed.
                     screenBefore!!
@@ -2962,20 +3145,28 @@ class AniobViewModel(
 
                 // Session validation: do not trust a cached app session blindly.
                 val foregroundBefore = accessibility?.currentForegroundPackage()
-                val reuseCheck = appSessionManager.ensureReusableOrInvalidate(
+                // A package-only fast-lane observation is not a session screen: nothing to validate.
+                val reuseCheck = if (reflexStub) null else appSessionManager.ensureReusableOrInvalidate(
                     packageName = captured.packageName,
                     liveForegroundPackage = foregroundBefore,
                     liveScreenState = captured
                 )
                 var currentScreen = captured
                 val liveService = accessibility
-                if (!reuseCheck.valid && liveService != null) {
+                if (reuseCheck != null && !reuseCheck.valid && liveService != null) {
                     if (foregroundBefore == "com.aniob.app") {
                         app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
+                        val revealQuiet = windowQuiet(liveService, requireMovement = false)
                         AniobBackgroundController.currentActivity?.runOnUiThread {
                             AniobBackgroundController.currentActivity?.moveTaskToBack(true)
                         }
-                        delay(600)
+                        // Was a fixed 600 ms. Expected effect: another app owns the foreground and
+                        // its window has stopped moving.
+                        until(SESSION_REVEAL_WAIT_MS) {
+                            val quiet = revealQuiet.settled()
+                            val front = liveService.currentForegroundPackage()
+                            quiet && !front.isNullOrBlank() && front != "com.aniob.app"
+                        }
                         currentScreen = liveService.captureCurrentScreenState()
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     } else if (foregroundBefore != null && foregroundBefore != captured.packageName) {
@@ -2983,8 +3174,14 @@ class AniobViewModel(
                             "AniobViewModel",
                             "Session invalid (${reuseCheck.reason}) - cold starting $foregroundBefore"
                         )
+                        val relaunchQuiet = windowQuiet(liveService, requireMovement = true)
                         executeActionSync(liveService, AniobAction.OpenApp(packageName = foregroundBefore))
-                        delay(800)
+                        // Was a fixed 800 ms. Expected effect: the relaunch produced window events,
+                        // they have stopped, and the app is the one in front.
+                        until(SESSION_RELAUNCH_WAIT_MS) {
+                            val quiet = relaunchQuiet.settled()
+                            quiet && liveService.currentForegroundPackage() == foregroundBefore
+                        }
                         currentScreen = liveService.captureCurrentScreenState()
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     } else {
@@ -2996,7 +3193,7 @@ class AniobViewModel(
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                     }
                 }
-                appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
+                if (!reflexStub) appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
 
                 // Evaluate Execution Ladder with real power state and on-device model status
                 val powerState = AniobDeviceTelemetry.getRealState(app)
@@ -3005,7 +3202,8 @@ class AniobViewModel(
                 val effectiveModelId = resolvedModelId.takeIf { resolvedFileExists }
                 val isModelFileMissing = !resolvedFileExists
 
-                if (currentStep == 0) {
+                // A reflex is answered by the intent rung, which sits above every learned rung.
+                if (currentStep == 0 && !reflexStub) {
                     hydration?.await()
                 }
 
@@ -3027,6 +3225,17 @@ class AniobViewModel(
                     )
                 }
                 var ladderResult = planLadder()
+                if (reflexStub && ladderResult !is AniobExecutionRouter.ExecutionPlanResult.DirectIntent) {
+                    // The router did not answer with the reflex (already dispatched for this task,
+                    // shortcuts off). Nothing below may plan on a package-only observation: take
+                    // the real capture the fast lane skipped and plan this step again.
+                    awaitAppBackgrounded(accessibility)
+                    screenBefore = accessibility?.captureCurrentScreenState()
+                    if (screenBefore != null) continue
+                    // No accessibility service at all: the standard path's own placeholder applies.
+                    screenBefore = AniobScreenState(packageName = "com.aniob.app", treeHash = "mock_hash_$currentStep")
+                    continue
+                }
                 // A replay that left the screen exactly as it found it must not be replayed again
                 // on that same screen: the cache would keep dispatching the same action. Re-plan
                 // once with the cache off so the model gets the step (the documented fallback).
@@ -3080,7 +3289,21 @@ class AniobViewModel(
                                     // A decomposed sequence ("on … off after 5s") finishes AFTER the
                                     // dispatch. Judging it immediately would read the wrong state
                                     // and mislabel a correct run, so wait out the scheduled leg.
-                                    if (sequenceWaitMs > 0L) delay(sequenceWaitMs + 400L)
+                                    // Was a fixed sleep of the whole budget. The scheduled
+                                    // leg cannot fire before its delay; after that the run is
+                                    // released as soon as the hardware shows the final state. With
+                                    // nothing probeable the full budget still applies.
+                                    if (sequenceWaitMs > 0L) {
+                                        val legScheduledAt = System.currentTimeMillis()
+                                        until(sequenceWaitMs + 400L, stepMs = 50L) {
+                                            System.currentTimeMillis() - legScheduledAt >= sequenceWaitMs &&
+                                                evalDeviceAssertions(resolvedCriteria).let { verdicts ->
+                                                    verdicts.isNotEmpty() && verdicts.all {
+                                                        it.state == com.aniob.core.domain.CriterionState.PASSED
+                                                    }
+                                                }
+                                        }
+                                    }
                                     null
                                 } else {
                                     awaitIntentScreen(beforePackage, INTENT_SETTLE_MS, shortcut.targetPackage)
@@ -3718,8 +3941,11 @@ class AniobViewModel(
                                     .shouldScroll(dispatchOrigin, preObservedScreens)
                             ) {
                                 preObservedScreens += FastVerify.screenIdentity(dispatchOrigin)
+                                val scrollQuiet = windowQuiet(accessibility, requireMovement = true)
                                 if (accessibility.scrollForwardOnce()) {
-                                    delay(com.aniob.core.perception.PreObserveScroll.SETTLE_MS)
+                                    // Was a fixed SETTLE_MS. Expected effect: the scroll produced
+                                    // window events and they have stopped.
+                                    until(com.aniob.core.perception.PreObserveScroll.SETTLE_MS) { scrollQuiet.settled() }
                                     val revealed = accessibility.captureCurrentScreenState()
                                     // Retry through a stable identity (view id -> text -> content
                                     // description): replaying a SoM index against the tree the
@@ -3951,7 +4177,10 @@ class AniobViewModel(
                         burstsSuspended = true
                         app.researchTelemetry.recordBurstSuspended()
                     }
-                    delay(BURST_REPLAN_SETTLE_MS)
+                    // Was a fixed sleep. Expected effect: the dynamic screen stopped re-indexing, so
+                    // the inputs of the next plan are stable.
+                    val replanQuiet = accessibility?.let { windowQuiet(it, requireMovement = false) }
+                    until(BURST_REPLAN_SETTLE_MS) { replanQuiet?.settled() ?: false }
                     accessibility?.captureCurrentScreenState()?.let { fresh ->
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                         screenBefore = fresh
@@ -4123,7 +4352,19 @@ class AniobViewModel(
         // A confirmed SUCCESS was checked against the screen the pipeline verified. A fresh capture
         // here is the user's *next* screen (or Aniob's own window) and used to flip good runs to
         // "not done". Every other outcome still reports against the live screen.
-        val finalScreen = if (stepResult?.terminalState == StepResult.TerminalState.SUCCESS) {
+        // A fast-lane close was judged on evidence that is not a tree (the foreground package, or
+        // the dispatch itself); walking the tree now would only delay the reported completion.
+        val fastLaneFinalScreen: AniobScreenState? = fastLaunchProof ?: if (
+            lane == RunLane.FAST_REFLEX && completedByIntent && finalOutcome == Outcome.SUCCESS
+        ) {
+            screenBefore ?: AniobScreenState(
+                packageName = accessibility?.currentForegroundPackage() ?: "com.aniob.app",
+                observationKind = "fast-lane"
+            )
+        } else {
+            null
+        }
+        val finalScreen = fastLaneFinalScreen ?: if (stepResult?.terminalState == StepResult.TerminalState.SUCCESS) {
             stepResult.nextCtx.lastScreenState ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
         } else {
             accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
@@ -4242,8 +4483,14 @@ class AniobViewModel(
                 }.getOrNull()
             }
             launch { runCatching {
-                if (isSuccess) persistRememberTransitions(researchMode,
-                    task.clarifiedGoal.ifBlank { task.rawPrompt }, transitionsSnapshot)
+                if (isSuccess) {
+                    // The cache file load no longer blocks dispatch, so it is awaited here, after
+                    // the run: recording into (and saving) the not-yet-loaded empty cache would
+                    // overwrite the persisted one.
+                    if (researchMode.rememberReplay) rememberCacheLoadJob?.join()
+                    persistRememberTransitions(researchMode,
+                        task.clarifiedGoal.ifBlank { task.rawPrompt }, transitionsSnapshot)
+                }
             } }
             launch { runCatching {
                 app.metricsCollector.recordSession(taskId = task.id, prompt = task.rawPrompt, isSuccess = isSuccess,
@@ -4971,6 +5218,12 @@ class AniobViewModel(
 
         /** Lets a dynamic screen finish animating before the post-plan re-observation. */
         const val BURST_REPLAN_SETTLE_MS = 250L
+
+        /** Cap on waiting for the chat window to reveal the app behind it (was a fixed sleep). */
+        const val SESSION_REVEAL_WAIT_MS = 600L
+
+        /** Cap on waiting for a cold-started session app to draw (was a fixed sleep). */
+        const val SESSION_RELAUNCH_WAIT_MS = 800L
 
         /** Plans that cannot execute even one member before the run stops batching. */
         const val BURST_MAX_ZERO_PROGRESS_REPLANS = 2

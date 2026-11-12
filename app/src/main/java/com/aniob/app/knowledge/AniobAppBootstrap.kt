@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import android.provider.Settings
 import com.aniob.core.knowledge.AniobAppCatalog
 import com.aniob.core.knowledge.AniobAppRegistry
+import com.aniob.core.knowledge.AniobRegistryBoot
 import com.aniob.core.knowledge.RegisteredApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,13 +64,33 @@ object AniobAppBootstrap {
 
     private fun cacheFile(context: Context): File = File(context.filesDir, AniobAppCatalog.CACHE_FILE_NAME)
 
+    private const val PREFS = "aniob_registry"
+    private const val KEY_BUILD_CODE = "registry_build_code"
+
+    /** Longest the readiness signal waits for a probe another caller already has in flight. */
+    private const val IN_FLIGHT_WAIT_MS = 5_000L
+
+    /**
+     * Completes once the registry has real contents (or the probe honestly failed), with the
+     * number of launchable apps. Completed at once when this build's cache was loaded, so a warm
+     * start never waits; on first launch and after an update it completes when the PackageManager
+     * probe has re-registered every app.
+     */
+    @Volatile
+    var registryReady: kotlinx.coroutines.CompletableDeferred<Int> = kotlinx.coroutines.CompletableDeferred()
+        private set
+
     /**
      * Call from `Application.onCreate`.
      *
      * Synchronous part: read the cache (so app names resolve immediately). Asynchronous part: verify
-     * it against the platform and rebuild if stale.
+     * it against the platform and rebuild if stale. Every app is registered automatically on first
+     * launch AND after every update: the cache is keyed to the build that wrote it.
      */
     fun install(app: Application) {
+        val ready = kotlinx.coroutines.CompletableDeferred<Int>()
+        registryReady = ready
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val loaded = runCatching { AniobAppCatalog.getInstance().loadFromFile(app.filesDir) }
             .getOrDefault(false)
         val registry = AniobAppRegistry.getInstance()
@@ -77,9 +98,34 @@ object AniobAppBootstrap {
             android.util.Log.i(TAG, "registry cache hydrated: ${registry.size()} apps, " +
                 "roles=${registry.roles().keys}")
         }
-        val recheck = !loaded || AniobAppRegistry.getInstance()
-            .isStale(System.currentTimeMillis(), SOFT_TTL_MS)
-        scope.launch { runCatching { refresh(app, force = recheck) } }
+        val currentBuild = com.aniob.app.BuildConfig.VERSION_CODE
+        val cachedBuild = prefs.getInt(KEY_BUILD_CODE, AniobRegistryBoot.NO_BUILD)
+        val mustProbe = AniobRegistryBoot.mustProbe(
+            cacheLoaded = loaded,
+            cachedBuildCode = cachedBuild,
+            currentBuildCode = currentBuild,
+            softStale = registry.isStale(System.currentTimeMillis(), SOFT_TTL_MS)
+        )
+        if (AniobRegistryBoot.isWarm(loaded, cachedBuild, currentBuild, registry.size())) {
+            ready.complete(registry.size())
+        }
+
+        scope.launch {
+            try {
+                runCatching { refresh(app, force = mustProbe) }
+                // refresh() returns early when another caller (the accessibility service) is
+                // already probing. Readiness means "has contents", so wait that probe out.
+                val giveUpAt = System.currentTimeMillis() + IN_FLIGHT_WAIT_MS
+                while (registry.isEmpty() && refreshing.get() && System.currentTimeMillis() < giveUpAt) {
+                    kotlinx.coroutines.delay(25)
+                }
+                if (registry.size() > 0) prefs.edit().putInt(KEY_BUILD_CODE, currentBuild).apply()
+            } finally {
+                // Always completes: a failed probe must cost the first task its bounded wait once,
+                // never every task.
+                if (!ready.isCompleted) ready.complete(registry.size())
+            }
+        }
     }
 
     /**

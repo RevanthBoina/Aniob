@@ -52,6 +52,27 @@ class AniobViewModelExecutionWiringTest {
     }
 
     @Test
+    fun taskStartAppendsNoAskPolicyHeadsUpMessage() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+
+        vm.submitTask("Pay the bill, enter the OTP, then send a receipt")
+
+        // The task coroutine runs off the test thread; watch the transcript across the window in
+        // which the removed heads-up used to be appended (it was the first thing the job did).
+        val deadline = System.currentTimeMillis() + 1_000L
+        do {
+            val narrated = vm.uiState.value.chatMessages.filter {
+                it.provider == "ASK_POLICY" || it.badge == "Heads-up" || it.id.startsWith("msg_heads_up_")
+            }
+            assertTrue("No ASK_POLICY heads-up may be appended at task start: $narrated", narrated.isEmpty())
+            Thread.sleep(25)
+        } while (System.currentTimeMillis() < deadline)
+
+        vm.stopCurrentTask()
+    }
+
+    @Test
     fun preflightOfflineShortcutExemption() {
         val app = ApplicationProvider.getApplicationContext<AniobApplication>()
         val vm = AniobViewModel(app)
