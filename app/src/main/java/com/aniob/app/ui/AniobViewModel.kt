@@ -2159,6 +2159,12 @@ class AniobViewModel(
         activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
             app.taskOwner.attachJob(leaseGen, currentCoroutineContext()[kotlinx.coroutines.Job]!!)
 
+            // Briefly wait for first-run registration; a no-op once the registry is warm. Without
+            // it, a launch typed during the first probe resolves against an empty registry.
+            withTimeoutOrNull(com.aniob.core.knowledge.AniobRegistryBoot.READY_WAIT_MS) {
+                com.aniob.app.knowledge.AniobAppBootstrap.registryReady.await()
+            }
+
             // Resolve the effective goal and direct device/app capabilities before any chooser,
             // clarification, Doctor advice, or model route.
             val alternative = if (AniobLaunchHub.isSwitchToOther(trimmed))
