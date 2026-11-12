@@ -4177,7 +4177,10 @@ class AniobViewModel(
                         burstsSuspended = true
                         app.researchTelemetry.recordBurstSuspended()
                     }
-                    delay(BURST_REPLAN_SETTLE_MS)
+                    // Was a fixed sleep. Expected effect: the dynamic screen stopped re-indexing, so
+                    // the inputs of the next plan are stable.
+                    val replanQuiet = accessibility?.let { windowQuiet(it, requireMovement = false) }
+                    until(BURST_REPLAN_SETTLE_MS) { replanQuiet?.settled() ?: false }
                     accessibility?.captureCurrentScreenState()?.let { fresh ->
                         screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                         screenBefore = fresh
