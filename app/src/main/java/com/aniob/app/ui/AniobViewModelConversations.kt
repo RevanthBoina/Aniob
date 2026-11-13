@@ -89,25 +89,28 @@ internal fun AniobViewModel.restoreActiveConversation() {
 fun AniobViewModel.openConversation(id: String) {
     if (_uiState.value.isRunning) return
     val origin = conversationId
-    viewModelScope.launch(Dispatchers.IO) {
-        val stored = runCatching { savedConversationMessages(id) }.getOrElse { emptyList() }
-        if (conversationStore.find(id) == null || _uiState.value.isRunning || origin != conversationId) return@launch
-        val previous = conversationId
-        if (previous.isNotBlank() && previous != id) conversationStore.close(previous, "User switched to another chat")
-        if (_uiState.value.isRunning || origin != conversationId) return@launch
-        setActiveConversation(id)
-        _uiState.update {
-            it.copy(
-                chatMessages = stored,
-                steps = emptyList(),
-                stepEvents = emptyList(),
-                lastNarration = "",
-                lastSummary = null,
-                momentChips = emptyList(),
-                streamingBubbleText = "",
-                isStreaming = false,
-                queuedPrompt = null
-            )
+    val generation = ++activeGeneration
+    // Reserve ownership before IO. A submit cannot slip between a stale-state check and switch.
+    _uiState.update { it.copy(isRunning = true, activeTask = null, statusMessage = "Opening saved chat…") }
+    activeTaskJob = viewModelScope.launch {
+        try {
+            val stored = withContext(Dispatchers.IO) {
+                requireNotNull(conversationStore.find(id)) { "Conversation no longer exists" }
+                val messages = savedConversationMessages(id)
+                if (origin.isNotBlank() && origin != id) conversationStore.close(origin, "User switched to another chat")
+                messages
+            }
+            if (generation != activeGeneration || origin != conversationId) return@launch
+            setActiveConversation(id)
+            _uiState.update { it.copy(chatMessages = stored, streamingBubbleText = "", isStreaming = false,
+                statusMessage = "Ready") }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled
+        } catch (_: android.database.SQLException) {
+            if (generation == activeGeneration) _uiState.update { it.copy(statusMessage = "History unavailable — check device storage") }
+        } catch (_: IllegalArgumentException) {
+            if (generation == activeGeneration) _uiState.update { it.copy(statusMessage = "That conversation is no longer available") }
+        } finally {
+            if (generation == activeGeneration) _uiState.update { it.copy(isRunning = false) }
         }
     }
 }
