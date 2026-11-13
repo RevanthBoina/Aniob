@@ -16,6 +16,12 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.aniob.app.background.AniobBackgroundController
 import com.aniob.app.ui.AniobMainScreen
 import com.aniob.app.ui.AniobViewModel
+import com.aniob.app.ui.handleDeepLink
+import com.aniob.app.ui.handleIncomingShare
+import com.aniob.app.ui.setAutoRouterMode
+import com.aniob.app.ui.stopCurrentTask
+import com.aniob.app.ui.submitTask
+import com.aniob.app.ui.togglePause
 import com.aniob.app.ui.theme.AniobTheme
 import com.aniob.core.providers.AniobLocalLlmClient
 

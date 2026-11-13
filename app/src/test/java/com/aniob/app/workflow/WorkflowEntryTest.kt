@@ -3,6 +3,7 @@ package com.aniob.app.workflow
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.aniob.app.AniobApplication
+import com.aniob.app.ui.handleIncomingShare
 import com.aniob.core.workflow.WorkflowLimits
 import org.junit.Assert.*
 import org.junit.Before

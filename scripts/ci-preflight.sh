@@ -84,11 +84,11 @@ for f in $BURST_FILES; do
         SMOKE_FAIL=1
     fi
 done
-if ! grep -q "parseBurstOrRepair" app/src/main/java/com/aniob/app/ui/AniobViewModel.kt 2>/dev/null; then
+if ! grep -rq --include="AniobViewModel*.kt" "parseBurstOrRepair" app/src/main/java/com/aniob/app/ui/ 2>/dev/null; then
     echo "ERROR: the step loop no longer reads a bundled plan."
     SMOKE_FAIL=1
 fi
-if ! grep -q "ActionBurstRunner" app/src/main/java/com/aniob/app/ui/AniobViewModel.kt 2>/dev/null; then
+if ! grep -rq --include="AniobViewModel*.kt" "ActionBurstRunner" app/src/main/java/com/aniob/app/ui/ 2>/dev/null; then
     echo "ERROR: the step loop executes a bundled plan without the re-observing runner."
     SMOKE_FAIL=1
 fi
