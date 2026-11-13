@@ -235,7 +235,7 @@ fun AniobViewModel.submitTask(prompt: String) {
                 // Keyed to the conversation, not the task, so the gateway sees one session per chat.
                 cloudProvider = if (isCloudConfigured()) getCloudProvider(sessionId = chatId) else null,
                 localProvider = localLlmProvider,
-                sharedKnowledgeStore = sharedKnowledgeStore
+                sharedKnowledgeStore = com.aniob.core.memory.ConversationKnowledgeStore(sharedKnowledgeStore, chatId)
             )
             val powerState = AniobDeviceTelemetry.getRealState(app)
             val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)

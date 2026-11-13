@@ -82,7 +82,7 @@ fun PreviousChatsSheet(
                                         conversation.updatedAt,
                                         System.currentTimeMillis(),
                                         DateUtils.MINUTE_IN_MILLIS
-                                    ).toString(),
+                                    ).toString() + " · ${conversation.status}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

@@ -19,7 +19,7 @@ class AniobSkillMatcher(
     fun match(prompt: String, disabledSkills: Set<String> = emptySet()): MatchResult {
         val cleanPrompt = prompt.trim().lowercase()
         if (cleanPrompt.isBlank() || Regex("\\b(?:not|never|cancel)\\b|don't|do not").containsMatchIn(cleanPrompt)) {
-            return MatchResult(matched = false, reason = "Empty prompt")
+            return MatchResult(matched = false, reason = "Empty or negated prompt")
         }
 
         // Only active catalog skills participate in matching - draft/disabled skills are strictly skipped
@@ -44,6 +44,8 @@ class AniobSkillMatcher(
             }
         }
         if (bestSkill != null) {
+            if (candidates.count { bestTrigger in it.triggerKeywords.map(String::lowercase) } > 1)
+                return MatchResult(false, reason = "Ambiguous skill triggers")
             val slots = extractSlots(prompt, bestSkill)
             return MatchResult(
                 matched = true,
@@ -80,6 +82,8 @@ class AniobSkillMatcher(
             skill to skill.triggerKeywords.maxOfOrNull { SkillRelevance.score(prompt, it) }.orZero()
         }.sortedWith(compareByDescending<Pair<AniobSkill, Float>> { it.second }.thenBy { it.first.name })
         val top = ranked.firstOrNull()
+        if (top != null && top.second >= .55f && ranked.size > 1 && top.second - ranked[1].second < .08f)
+            return MatchResult(false, reason = "Ambiguous skill scores")
         if (top != null && top.second >= .55f && (ranked.size == 1 || top.second - ranked[1].second >= .08f)) {
             return MatchResult(true, top.first, top.second, extractSlots(prompt, top.first), "Token/stem/typo match: ${top.first.name}")
         }

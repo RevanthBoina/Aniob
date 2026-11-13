@@ -103,9 +103,11 @@ fun AniobViewModel.deleteConversation(id: String) {
     val wasActive = id == conversationId
     if (wasActive && _uiState.value.isRunning) return
     viewModelScope.launch(Dispatchers.IO) {
-        runCatching { conversationStore.delete(id) }
-            .onFailure { app.eventLogger.warn("AniobViewModel", "Could not delete chat: ${it.message}") }
-        if (wasActive && id == conversationId) clearChat()
+        val deleted = runCatching {
+            conversationStore.delete(id)
+            com.aniob.core.memory.ConversationKnowledgeStore(sharedKnowledgeStore, id).clear()
+        }.onFailure { app.eventLogger.warn("AniobViewModel", "Could not delete chat") }.isSuccess
+        if (deleted && wasActive && id == conversationId) clearChat()
     }
 }
 

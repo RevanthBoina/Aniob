@@ -30,8 +30,9 @@ fun AniobSkillsScreen(
     onForgetVault: (String) -> Unit
 ) {
     val builtInNames = setOf("open_settings", "send_quick_message")
-    val active = skills.filter { it.name !in builtInNames }
-    val builtIn = skills.filter { it.name in builtInNames }
+    val drafts = skills.filter { it.isDraft || it.status == com.aniob.core.skills.SkillStatus.DRAFT }
+    val active = skills.filter { it.name !in builtInNames && it !in drafts }
+    val builtIn = skills.filter { it.name in builtInNames && it !in drafts }
 
     Scaffold(
         topBar = {
@@ -77,6 +78,23 @@ fun AniobSkillsScreen(
                         onReplay = { onReplay(skill.triggerKeywords.firstOrNull() ?: skill.name) },
                         onToggle = { enabled -> onToggleSkill(skill.name, enabled) }
                     )
+                }
+            }
+
+            if (drafts.isNotEmpty()) {
+                item { SectionHeader("Draft proposals — not verified; cannot run") }
+                items(drafts, key = { "draft_${it.name}" }) { skill ->
+                    Card(modifier = Modifier.fillMaxWidth().testTag("draft_skill_${skill.name}")) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(skill.name, fontWeight = FontWeight.Bold)
+                            Text(skill.description, style = MaterialTheme.typography.bodySmall)
+                            Text("Triggers: ${skill.triggerKeywords.joinToString()}", style = MaterialTheme.typography.bodySmall)
+                            Text(if (skill.steps.isEmpty()) "No grounded steps proposed." else
+                                skill.steps.joinToString("\n") { "${it.stepIndex + 1}. ${it.actionType}: ${it.description}" },
+                                style = MaterialTheme.typography.bodySmall)
+                            Text("Requires review and verified execution before activation.", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
             }
 

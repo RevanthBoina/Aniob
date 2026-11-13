@@ -62,7 +62,7 @@ class AniobSemanticSkillMatcher(
 
     fun findBestSkill(prompt: String, disabledSkills: Set<String> = emptySet()): AniobSkillMatcher.MatchResult {
         val kw = keywordMatcher.match(prompt, disabledSkills)
-        if (kw.matched) return kw
+        if (kw.matched || kw.reason.startsWith("Ambiguous") || kw.reason == "Empty or negated prompt") return kw
         val qVec = if (embeddingProvider.isAvailable()) embeddingProvider.embed(prompt) else AniobEmbeddingStore.generatePseudoEmbedding(prompt)
         val matches = embeddingStore.search(qVec, topK = skillEngine.getActiveCatalog().size.coerceAtLeast(1), threshold = 0.60f)
         for (best in matches) {
