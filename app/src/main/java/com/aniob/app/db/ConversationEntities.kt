@@ -130,15 +130,15 @@ class ConversationStore(
     suspend fun historyForLlm(conversationId: String, maxTurns: Int = ChatTurn.MAX_TURNS): List<ChatTurn> =
         dao.messages(conversationId).takeLast(maxTurns).map { ChatTurn(it.role, it.content) }
 
-    suspend fun appendExchange(conversationId: String, userText: String, answer: String, provider: String?) {
+    suspend fun appendExchange(conversationId: String, userText: String, answer: String, provider: String?, taskId: String? = null) {
         val time = now()
         val existing = dao.find(conversationId)
         val conversation = existing?.copy(updatedAt = time)
             ?: ConversationEntity(conversationId, titleFor(userText), createdAt = time, updatedAt = time)
         dao.appendExchange(
             conversation,
-            ChatMessageEntity(newId(), conversationId, ChatTurn.USER, userText, null, time),
-            ChatMessageEntity(newId(), conversationId, ChatTurn.ASSISTANT, answer, provider, time)
+            ChatMessageEntity(taskId?.let { "$it:user" } ?: newId(), conversationId, ChatTurn.USER, userText, null, time),
+            ChatMessageEntity(taskId?.let { "$it:assistant" } ?: newId(), conversationId, ChatTurn.ASSISTANT, answer, provider, time)
         )
     }
 

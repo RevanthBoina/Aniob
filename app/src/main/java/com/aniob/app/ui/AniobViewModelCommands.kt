@@ -22,9 +22,7 @@ internal fun AniobViewModel.handleConversationCommand(text: String): Boolean {
     val command = text.substringBefore(' ').lowercase()
     val argument = text.substringAfter(' ', "").trim()
     if (command == "/new") {
-        clearChat()
-        val id = activeConversationId()
-        viewModelScope.launch(Dispatchers.IO) { conversationStore.create(id, argument.ifBlank { "New chat" }) }
+        clearChat(argument.ifBlank { "New chat" })
         return true
     }
     if (command == "/switch") {

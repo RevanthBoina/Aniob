@@ -44,7 +44,7 @@ internal fun AniobViewModel.storedMessageToChat(message: com.aniob.app.db.ChatMe
 /** Successful answers stay in chat_messages; failed/automation requests come from the journal. */
 internal suspend fun AniobViewModel.savedConversationMessages(id: String): List<ChatMessage> {
     val stored = conversationStore.messages(id).map { storedMessageToChat(it) }
-    val journal = app.database.conversationJournalDao().tasks(id).filter { it.outcome != "ANSWERED" }.flatMap { task ->
+    val journal = app.database.conversationJournalDao().tasks(id).filter { task -> task.outcome != "ANSWERED" || stored.none { it.id == "${task.taskId}:assistant" } }.flatMap { task ->
         listOf(ChatMessage(id = "journal_user_${task.taskId}", role = "user", content = task.prompt, timestamp = task.startedAt),
             ChatMessage(id = "journal_result_${task.taskId}", role = "assistant",
                 content = task.response.ifBlank { "${task.outcome}: ${task.reason.ifBlank { "No terminal result recorded" }}" },
@@ -111,7 +111,7 @@ fun AniobViewModel.deleteConversation(id: String) {
     }
 }
 
-fun AniobViewModel.clearChat() {
+fun AniobViewModel.clearChat(title: String = "New chat") {
     // The cleared chat stays in the previous-chats list; new messages start a new thread.
     if (_uiState.value.isRunning) return // Stop the current task before changing its conversation.
     val previous = conversationId
@@ -119,7 +119,7 @@ fun AniobViewModel.clearChat() {
     val next = conversationId
     viewModelScope.launch(Dispatchers.IO) {
         if (previous.isNotBlank()) conversationStore.close(previous, "User started a new chat")
-        conversationStore.create(next)
+        conversationStore.create(next, title)
     }
     _uiState.update {
         it.copy(

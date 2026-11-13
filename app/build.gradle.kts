@@ -202,4 +202,4 @@ val generateCapabilityIndex by tasks.registering {
   }
 }
 android.sourceSets.getByName("main").assets.srcDir(capabilityIndexDir)
-tasks.named("preBuild").configure { dependsOn(generateCapabilityIndex) }
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(generateCapabilityIndex) }

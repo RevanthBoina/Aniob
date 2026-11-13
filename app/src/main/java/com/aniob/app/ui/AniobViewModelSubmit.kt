@@ -276,7 +276,7 @@ fun AniobViewModel.submitTask(prompt: String) {
                 )
             }
             if (answered && chatId == conversationId) {
-                runCatching { conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider) }
+                runCatching { conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider, taskId) }
                     .onFailure { app.eventLogger.warn("AniobViewModel", "Could not save chat turn: ${it.message}") }
             }
 
