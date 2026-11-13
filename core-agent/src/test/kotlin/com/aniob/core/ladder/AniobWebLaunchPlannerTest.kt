@@ -133,4 +133,63 @@ class AniobWebLaunchPlannerTest {
         assertNull(AniobLaunchHub.planWeb("search for cats on youtube and play the first video"))
         assertNull(AniobLaunchHub.planWeb("search for cats in my notes"))
     }
+
+    @Test
+    fun `site first word order is the same search`() {
+        val plan = AniobLaunchHub.planWeb("Search in YouTube for naa anveshana")
+        assertEquals("https://www.youtube.com/results?search_query=naa+anveshana", plan?.url)
+        assertEquals(WebLaunchPlan.SOURCE_SEARCH, plan?.source)
+        assertNull(AniobLaunchHub.planWeb("search in youtube for cats and play the first video"))
+        assertNull(AniobLaunchHub.planWeb("search in my notes for cats"))
+    }
+
+    @Test
+    fun `a search inside an installed app is left to ui automation`() {
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(
+                RegisteredApp("com.android.chrome", "Chrome", aliases = listOf("chrome")),
+                RegisteredApp("com.linkedin.android", "LinkedIn"),
+                RegisteredApp("com.google.android.youtube", "YouTube")
+            )
+        )
+        for (prompt in listOf(
+            "Search for Jensen haung in linkedin",
+            "Search in YouTube for naa anveshana",
+            "search for lofi beats in youtube"
+        )) {
+            assertNull(prompt, AniobLaunchHub.planWeb(prompt))
+            assertNull("no shortcut may finish '$prompt' on dispatch", AniobIntentResolver.resolve(prompt))
+        }
+        // The registry knows the app but the platform cannot launch it: the web page still answers.
+        val stale = AniobLaunchHub.planWeb("Search for Jensen haung in linkedin", isLaunchable = { false })
+        assertEquals("https://www.linkedin.com/search/results/all/?keywords=Jensen+haung", stale?.url)
+        // A site with no app keeps its search URL.
+        assertEquals(
+            "https://github.com/search?q=kotlin",
+            AniobIntentResolver.resolve("search for kotlin on github")?.uriString
+        )
+    }
+
+    @Test
+    fun `a single goal task opens the app it names without a model`() {
+        AniobAppRegistry.getInstance().hydrate(
+            listOf(
+                RegisteredApp("com.linkedin.android", "LinkedIn"),
+                RegisteredApp("com.google.android.youtube", "YouTube"),
+                RegisteredApp("com.instagram.android", "Instagram")
+            )
+        )
+        assertEquals("com.linkedin.android", AniobLaunchHub.planInAppTask("Search for Jensen haung in linkedin")?.packageName)
+        assertEquals(
+            "com.linkedin.android",
+            AniobLaunchHub.planInAppTask("Send an connection request to krishna vamsi vemula in linkedin")?.packageName
+        )
+        assertEquals("com.google.android.youtube", AniobLaunchHub.planInAppTask("Search in YouTube for naa anveshana")?.packageName)
+        assertEquals("com.instagram.android", AniobLaunchHub.planInAppTask("Follow Sam on Instagram")?.packageName)
+
+        assertNull("unknown app", AniobLaunchHub.planInAppTask("search for cats in my notes"))
+        assertNull("not launchable", AniobLaunchHub.planInAppTask("Follow Sam on Instagram", isLaunchable = { false }))
+        assertNull("two goals", AniobLaunchHub.planInAppTask("take a screenshot and share it on instagram"))
+        assertNull("no app named", AniobLaunchHub.planInAppTask("send a message to Sam"))
+    }
 }

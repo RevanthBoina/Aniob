@@ -187,6 +187,52 @@ object AniobLaunchHub {
         isLaunchable: (String) -> Boolean = { true }
     ): WebLaunchPlan? = AniobWebLaunchPlanner.plan(prompt, registry, isLaunchable)
 
+    private val TRAILING_APP = Regex(
+        "\\s(?:in|on|using|via)\\s+(?:the\\s+|my\\s+)?([a-z0-9][a-z0-9 .]{1,30}?)(?:\\s+app)?$",
+        RegexOption.IGNORE_CASE
+    )
+    private val SEARCH_IN_APP = Regex(
+        "^(?:please\\s+|kindly\\s+)?(?:search|find|look\\s*up)\\s+(?:in|on)\\s+(?:the\\s+)?" +
+            "([a-z0-9][a-z0-9 .]{1,30}?)(?:\\s+app)?\\s+for\\s+.+$",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * The app a single-goal task says it happens in: "search for Jensen in linkedin", "send a
+     * connection request to Priya on LinkedIn", "search in YouTube for lofi".
+     *
+     * [plan] only reads an app named after a launch verb, so these tasks used to start with a model
+     * call whose whole job was to open the app. Opening it is a lookup; what happens inside the app
+     * is still planned from the observed screen. Returns null for a multi-clause goal (the order of
+     * its apps is the planner's business), for an unknown or ambiguous name, and for a package the
+     * platform cannot launch.
+     */
+    fun planInAppTask(
+        prompt: String,
+        registry: AniobAppRegistry = AniobAppRegistry.getInstance(),
+        isLaunchable: (String) -> Boolean = { true }
+    ): LaunchPlan? {
+        val text = prompt.trim().trimEnd('?', '.', '!', ' ', ',', ';')
+        if (text.isEmpty() || CLAUSE_BREAK.containsMatchIn(text)) return null
+        val name = (SEARCH_IN_APP.find(text) ?: TRAILING_APP.find(text))?.groupValues?.get(1)?.trim()
+            ?: return null
+        if (name.length < MIN_NAME_LENGTH) return null
+        val app = exactApp(name, registry) ?: return null
+        if (!isLaunchable(app.packageName)) return null
+        return LaunchPlan(app.packageName, app.label, app.launchActivity, LaunchPlan.SOURCE_REGISTRY)
+    }
+
+    /**
+     * The one app whose package, label or alias is exactly [name]. A prefix or fuzzy hit is good
+     * enough after "open …", where the user is naming an app; it is not good enough for a word that
+     * merely follows "in"/"on" ("play it on speaker").
+     */
+    internal fun exactApp(name: String, registry: AniobAppRegistry): RegisteredApp? {
+        val match = registry.resolve(name) as? AppLookup.Match ?: return null
+        val exact = match.how == "package" || match.how.startsWith("label") || match.how.startsWith("alias")
+        return match.app.takeIf { exact }
+    }
+
     /**
      * An app the goal names later in the task ("… then open Instagram"), skipping the apps this
      * task already opened and the one that is already in front.

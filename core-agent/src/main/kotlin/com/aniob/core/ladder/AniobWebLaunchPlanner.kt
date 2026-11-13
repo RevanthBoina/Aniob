@@ -72,6 +72,13 @@ object AniobWebLaunchPlanner {
         RegexOption.IGNORE_CASE
     )
 
+    /** The other word order people use: "search in youtube for lofi beats". */
+    private val SEARCH_SITE_FIRST = Regex(
+        "^(?:please\\s+|kindly\\s+)?(?:search|find|look\\s*up)\\s+" +
+            "(?:in|on|at|using)\\s+(?:the\\s+)?([a-z][a-z .]*?)(?:\\s+app)?\\s+for\\s+(.+)$",
+        RegexOption.IGNORE_CASE
+    )
+
     private val PERSONAL_ITEM =
         Regex("^(?:please\\s+|kindly\\s+)?\\w+(?:\\s+to)?\\s+my\\s+", RegexOption.IGNORE_CASE)
 
@@ -154,7 +161,7 @@ object AniobWebLaunchPlanner {
         val text = prompt.trim().trimEnd('?', '.', '!', ' ', ',', ';')
         if (text.isEmpty()) return null
         return compound(text, registry)
-            ?: siteSearch(text)
+            ?: siteSearch(text, registry, isLaunchable)
             ?: appFallback(text, registry, isLaunchable)
     }
 
@@ -169,12 +176,32 @@ object AniobWebLaunchPlanner {
         return WebLaunchPlan(url, labelFor(keyword), browser, WebLaunchPlan.SOURCE_COMPOUND)
     }
 
-    // "search for lofi in youtube" / "search in youtube" -> the site's own search page.
-    private fun siteSearch(text: String): WebLaunchPlan? {
-        val match = SEARCH.find(text) ?: return null
-        val site = cleanName(match.groupValues[2])
+    // "search for lofi in youtube" / "search in youtube for lofi" / "search in youtube" -> the
+    // site's own search page, unless the site's app is installed.
+    private fun siteSearch(
+        text: String,
+        registry: AniobAppRegistry,
+        isLaunchable: (String) -> Boolean
+    ): WebLaunchPlan? {
+        val siteFirst = SEARCH_SITE_FIRST.find(text)
+        val site: String
+        val query: String
+        if (siteFirst != null) {
+            site = cleanName(siteFirst.groupValues[1])
+            query = siteFirst.groupValues[2].trim()
+            // A second goal ("… for cats and play the first video") cannot end on a page load.
+            if (CLAUSE_BREAK.containsMatchIn(query)) return null
+        } else {
+            val match = SEARCH.find(text) ?: return null
+            site = cleanName(match.groupValues[2])
+            query = match.groupValues[1].trim().removePrefix("for ").trim()
+        }
         val template = SEARCH_TEMPLATES[site] ?: return null
-        val query = match.groupValues[1].trim().removePrefix("for ").trim()
+        // "search for X in linkedin" with LinkedIn installed means the search box of that app. A
+        // web URL there finishes on dispatch with nothing typed and nothing checked (and for some
+        // apps opens the feed or a login wall), so the task is left to the observed step loop.
+        // With no such app the site's search page is still the right answer.
+        if (query.isNotEmpty() && hasInstalledApp(site, registry, isLaunchable)) return null
         val url = if (query.isEmpty()) {
             KNOWN_SITES[site] ?: return null
         } else {
@@ -182,6 +209,18 @@ object AniobWebLaunchPlanner {
         }
         val label = if (query.isEmpty()) labelFor(site) else "Search \"$query\" on ${labelFor(site)}"
         return WebLaunchPlan(url, label, browserPackage = null, source = WebLaunchPlan.SOURCE_SEARCH)
+    }
+
+    /** True when [site] names an app the live registry knows and the platform can launch. */
+    private fun hasInstalledApp(
+        site: String,
+        registry: AniobAppRegistry,
+        isLaunchable: (String) -> Boolean
+    ): Boolean {
+        val app = AniobLaunchHub.exactApp(site, registry) ?: return false
+        // A browser is where a web search belongs: "search for X in chrome" stays a URL.
+        if (registry.appForRole(AniobAppRegistry.ROLE_BROWSER)?.packageName == app.packageName) return false
+        return isLaunchable(app.packageName)
     }
 
     // "open linkedin" when nothing installed answers to "linkedin".
