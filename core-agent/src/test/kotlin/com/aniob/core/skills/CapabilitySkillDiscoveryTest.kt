@@ -35,6 +35,15 @@ class CapabilitySkillDiscoveryTest {
             fail("Active empty skills must be rejected")
         } catch (_: SkillParseException) { }
     }
+    @Test fun paraphraseSelectsActiveSkillAndDisabledSkillStillCannotMatch() {
+        val engine = AniobSkillEngine()
+        engine.registerSkill(AniobSkill("navigation_review", description = "", triggerKeywords = listOf("review navigation"),
+            steps = listOf(SkillStep(0, "wait", waitDuration = 10))))
+        val matcher = AniobSkillMatcher(engine)
+        assertEquals("navigation_review", matcher.match("navigation review please").skill!!.name)
+        assertFalse(matcher.match("navigation review please", setOf("navigation_review")).matched)
+    }
+
     @Test fun tokenMatchingSupportsParaphraseAndRejectsUnrelatedAndAmbiguous() {
         assertTrue(SkillRelevance.score("please run quickly", "running quickly") > .55f)
         assertTrue(SkillRelevance.score("weather outside", "wether") > .55f)

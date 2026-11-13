@@ -52,8 +52,9 @@ class AniobExecutionRouterTest {
     @Test
     fun `model dispatch carries condensed progress summary when planning agent present`() {
         val router = AniobExecutionRouter(planningAgent = AniobPlanningAgent())
+        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
 
-        // stepIndex 4 avoids intent/fastpath/skill matches → falls through to ModelDispatch
+        // Isolate the model rung; automatic skills now recognize paraphrases at any task step.
         val result = router.planStep(
             taskPrompt = "Open wifi settings",
             screenState = screen,
@@ -133,6 +134,7 @@ class AniobExecutionRouterTest {
     @Test
     fun `router works with nullable planning agent`() {
         val router = AniobExecutionRouter(planningAgent = null)
+        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
 
         val result = router.planStep(
             taskPrompt = "Open wifi settings",
@@ -150,6 +152,7 @@ class AniobExecutionRouterTest {
     @Test
     fun `previous progress accumulates across consecutive model dispatches`() {
         val router = AniobExecutionRouter(planningAgent = AniobPlanningAgent())
+        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
 
         val first = router.planStep(
             taskPrompt = "Open wifi settings",
@@ -238,6 +241,7 @@ class AniobExecutionRouterTest {
     @Test
     fun `remember replay is off unless the ablation condition enables it`() {
         val router = AniobExecutionRouter(planningAgent = null)
+        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
         var lookups = 0
         router.rememberLookup = { _, _ ->
             lookups++
@@ -259,6 +263,7 @@ class AniobExecutionRouterTest {
     @Test
     fun `a cache miss falls through to the normal model rung`() {
         val router = AniobExecutionRouter(planningAgent = null)
+        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
         router.rememberReplayEnabled = true
         router.rememberLookup = { _, _ -> null }
 
@@ -276,6 +281,7 @@ class AniobExecutionRouterTest {
     @Test
     fun `an empty cache result is a miss, not an empty replay`() {
         val router = AniobExecutionRouter(planningAgent = null)
+        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
         router.rememberReplayEnabled = true
         router.rememberLookup = { _, _ -> emptyList() }
 
