@@ -22,7 +22,10 @@ data class ConversationEntity(
     val title: String,
     val createdAt: Long,
     val updatedAt: Long,
-    val pinned: Boolean = false
+    val pinned: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "'unknown'") val status: String = "running",
+    @androidx.room.ColumnInfo(defaultValue = "''") val stopReason: String = "",
+    @androidx.room.ColumnInfo(defaultValue = "''") val lastTaskId: String = ""
 )
 
 @Entity(
@@ -69,6 +72,15 @@ interface ConversationDao {
     @Query("DELETE FROM conversations WHERE id = :id")
     suspend fun deleteConversation(id: String)
 
+    @Query("SELECT * FROM conversations ORDER BY updatedAt DESC")
+    suspend fun all(): List<ConversationEntity>
+
+    @Query("UPDATE conversations SET status = :status, stopReason = :reason, updatedAt = :time WHERE id = :id")
+    suspend fun setStatus(id: String, status: String, reason: String, time: Long)
+
+    @Query("UPDATE conversations SET status = :status, stopReason = :reason, updatedAt = :time WHERE id = :id AND lastTaskId = :taskId AND status = 'running'")
+    suspend fun finishTask(id: String, taskId: String, status: String, reason: String, time: Long)
+
     /** Saves one question and its answer together, creating the conversation on first use. */
     @Transaction
     suspend fun appendExchange(
@@ -93,6 +105,24 @@ class ConversationStore(
     private val newId: () -> String = { java.util.UUID.randomUUID().toString() }
 ) {
     fun observeAll(): Flow<List<ConversationEntity>> = dao.observeAll()
+    suspend fun all(): List<ConversationEntity> = dao.all()
+    suspend fun find(id: String): ConversationEntity? = dao.find(id)
+    suspend fun create(id: String, title: String = "New chat") {
+        if (dao.find(id) == null) dao.upsertConversation(ConversationEntity(id, title, now(), now()))
+    }
+    suspend fun close(id: String, reason: String) = dao.setStatus(id, "stopped", reason, now())
+    suspend fun beginTask(id: String, taskId: String, prompt: String) {
+        val existing = dao.find(id) ?: ConversationEntity(id, titleFor(prompt), now(), now())
+        dao.upsertConversation(existing.copy(status = "running", stopReason = "", lastTaskId = taskId, updatedAt = now(),
+            title = if (existing.title == "New chat") titleFor(prompt) else existing.title))
+    }
+    suspend fun finishTask(id: String, taskId: String, outcome: String, reason: String) = dao.finishTask(
+        id, taskId, when (outcome) {
+            "ANSWERED", "VERIFIED", "LAUNCH_ACCEPTED" -> "completed"
+            "STOPPED", "INTERRUPTED" -> "stopped"
+            "WAITING", "NEEDS_CHOICE", "NEEDS_CLARIFICATION", "DELEGATED" -> "waiting"
+            else -> "errored"
+        }, reason, now())
 
     suspend fun messages(conversationId: String): List<ChatMessageEntity> = dao.messages(conversationId)
 

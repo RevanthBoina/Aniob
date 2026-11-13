@@ -16,7 +16,10 @@ import com.aniob.app.ui.AniobViewModel.Companion.KEY_ACTIVE_CONVERSATION
 import com.aniob.app.ui.AniobViewModel.Companion.CHAT_RENDER_WINDOW
 
 internal fun AniobViewModel.activeConversationId(): String {
-    if (conversationId.isBlank()) startNewConversation()
+    if (conversationId.isBlank()) {
+        startNewConversation()
+        _uiState.update { it.copy(chatMessages = emptyList()) }
+    }
     return conversationId
 }
 
@@ -38,18 +41,31 @@ internal fun AniobViewModel.storedMessageToChat(message: com.aniob.app.db.ChatMe
     provider = message.provider
 )
 
+/** Successful answers stay in chat_messages; failed/automation requests come from the journal. */
+internal suspend fun AniobViewModel.savedConversationMessages(id: String): List<ChatMessage> {
+    val stored = conversationStore.messages(id).map { storedMessageToChat(it) }
+    val journal = app.database.conversationJournalDao().tasks(id).filter { it.outcome != "ANSWERED" }.flatMap { task ->
+        listOf(ChatMessage(id = "journal_user_${task.taskId}", role = "user", content = task.prompt, timestamp = task.startedAt),
+            ChatMessage(id = "journal_result_${task.taskId}", role = "assistant",
+                content = task.response.ifBlank { "${task.outcome}: ${task.reason.ifBlank { "No terminal result recorded" }}" },
+                timestamp = task.startedAt, provider = "RECORDED_HISTORY"))
+    }
+    return (stored + journal).sortedBy { it.timestamp }
+}
+
 /** Cold start: show the chat that was open when the app last closed. */
 internal fun AniobViewModel.restoreActiveConversation() {
+    viewModelScope.launch(Dispatchers.IO) { conversationJournal.recover(conversationStartedAt) }
     val saved = conversationPrefs.getString(KEY_ACTIVE_CONVERSATION, null)
     if (saved.isNullOrBlank()) return
     conversationId = saved
     viewModelScope.launch(Dispatchers.IO) {
-        val stored = runCatching { conversationStore.messages(saved) }.getOrElse { emptyList() }
+        val stored = runCatching { savedConversationMessages(saved) }.getOrElse { emptyList() }
         if (stored.isEmpty()) return@launch
         _uiState.update { state ->
             // Never overwrite a chat the user has already started typing into.
             if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" }) {
-                state.copy(chatMessages = state.chatMessages + stored.map({ storedMessageToChat(it) }))
+                state.copy(chatMessages = state.chatMessages + stored)
             } else state
         }
     }
@@ -58,13 +74,17 @@ internal fun AniobViewModel.restoreActiveConversation() {
 /** Opens a saved chat: its messages replace the screen and follow-ups continue that thread. */
 fun AniobViewModel.openConversation(id: String) {
     if (_uiState.value.isRunning) return
+    val origin = conversationId
     viewModelScope.launch(Dispatchers.IO) {
-        val stored = runCatching { conversationStore.messages(id) }.getOrElse { emptyList() }
-        if (stored.isEmpty() || _uiState.value.isRunning) return@launch
+        val stored = runCatching { savedConversationMessages(id) }.getOrElse { emptyList() }
+        if (conversationStore.find(id) == null || _uiState.value.isRunning || origin != conversationId) return@launch
+        val previous = conversationId
+        if (previous.isNotBlank() && previous != id) conversationStore.close(previous, "User switched to another chat")
+        if (_uiState.value.isRunning || origin != conversationId) return@launch
         setActiveConversation(id)
         _uiState.update {
             it.copy(
-                chatMessages = stored.map({ storedMessageToChat(it) }),
+                chatMessages = stored,
                 steps = emptyList(),
                 stepEvents = emptyList(),
                 lastNarration = "",
@@ -91,7 +111,14 @@ fun AniobViewModel.deleteConversation(id: String) {
 
 fun AniobViewModel.clearChat() {
     // The cleared chat stays in the previous-chats list; new messages start a new thread.
+    if (_uiState.value.isRunning) return // Stop the current task before changing its conversation.
+    val previous = conversationId
     startNewConversation()
+    val next = conversationId
+    viewModelScope.launch(Dispatchers.IO) {
+        if (previous.isNotBlank()) conversationStore.close(previous, "User started a new chat")
+        conversationStore.create(next)
+    }
     _uiState.update {
         it.copy(
             chatMessages = emptyList(),

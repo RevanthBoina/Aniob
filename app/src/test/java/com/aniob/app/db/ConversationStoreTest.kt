@@ -109,7 +109,7 @@ class ConversationStoreTest {
             old.version = 6
         }
         val migrated = Room.databaseBuilder(context, AniobDatabase::class.java, name)
-            .addMigrations(AniobDatabase.MIGRATION_6_7, ConversationStore.MIGRATION_7_8)
+            .addMigrations(AniobDatabase.MIGRATION_6_7, ConversationStore.MIGRATION_7_8, AniobDatabase.MIGRATION_8_9)
             .allowMainThreadQueries().build()
         try {
             migrated.openHelper.writableDatabase.query("SELECT taskId FROM session_scores").use { cursor ->

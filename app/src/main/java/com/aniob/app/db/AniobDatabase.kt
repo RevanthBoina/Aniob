@@ -16,10 +16,12 @@ import androidx.room.RoomDatabase
         AuditLogEntity::class,
         FeatureCombinationEntity::class,
         TaskOutcomeEntity::class,
+        ConversationTaskEntity::class,
+        ConversationAuditEntity::class,
         ConversationEntity::class,
         ChatMessageEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 abstract class AniobDatabase : RoomDatabase() {
@@ -32,6 +34,7 @@ abstract class AniobDatabase : RoomDatabase() {
     abstract fun workflowDao(): WorkflowDao
     abstract fun auditLogDao(): AuditLogDao
     abstract fun taskOutcomeDao(): TaskOutcomeDao
+    abstract fun conversationJournalDao(): ConversationJournalDao
     abstract fun conversationDao(): ConversationDao
 
     companion object {
@@ -70,6 +73,18 @@ abstract class AniobDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : androidx.room.migration.Migration(8, 9) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE conversations ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
+                db.execSQL("ALTER TABLE conversations ADD COLUMN stopReason TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE conversations ADD COLUMN lastTaskId TEXT NOT NULL DEFAULT ''")
+                db.execSQL("CREATE TABLE IF NOT EXISTS conversation_tasks (taskId TEXT NOT NULL PRIMARY KEY, conversationId TEXT NOT NULL, prompt TEXT NOT NULL, startedAt INTEGER NOT NULL, outcome TEXT NOT NULL, reason TEXT NOT NULL, response TEXT NOT NULL, FOREIGN KEY(conversationId) REFERENCES conversations(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_conversation_tasks_conversationId ON conversation_tasks(conversationId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS conversation_audits (conversationId TEXT NOT NULL PRIMARY KEY, createdAt INTEGER NOT NULL, report TEXT NOT NULL, source TEXT NOT NULL, FOREIGN KEY(conversationId) REFERENCES conversations(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_conversation_audits_conversationId ON conversation_audits(conversationId)")
+            }
+        }
+
         fun getDatabase(context: Context): AniobDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -83,7 +98,8 @@ abstract class AniobDatabase : RoomDatabase() {
                     MIGRATION_4_5,
                     OutcomeGuard.MIGRATION_5_6,
                     MIGRATION_6_7,
-                    ConversationStore.MIGRATION_7_8
+                    ConversationStore.MIGRATION_7_8,
+                    MIGRATION_8_9
                 ).addCallback(OutcomeGuard.callback).build()
                 INSTANCE = instance
                 instance

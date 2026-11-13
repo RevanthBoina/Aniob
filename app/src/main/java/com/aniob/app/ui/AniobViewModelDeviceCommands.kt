@@ -282,6 +282,7 @@ internal fun AniobViewModel.putShortcutExtra(intent: Intent, key: String, value:
 fun AniobViewModel.stopCurrentTask() {
     val stoppingGen = ++activeGeneration
     val currentTask = _uiState.value.activeTask
+    currentTask?.let { finishConversationTask(it.id, "STOPPED", "Stopped by user; earlier changes were not undone") }
     app.taskOwner.stop(currentTask?.id)
     activeTaskJob?.cancel()
     activeTaskJob = null

@@ -357,6 +357,7 @@ internal fun AniobViewModel.advancePhase(phase: AgentPhase, thought: String = ""
 /** The only way a run's result is stored: a SealedOutcome, which cannot be VERIFIED without evidence. */
 internal fun AniobViewModel.recordSealedOutcome(taskId: String, sealed: SealedOutcome) {
     _uiState.update { it.copy(lastSealedOutcome = sealed, lastSealedTaskId = taskId) }
+    finishConversationTask(taskId, sealed.outcome.name, sealed.reason)
     viewModelScope.launch(Dispatchers.IO) {
         try {
             outcomeStore.record(taskId, sealed)
@@ -469,4 +470,14 @@ internal fun AniobViewModel.finishDelegated(task: AniobTask, whatUserMustDo: Str
 
 internal fun AniobViewModel.postSummaryCard(summary: TaskSummary) {
     _uiState.update { it.copy(lastSummary = summary) }
+}
+
+/** Captured arguments only: no later task's mutable UI state is read by this write. */
+internal fun AniobViewModel.finishConversationTask(taskId: String, outcome: String, reason: String) {
+    viewModelScope.launch(Dispatchers.IO) {
+        runCatching {
+            conversationRegistrations.remove(taskId)?.await()
+            conversationJournal.finish(taskId, outcome, reason, reason)
+        }.onFailure { app.eventLogger.warn("ConversationJournal", "Could not persist terminal task state") }
+    }
 }

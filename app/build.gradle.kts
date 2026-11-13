@@ -182,3 +182,24 @@ dependencies {
 ksp {
   arg("room.schemaLocation", "$projectDir/schemas")
 }
+
+// Source outlines are generated at build time; an installed APK never claims to scan a checkout.
+val capabilityIndexDir = layout.buildDirectory.dir("generated/capabilityIndex")
+val generateCapabilityIndex by tasks.registering {
+  val sources = rootProject.fileTree("core-agent/src/main/kotlin") {
+    include("**/domain/DeviceCommand.kt", "**/skills/*.kt", "**/capability/*.kt", "**/external/*.kt")
+  }
+  inputs.files(sources)
+  outputs.dir(capabilityIndexDir)
+  doLast {
+    val output = capabilityIndexDir.get().file("capability-index.tsv").asFile
+    output.parentFile.mkdirs()
+    val declaration = Regex("""\b(?:enum\s+class|data\s+class|class|interface|object|fun)\s+([A-Za-z_][A-Za-z0-9_]*)""")
+    output.writeText(sources.files.sortedBy { it.path }.joinToString("\n") { source ->
+      val path = source.relativeTo(rootProject.projectDir).invariantSeparatorsPath
+      "$path\t${declaration.findAll(source.readText()).map { it.groupValues[1] }.distinct().joinToString(",")}"
+    })
+  }
+}
+android.sourceSets.getByName("main").assets.srcDir(capabilityIndexDir)
+tasks.named("preBuild").configure { dependsOn(generateCapabilityIndex) }

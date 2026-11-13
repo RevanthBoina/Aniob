@@ -130,6 +130,9 @@ class AniobViewModel(
     internal val conversationStore by lazy {
         com.aniob.app.db.ConversationStore(app.database.conversationDao())
     }
+    internal val conversationJournal by lazy { com.aniob.app.db.ConversationJournalStore(app.database) }
+    internal val conversationRegistrations = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Boolean>>()
+    internal val conversationStartedAt = System.currentTimeMillis()
     internal val conversationPrefs by lazy { app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE) }
 
     /** Id of the chat thread the next answer is filed under. Stable across restarts. */
