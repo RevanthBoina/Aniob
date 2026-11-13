@@ -235,9 +235,13 @@ class AniobViewModel(
         // The platform's launchable check keeps a stale cache entry from opening a removed app.
         val isLaunchable: (String) -> Boolean = { isLaunchablePackage(it) }
         executionRouter.appIsLaunchable = isLaunchable
-        // Step 0: the app named at the start of the task ("open Clock and set an alarm").
+        // Step 0: the app named at the start of the task ("open Clock and set an alarm"), or the
+        // app a single-goal task says it happens in ("search for Jensen in linkedin").
         executionRouter.appLaunchResolver = { goal ->
-            AniobLaunchHub.plan(goal, AniobAppRegistry.getInstance(), isLaunchable)?.let { plan ->
+            (
+                AniobLaunchHub.plan(goal, AniobAppRegistry.getInstance(), isLaunchable)
+                    ?: AniobLaunchHub.planInAppTask(goal, AniobAppRegistry.getInstance(), isLaunchable)
+                )?.let { plan ->
                 AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity, plan.narration)
             }
         }

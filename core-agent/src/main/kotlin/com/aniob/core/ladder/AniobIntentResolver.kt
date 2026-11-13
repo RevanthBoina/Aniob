@@ -167,7 +167,7 @@ object AniobIntentResolver {
         // Parameterised shortcuts run first: "set an alarm for 7:30" must not fall into the bare
         // "set alarm" branch that only opens the editor, and "open Wi-Fi settings" must not be
         // answered by launching the Settings app.
-        return parameterised(raw, lower)
+        return parameterised(raw, lower, isAppLaunchable)
             ?: systemReflex(lower)
             ?: dial(lower)
             ?: url(raw, lower)
@@ -527,13 +527,17 @@ object AniobIntentResolver {
         SettingsPanel(ACTION_DEVELOPMENT_SETTINGS, "Developer options", listOf("developer options", "developer settings"))
     )
 
-    private fun parameterised(raw: String, lower: String): ResolvedIntentShortcut? {
+    private fun parameterised(
+        raw: String,
+        lower: String,
+        isAppLaunchable: (String) -> Boolean
+    ): ResolvedIntentShortcut? {
         if (lower.contains("alarm")) parseAlarm(lower)?.let { return it }
         if (lower.contains("timer")) parseTimer(lower)?.let { return it }
         parseSettingsPanel(lower)?.let { return it }
         parseContactInsert(raw, lower)?.let { return it }
         parseWebSearch(lower)?.let { return it }
-        parseWebLaunch(raw)?.let { return it }
+        parseWebLaunch(raw, isAppLaunchable)?.let { return it }
         return null
     }
 
@@ -541,8 +545,8 @@ object AniobIntentResolver {
      * `open linkedin in chrome`, `search for lofi in youtube`: a web destination named together with
      * its browser or site. Answered with a URL intent so the run never waits on a model for it.
      */
-    private fun parseWebLaunch(raw: String): ResolvedIntentShortcut? {
-        val plan = AniobLaunchHub.planWeb(raw, AniobAppRegistry.getInstance())
+    private fun parseWebLaunch(raw: String, isAppLaunchable: (String) -> Boolean): ResolvedIntentShortcut? {
+        val plan = AniobLaunchHub.planWeb(raw, AniobAppRegistry.getInstance(), isAppLaunchable)
             ?.takeIf { it.source != WebLaunchPlan.SOURCE_APP_FALLBACK } ?: return null
         return webShortcut(plan)
     }

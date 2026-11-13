@@ -123,6 +123,40 @@ object AniobTaskIntentClassifier {
         return text
     }
 
+    private const val COMPOSE_NOUN = """(?:e-?mails?|mails?|messages?|sms|dm|whatsapp)"""
+    private val EMAIL_ADDRESS = Regex("""[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}""")
+
+    /**
+     * Requests that are carried out in an app but do not open with a verb from [deviceVerbs]:
+     *
+     *  - "write an mail to sam@example.com", "compose a message to Priya" — a composing verb, a
+     *    mail/message noun and a recipient;
+     *  - "email Sam saying hi", "mail sam@example.com" — the noun used as the verb;
+     *  - "follow Sam on Instagram", "connect with Priya on LinkedIn" — a social action in a named app.
+     *
+     * Each form needs its recipient or app, so plain writing requests ("write a poem about spring",
+     * "write an email template", "draft a mail to my landlord") keep going to the answer path.
+     */
+    private val composeToRecipient = Regex(
+        """^(?:write|compose|type)\s+(?:(?:a|an|the|new|quick|short)\s+){0,3}""" + COMPOSE_NOUN + """\s+to\s+\S"""
+    )
+    private val mailAsVerb = Regex(
+        """^(?:e-?mail|mail|dm|whatsapp)\s+\S.*\b(?:saying|that|about|asking|telling)\b"""
+    )
+    private val socialActionInApp = Regex(
+        """^(?:follow|unfollow|subscribe\s+to|connect\s+with)\s+(?!(?:up|the|these|this|that|my|along)\b)\S.*""" +
+            """\s(?:on|in)\s+[a-z][a-z0-9.]{1,20}(?:\s+[a-z0-9.]{1,15})?$"""
+    )
+
+    /** True when the prompt asks for something to be composed or done in an app for a recipient. */
+    fun looksLikeInAppCompose(prompt: String): Boolean {
+        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim())).trimEnd('.', '!', ' ')
+        if (composeToRecipient.containsMatchIn(lower)) return true
+        if (mailAsVerb.containsMatchIn(lower)) return true
+        if (Regex("""^(?:e-?mail|mail)\s""").containsMatchIn(lower) && EMAIL_ADDRESS.containsMatchIn(lower)) return true
+        return socialActionInApp.containsMatchIn(lower)
+    }
+
     private val knowledgePrefixes = listOf(
         "what is", "who is", "when is", "where is", "why", "how to", "how does", "explain",
         "summarize", "capital of", "who invented", "what are", "define", "meaning of",
@@ -198,6 +232,13 @@ object AniobTaskIntentClassifier {
         }
 
         if (hasImperativeDeviceVerb) {
+            return AniobIntent.DEVICE_AUTOMATION
+        }
+
+        // 5. Compose-to-a-recipient and social actions ("write an mail to …", "email Sam saying hi",
+        // "follow Sam on Instagram") happen in an app. They used to fall through to the default
+        // below and were answered as chat text with zero device steps.
+        if (looksLikeInAppCompose(prompt)) {
             return AniobIntent.DEVICE_AUTOMATION
         }
 

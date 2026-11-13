@@ -22,6 +22,9 @@ internal class ResearchRunStore(
 
     fun summaryFile(): File = File(directory, SUMMARY_FILE)
 
+    /** Baseline against each mechanism taken alone; see [ValueModeReport]. */
+    fun valueModesFile(): File = File(directory, VALUE_MODES_FILE)
+
     /** Appends one row, writing the header first when the file is new or was truncated. */
     fun append(run: ResearchRun) {
         runCatching {
@@ -63,14 +66,17 @@ internal class ResearchRunStore(
         runCatching {
             val previous = summaryFile().takeIf { it.exists() }
                 ?.let { runCatching { it.readText() }.getOrNull() }
-            val rows = ResearchSummaryTable.build(read())
+            val runs = read()
+            val rows = ResearchSummaryTable.build(runs)
             atomicWrite(summaryFile(), ResearchSummaryTable.mergeWithExisting(previous, rows))
+            atomicWrite(valueModesFile(), ValueModeReport.toMarkdown(ValueModeReport.build(runs)))
         }.onFailure { report("rewrite summary", it) }
     }
 
     fun clear() {
         runCatching { runsFile().delete() }
         runCatching { summaryFile().delete() }
+        runCatching { valueModesFile().delete() }
     }
 
     /** Write-then-rename so a reader never sees a half-written table. */
@@ -94,5 +100,6 @@ internal class ResearchRunStore(
     companion object {
         const val RUNS_FILE = "research_runs.csv"
         const val SUMMARY_FILE = "research_summary_table.csv"
+        const val VALUE_MODES_FILE = "research_value_modes.md"
     }
 }
