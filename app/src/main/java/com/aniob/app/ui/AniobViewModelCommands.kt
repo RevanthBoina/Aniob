@@ -52,6 +52,7 @@ internal fun AniobViewModel.handleConversationCommand(text: String): Boolean {
             "/close" -> {
                 conversationStore.close(activeConversationId(), argument.ifBlank { "User closed chat" })
                 // Next ordinary request gets a new conversation, but retain the closed transcript on screen.
+                clearConversationTaskContext()
                 conversationId = ""
                 conversationPrefs.edit().remove(AniobViewModel.KEY_ACTIVE_CONVERSATION).apply()
                 "Chat closed. The next request will start a new chat."
@@ -98,6 +99,8 @@ private fun AniobViewModel.commandReplyAsync(input: String, block: suspend Aniob
                 it.copy(chatMessages = it.chatMessages + ChatMessage(id = "cmd_${java.util.UUID.randomUUID()}", role = "assistant", content = response, provider = "COMMAND"))
             }
         } catch (cancelled: CancellationException) { throw cancelled
+        } catch (_: android.database.SQLException) {
+            showCommandFailure(generation, "Command could not save history. Check device storage; no skill was activated.")
         } catch (_: java.io.IOException) {
             showCommandFailure(generation, "Command failed: storage or selected provider transport unavailable. No fallback provider was used.")
         } catch (_: IllegalArgumentException) {

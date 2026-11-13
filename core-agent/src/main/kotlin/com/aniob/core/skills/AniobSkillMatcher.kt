@@ -2,7 +2,7 @@ package com.aniob.core.skills
 
 /**
  * Tier 1.5 Matcher between Intent and Agent Loop:
- * Matches input prompt against loaded YAML skills in <1ms without LLM invocations.
+ * Matches input prompts against loaded YAML skills without LLM invocations.
  */
 class AniobSkillMatcher(
     private val skillEngine: AniobSkillEngine = AniobSkillEngine()

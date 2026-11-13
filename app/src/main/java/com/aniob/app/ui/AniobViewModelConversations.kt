@@ -28,8 +28,19 @@ internal fun AniobViewModel.startNewConversation() {
 }
 
 internal fun AniobViewModel.setActiveConversation(id: String) {
+    if (conversationId != id) clearConversationTaskContext()
     conversationId = id
     conversationPrefs.edit().putString(KEY_ACTIVE_CONVERSATION, id).apply()
+}
+
+/** A correction, queued follow-up or contextual device command must not target another chat. */
+internal fun AniobViewModel.clearConversationTaskContext() {
+    lastCompletedLearningSnapshot = null
+    taskStickyTarget = null
+    conversationPrefs.edit().remove("queued_prompt").apply()
+    _uiState.update { it.copy(activeTask = null, lastSealedTaskId = null, lastSealedOutcome = null,
+        lastSummary = null, confirmRequest = null, pendingInputPrefill = null, queuedPrompt = null,
+        steps = emptyList(), stepEvents = emptyList(), lastNarration = "", momentChips = emptyList()) }
 }
 
 internal fun AniobViewModel.storedMessageToChat(message: com.aniob.app.db.ChatMessageEntity) = ChatMessage(
@@ -104,7 +115,7 @@ fun AniobViewModel.openConversation(id: String) {
 /** Deletes a saved chat. Deleting the open one also clears the screen. */
 fun AniobViewModel.deleteConversation(id: String) {
     val wasActive = id == conversationId
-    if (wasActive && _uiState.value.isRunning) return
+    if (_uiState.value.isRunning) return
     viewModelScope.launch(Dispatchers.IO) {
         val deleted = runCatching {
             conversationStore.delete(id)
