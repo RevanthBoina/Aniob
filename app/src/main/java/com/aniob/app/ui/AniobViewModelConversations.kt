@@ -55,18 +55,21 @@ internal suspend fun AniobViewModel.savedConversationMessages(id: String): List<
 
 /** Cold start: show the chat that was open when the app last closed. */
 internal fun AniobViewModel.restoreActiveConversation() {
-    viewModelScope.launch(Dispatchers.IO) { conversationJournal.recover(conversationStartedAt) }
     val saved = conversationPrefs.getString(KEY_ACTIVE_CONVERSATION, null)
-    if (saved.isNullOrBlank()) return
-    conversationId = saved
+    if (!saved.isNullOrBlank()) conversationId = saved
     viewModelScope.launch(Dispatchers.IO) {
-        val stored = runCatching { savedConversationMessages(saved) }.getOrElse { emptyList() }
-        if (stored.isEmpty()) return@launch
-        _uiState.update { state ->
-            // Never overwrite a chat the user has already started typing into.
-            if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" }) {
-                state.copy(chatMessages = state.chatMessages + stored)
-            } else state
+        runCatching {
+            conversationJournal.recover(conversationStartedAt)
+            if (saved.isNullOrBlank()) return@launch
+            val stored = savedConversationMessages(saved)
+            _uiState.update { state ->
+                if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" })
+                    state.copy(chatMessages = state.chatMessages + stored) else state
+            }
+        }.onFailure {
+            app.eventLogger.warn("ConversationJournal", "Could not restore conversation history")
+            _uiState.update { state -> if (conversationId == saved && !state.isRunning)
+                state.copy(statusMessage = "History unavailable — check device storage") else state }
         }
     }
 }

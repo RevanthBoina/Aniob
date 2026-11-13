@@ -86,7 +86,11 @@ class ConversationStoreTest {
     }
 
     /** Room validates the migrated tables against the entities when the database opens. */
-    @Test fun migrationFromSchema6AddsConversationTablesAndKeepsOldRows() = runBlocking {
+    @Test fun migrationFromSchemas6And8KeepsHistoricalRows() = runBlocking {
+        for (startVersion in listOf(6, 8)) migrateHistoricalDatabase(startVersion)
+    }
+
+    private suspend fun migrateHistoricalDatabase(startVersion: Int) {
         val context = ApplicationProvider.getApplicationContext<Application>()
         val name = "conversation-migration-test.db"
         context.deleteDatabase(name)
@@ -106,7 +110,15 @@ class ConversationStoreTest {
             val setup = schema.getJSONArray("setupQueries")
             for (index in 0 until setup.length()) old.execSQL(setup.getString(index))
             old.execSQL("INSERT INTO session_scores (taskId,userPrompt,status,totalSteps,durationMs,tokensUsed,providerUsed,decisionReason,timestamp) VALUES ('historic','old task','SUCCESS',1,100,0,'SKILL','test',1)")
-            old.version = 6
+            if (startVersion == 8) {
+                old.execSQL("CREATE TABLE feature_combination_runs (runId TEXT NOT NULL PRIMARY KEY, featureMask INTEGER NOT NULL, configurationKey TEXT NOT NULL, timestampMs INTEGER NOT NULL, runCsv TEXT NOT NULL)")
+                old.execSQL("CREATE TABLE conversations (id TEXT NOT NULL PRIMARY KEY, title TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, pinned INTEGER NOT NULL)")
+                old.execSQL("CREATE TABLE chat_messages (id TEXT NOT NULL PRIMARY KEY, conversationId TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, provider TEXT, timestamp INTEGER NOT NULL, FOREIGN KEY(conversationId) REFERENCES conversations(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                old.execSQL("CREATE INDEX index_chat_messages_conversationId ON chat_messages(conversationId)")
+                old.execSQL("INSERT INTO conversations VALUES ('legacy','Old conversation',1,1,0)")
+                old.execSQL("INSERT INTO chat_messages VALUES ('old-message','legacy','user','Keep this history',NULL,1)")
+            }
+            old.version = startVersion
         }
         val migrated = Room.databaseBuilder(context, AniobDatabase::class.java, name)
             .addMigrations(AniobDatabase.MIGRATION_6_7, ConversationStore.MIGRATION_7_8, AniobDatabase.MIGRATION_8_9)
@@ -117,6 +129,10 @@ class ConversationStoreTest {
                 assertEquals("historic", cursor.getString(0))
             }
             val migratedStore = ConversationStore(migrated.conversationDao())
+            if (startVersion == 8) {
+                assertEquals("Keep this history", migratedStore.messages("legacy").single().content)
+                assertEquals("unknown", migratedStore.find("legacy")!!.status)
+            }
             migratedStore.appendExchange("c1", "q", "a", "CLOUD")
             assertEquals(2, migratedStore.historyForLlm("c1").size)
         } finally { migrated.close(); context.deleteDatabase(name) }

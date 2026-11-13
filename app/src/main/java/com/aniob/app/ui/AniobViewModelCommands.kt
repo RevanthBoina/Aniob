@@ -19,8 +19,9 @@ import java.io.File
 internal fun AniobViewModel.handleConversationCommand(text: String): Boolean {
     if (!text.startsWith("/")) return false
     if (_uiState.value.isRunning) return true
-    val command = text.substringBefore(' ').lowercase()
-    val argument = text.substringAfter(' ', "").trim()
+    val parts = text.split(Regex("\\s+"), limit = 2)
+    val command = parts[0].lowercase()
+    val argument = parts.getOrElse(1) { "" }.trim()
     if (command == "/new") {
         clearChat(argument.ifBlank { "New chat" })
         return true
@@ -86,7 +87,7 @@ internal fun AniobViewModel.handleConversationCommand(text: String): Boolean {
 private fun AniobViewModel.commandReplyAsync(input: String, block: suspend AniobViewModel.() -> String) {
     val id = activeConversationId()
     val generation = ++activeGeneration
-    _uiState.update { it.copy(isRunning = true, statusMessage = "Processing command…",
+    _uiState.update { it.copy(isRunning = true, activeTask = null, statusMessage = "Processing command…",
         chatMessages = it.chatMessages + ChatMessage(id = "cmd_${java.util.UUID.randomUUID()}", role = "user", content = input)) }
     activeTaskJob = viewModelScope.launch(Dispatchers.IO) {
         try {
