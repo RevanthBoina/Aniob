@@ -44,34 +44,39 @@ class AniobGrillMeEngine(
             return AniobGrillMeResult(needsClarification = false)
         }
 
-        // Use the LLM only when something suggests the request is under-specified. A clear single-goal
-        // command ("open youtube") must never pay a model round-trip before it starts.
-        if (llmClient != null) {
-            val deterministic = generateFallbackQuestions(trimmed, rememberedAnswers)
-            val understood = com.aniob.core.understander.AniobPromptUnderstanding.understand(trimmed)
-            val worthAsking = deterministic.needsClarification || understood.confidence < 0.7 ||
-                understood.speechAct == com.aniob.core.understander.AniobPromptUnderstanding.SpeechAct.UNCLEAR
-            if (!worthAsking) return AniobGrillMeResult(needsClarification = false)
-            return try {
-                val res = llmClient.generateClarificationQuestions(trimmed)
-                val filtered = res.questions
-                    .filter { q ->
-                        !rememberedAnswers.containsKey(q.id) && !rememberedAnswers.containsKey("grill.${q.id}")
-                    }
-                    .filter { it.defaultOption.isNullOrBlank() }
-                    .map(::sanitizeQuestionOptions)
-                    .take(1)
-                if (filtered.isEmpty()) AniobGrillMeResult(needsClarification = false)
-                else res.copy(questions = filtered)
-            } catch (e: CancellationException) {
-                throw e // Stop must stop; swallowing it here turned a cancelled run into a "fallback questions" run
-            } catch (e: Exception) {
-                deterministic
-            }
-        }
+        // A clarifying question is only ever asked on the model's explicit request. The keyword
+        // ladder below never asks by itself: "send" in "send a connection request" used to open a
+        // "What message would you like to send?" loop for a task that has no message at all. With no
+        // model to judge (local-only, no cloud) nothing is asked up front; a value that turns out
+        // to be missing mid-run is still requested by the executor through `FAIL: ASK_USER`.
+        if (llmClient == null) return AniobGrillMeResult(needsClarification = false)
 
-        // Dynamic fallback generator
-        return generateFallbackQuestions(trimmed, rememberedAnswers)
+        // The ladder and the understander survive only as a cost filter: they decide whether the
+        // model is consulted, so a clear single-goal command ("open youtube") never pays a model
+        // round-trip before it starts. They can suppress the call; they cannot produce a question.
+        val hint = generateFallbackQuestions(trimmed, rememberedAnswers)
+        val understood = com.aniob.core.understander.AniobPromptUnderstanding.understand(trimmed)
+        val worthAsking = hint.needsClarification || understood.confidence < 0.7 ||
+            understood.speechAct == com.aniob.core.understander.AniobPromptUnderstanding.SpeechAct.UNCLEAR
+        if (!worthAsking) return AniobGrillMeResult(needsClarification = false)
+        return try {
+            val res = llmClient.generateClarificationQuestions(trimmed)
+            if (!res.needsClarification) return AniobGrillMeResult(needsClarification = false)
+            val filtered = res.questions
+                .filter { q ->
+                    !rememberedAnswers.containsKey(q.id) && !rememberedAnswers.containsKey("grill.${q.id}")
+                }
+                .filter { it.defaultOption.isNullOrBlank() }
+                .map(::sanitizeQuestionOptions)
+                .take(1)
+            if (filtered.isEmpty()) AniobGrillMeResult(needsClarification = false)
+            else res.copy(questions = filtered)
+        } catch (e: CancellationException) {
+            throw e // Stop must stop; swallowing it here turned a cancelled run into a "questions" run
+        } catch (e: Exception) {
+            // No verdict from the model is not a verdict to ask: the run proceeds.
+            AniobGrillMeResult(needsClarification = false)
+        }
     }
 
     internal fun isCompleteInstruction(prompt: String): Boolean {
@@ -101,8 +106,9 @@ class AniobGrillMeEngine(
     }
 
     /**
-     * Generates structured questions for common ambiguous task patterns.
-     * Extracts explicit values from prompt first, then checks remembered answers.
+     * Keyword view of what a task *might* be missing. This is a hint for [evaluateTask] about
+     * whether the model is worth consulting, never a decision to ask the user: nothing returned
+     * here reaches the screen.
      */
     fun generateFallbackQuestions(
         taskPrompt: String,

@@ -192,9 +192,13 @@ class AuditPatchTest {
         val engine = AniobGrillMeEngine()
         assertFalse(engine.evaluateTask("explain the vocabulary of this page").needsClarification)       // was: taxi questions
         assertFalse(engine.evaluateTask("summarise the context of this chat").needsClarification)        // was: message questions
-        assertTrue(engine.evaluateTask("book a cab").needsClarification)
+        // Keywords are a hint about whether to consult the model, never a reason to ask: with no
+        // model nothing is asked up front, and the hint still sees past a leading "open settings".
+        assertFalse(engine.evaluateTask("book a cab").needsClarification)
         assertFalse(engine.evaluateTask("please open settings").needsClarification)
-        assertTrue(engine.evaluateTask("open settings and send a message").needsClarification)           // was: bypassed by startsWith
+        assertFalse(engine.evaluateTask("open settings and send a message").needsClarification)
+        assertTrue(engine.generateFallbackQuestions("book a cab").needsClarification)
+        assertTrue(engine.generateFallbackQuestions("open settings and send a message").needsClarification) // was: bypassed by startsWith
         val cancelling = AniobGrillMeEngine(llmClient = object : com.aniob.core.grillme.GrillMeLlmClient {
             override suspend fun generateClarificationQuestions(taskPrompt: String): com.aniob.core.grillme.AniobGrillMeResult = throw CancellationException("stop")
         })
@@ -212,9 +216,9 @@ class AuditPatchTest {
         assertEquals("Uber", r.questions[1].defaultOption)
         assertFalse(AniobPromptGrillMeClient("s") { _, _ -> """{"needsClarification": false, "questions": []}""" }.generateClarificationQuestions("x").needsClarification)
         assertThrows(IllegalStateException::class.java) { runBlocking { AniobPromptGrillMeClient("s") { _, _ -> "sure!" }.generateClarificationQuestions("x") } }
-        // the engine falls back to deterministic questions when the client fails
+        // a model that gives no answer is not a verdict to ask: keywords never ask in its place
         val engine = AniobGrillMeEngine(llmClient = AniobPromptGrillMeClient("s") { _, _ -> null })
-        assertTrue(engine.evaluateTask("book a cab").needsClarification)
+        assertFalse(engine.evaluateTask("book a cab").needsClarification)
     }
 
     @Test fun grillMeModelIsOnlyCalledWhenThereIsAmbiguity() = runBlocking<Unit> {
