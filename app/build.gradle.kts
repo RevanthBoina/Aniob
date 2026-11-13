@@ -184,22 +184,30 @@ ksp {
 }
 
 // Source outlines are generated at build time; an installed APK never claims to scan a checkout.
-val capabilityIndexDir = layout.buildDirectory.dir("generated/capabilityIndex")
-val generateCapabilityIndex by tasks.registering {
-  val sources = rootProject.fileTree("core-agent/src/main/kotlin") {
-    include("**/domain/DeviceCommand.kt", "**/skills/*.kt", "**/capability/*.kt", "**/external/*.kt")
-  }
-  inputs.files(sources)
-  outputs.dir(capabilityIndexDir)
-  doLast {
-    val output = capabilityIndexDir.get().file("capability-index.tsv").asFile
+abstract class GenerateCapabilityIndex : DefaultTask() {
+  @get:InputFiles
+  @get:PathSensitive(PathSensitivity.RELATIVE)
+  abstract val sourceFiles: ConfigurableFileCollection
+  @get:OutputDirectory
+  abstract val outputDirectory: DirectoryProperty
+
+  @TaskAction
+  fun generate() {
+    val output = outputDirectory.get().file("capability-index.tsv").asFile
     output.parentFile.mkdirs()
     val declaration = Regex("""\b(?:enum\s+class|data\s+class|class|interface|object|fun)\s+([A-Za-z_][A-Za-z0-9_]*)""")
-    output.writeText(sources.files.sortedBy { it.path }.joinToString("\n") { source ->
-      val path = source.relativeTo(rootProject.projectDir).invariantSeparatorsPath
+    output.writeText(sourceFiles.files.sortedBy { it.path }.joinToString("\n") { source ->
+      val path = source.relativeTo(project.rootDir).invariantSeparatorsPath
       "$path\t${declaration.findAll(source.readText()).map { it.groupValues[1] }.distinct().joinToString(",")}"
     })
   }
 }
-android.sourceSets.getByName("main").assets.srcDir(capabilityIndexDir)
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(generateCapabilityIndex) }
+val generateCapabilityIndex by tasks.registering(GenerateCapabilityIndex::class) {
+  sourceFiles.from(rootProject.fileTree("core-agent/src/main/kotlin") {
+    include("**/domain/DeviceCommand.kt", "**/skills/*.kt", "**/capability/*.kt", "**/external/*.kt")
+  })
+  outputDirectory.set(layout.buildDirectory.dir("generated/capabilityIndex"))
+}
+androidComponents.onVariants { variant ->
+  variant.sources.assets?.addGeneratedSourceDirectory(generateCapabilityIndex, GenerateCapabilityIndex::outputDirectory)
+}
