@@ -2,7 +2,7 @@ package com.aniob.core.skills
 
 /**
  * Tier 1.5 Matcher between Intent and Agent Loop:
- * Matches input prompt against loaded YAML skills in <1ms without LLM invocations.
+ * Matches input prompts against loaded YAML skills without LLM invocations.
  */
 class AniobSkillMatcher(
     private val skillEngine: AniobSkillEngine = AniobSkillEngine()
@@ -18,8 +18,8 @@ class AniobSkillMatcher(
 
     fun match(prompt: String, disabledSkills: Set<String> = emptySet()): MatchResult {
         val cleanPrompt = prompt.trim().lowercase()
-        if (cleanPrompt.isBlank()) {
-            return MatchResult(matched = false, reason = "Empty prompt")
+        if (cleanPrompt.isBlank() || Regex("\\b(?:not|never|cancel)\\b|don't|do not").containsMatchIn(cleanPrompt)) {
+            return MatchResult(matched = false, reason = "Empty or negated prompt")
         }
 
         // Only active catalog skills participate in matching - draft/disabled skills are strictly skipped
@@ -34,7 +34,7 @@ class AniobSkillMatcher(
             for (kw in skill.triggerKeywords) {
                 val cleanKw = kw.trim().lowercase()
                 if (cleanKw.isNotEmpty() &&
-                    (cleanPrompt == cleanKw || cleanPrompt.startsWith(cleanKw) || cleanPrompt.contains(cleanKw))
+                    Regex("(?<![\\p{L}\\p{N}])" + Regex.escape(cleanKw) + "(?![\\p{L}\\p{N}])").containsMatchIn(cleanPrompt)
                 ) {
                     if (cleanKw.length > bestTrigger.length) {
                         bestSkill = skill
@@ -44,6 +44,8 @@ class AniobSkillMatcher(
             }
         }
         if (bestSkill != null) {
+            if (candidates.count { bestTrigger in it.triggerKeywords.map(String::lowercase) } > 1)
+                return MatchResult(false, reason = "Ambiguous skill triggers")
             val slots = extractSlots(prompt, bestSkill)
             return MatchResult(
                 matched = true,
@@ -76,8 +78,19 @@ class AniobSkillMatcher(
             }
         }
 
-        return MatchResult(matched = false, reason = "No YAML skill match found")
+        val ranked = candidates.map { skill ->
+            skill to skill.triggerKeywords.maxOfOrNull { SkillRelevance.score(prompt, it) }.orZero()
+        }.sortedWith(compareByDescending<Pair<AniobSkill, Float>> { it.second }.thenBy { it.first.name })
+        val top = ranked.firstOrNull()
+        if (top != null && top.second >= .55f && ranked.size > 1 && top.second - ranked[1].second < .08f)
+            return MatchResult(false, reason = "Ambiguous skill scores")
+        if (top != null && top.second >= .55f && (ranked.size == 1 || top.second - ranked[1].second >= .08f)) {
+            return MatchResult(true, top.first, top.second, extractSlots(prompt, top.first), "Token/stem/typo match: ${top.first.name}")
+        }
+        return MatchResult(matched = false, reason = "No unambiguous YAML skill match found")
     }
+
+    private fun Float?.orZero(): Float = this ?: 0f
 
     private fun extractSlots(prompt: String, skill: AniobSkill): Map<String, String> {
         val result = mutableMapOf<String, String>()

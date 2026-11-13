@@ -16,7 +16,10 @@ import com.aniob.app.ui.AniobViewModel.Companion.KEY_ACTIVE_CONVERSATION
 import com.aniob.app.ui.AniobViewModel.Companion.CHAT_RENDER_WINDOW
 
 internal fun AniobViewModel.activeConversationId(): String {
-    if (conversationId.isBlank()) startNewConversation()
+    if (conversationId.isBlank()) {
+        startNewConversation()
+        _uiState.update { it.copy(chatMessages = emptyList()) }
+    }
     return conversationId
 }
 
@@ -25,8 +28,19 @@ internal fun AniobViewModel.startNewConversation() {
 }
 
 internal fun AniobViewModel.setActiveConversation(id: String) {
+    if (conversationId != id) clearConversationTaskContext()
     conversationId = id
     conversationPrefs.edit().putString(KEY_ACTIVE_CONVERSATION, id).apply()
+}
+
+/** A correction, queued follow-up or contextual device command must not target another chat. */
+internal fun AniobViewModel.clearConversationTaskContext() {
+    lastCompletedLearningSnapshot = null
+    taskStickyTarget = null
+    conversationPrefs.edit().remove("queued_prompt").apply()
+    _uiState.update { it.copy(activeTask = null, lastSealedTaskId = null, lastSealedOutcome = null,
+        lastSummary = null, confirmRequest = null, pendingInputPrefill = null, queuedPrompt = null,
+        steps = emptyList(), stepEvents = emptyList(), lastNarration = "", momentChips = emptyList()) }
 }
 
 internal fun AniobViewModel.storedMessageToChat(message: com.aniob.app.db.ChatMessageEntity) = ChatMessage(
@@ -38,19 +52,35 @@ internal fun AniobViewModel.storedMessageToChat(message: com.aniob.app.db.ChatMe
     provider = message.provider
 )
 
+/** Successful answers stay in chat_messages; failed/automation requests come from the journal. */
+internal suspend fun AniobViewModel.savedConversationMessages(id: String): List<ChatMessage> {
+    val stored = conversationStore.messages(id).map { storedMessageToChat(it) }
+    val journal = app.database.conversationJournalDao().tasks(id).filter { task -> task.outcome != "ANSWERED" || stored.none { it.id == "${task.taskId}:assistant" } }.flatMap { task ->
+        listOf(ChatMessage(id = "journal_user_${task.taskId}", role = "user", content = task.prompt, timestamp = task.startedAt),
+            ChatMessage(id = "journal_result_${task.taskId}", role = "assistant",
+                content = task.response.ifBlank { "${task.outcome}: ${task.reason.ifBlank { "No terminal result recorded" }}" },
+                timestamp = task.startedAt, provider = "RECORDED_HISTORY"))
+    }
+    return (stored + journal).sortedBy { it.timestamp }
+}
+
 /** Cold start: show the chat that was open when the app last closed. */
 internal fun AniobViewModel.restoreActiveConversation() {
     val saved = conversationPrefs.getString(KEY_ACTIVE_CONVERSATION, null)
-    if (saved.isNullOrBlank()) return
-    conversationId = saved
+    if (!saved.isNullOrBlank()) conversationId = saved
     viewModelScope.launch(Dispatchers.IO) {
-        val stored = runCatching { conversationStore.messages(saved) }.getOrElse { emptyList() }
-        if (stored.isEmpty()) return@launch
-        _uiState.update { state ->
-            // Never overwrite a chat the user has already started typing into.
-            if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" }) {
-                state.copy(chatMessages = state.chatMessages + stored.map({ storedMessageToChat(it) }))
-            } else state
+        runCatching {
+            conversationJournal.recover(conversationStartedAt)
+            if (saved.isNullOrBlank()) return@launch
+            val stored = savedConversationMessages(saved)
+            _uiState.update { state ->
+                if (conversationId == saved && state.chatMessages.all { it.id == "msg_init" })
+                    state.copy(chatMessages = state.chatMessages + stored) else state
+            }
+        }.onFailure {
+            app.eventLogger.warn("ConversationJournal", "Could not restore conversation history")
+            _uiState.update { state -> if (conversationId == saved && !state.isRunning)
+                state.copy(statusMessage = "History unavailable — check device storage") else state }
         }
     }
 }
@@ -58,22 +88,29 @@ internal fun AniobViewModel.restoreActiveConversation() {
 /** Opens a saved chat: its messages replace the screen and follow-ups continue that thread. */
 fun AniobViewModel.openConversation(id: String) {
     if (_uiState.value.isRunning) return
-    viewModelScope.launch(Dispatchers.IO) {
-        val stored = runCatching { conversationStore.messages(id) }.getOrElse { emptyList() }
-        if (stored.isEmpty() || _uiState.value.isRunning) return@launch
-        setActiveConversation(id)
-        _uiState.update {
-            it.copy(
-                chatMessages = stored.map({ storedMessageToChat(it) }),
-                steps = emptyList(),
-                stepEvents = emptyList(),
-                lastNarration = "",
-                lastSummary = null,
-                momentChips = emptyList(),
-                streamingBubbleText = "",
-                isStreaming = false,
-                queuedPrompt = null
-            )
+    val origin = conversationId
+    val generation = ++activeGeneration
+    // Reserve ownership before IO. A submit cannot slip between a stale-state check and switch.
+    _uiState.update { it.copy(isRunning = true, activeTask = null, statusMessage = "Opening saved chat…") }
+    activeTaskJob = viewModelScope.launch {
+        try {
+            val stored = withContext(Dispatchers.IO) {
+                requireNotNull(conversationStore.find(id)) { "Conversation no longer exists" }
+                val messages = savedConversationMessages(id)
+                if (origin.isNotBlank() && origin != id) conversationStore.close(origin, "User switched to another chat")
+                messages
+            }
+            if (generation != activeGeneration || origin != conversationId) return@launch
+            setActiveConversation(id)
+            _uiState.update { it.copy(chatMessages = stored, streamingBubbleText = "", isStreaming = false,
+                statusMessage = "Ready") }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled
+        } catch (_: android.database.SQLException) {
+            if (generation == activeGeneration) _uiState.update { it.copy(statusMessage = "History unavailable — check device storage") }
+        } catch (_: IllegalArgumentException) {
+            if (generation == activeGeneration) _uiState.update { it.copy(statusMessage = "That conversation is no longer available") }
+        } finally {
+            if (generation == activeGeneration) _uiState.update { it.copy(isRunning = false) }
         }
     }
 }
@@ -81,17 +118,26 @@ fun AniobViewModel.openConversation(id: String) {
 /** Deletes a saved chat. Deleting the open one also clears the screen. */
 fun AniobViewModel.deleteConversation(id: String) {
     val wasActive = id == conversationId
-    if (wasActive && _uiState.value.isRunning) return
+    if (_uiState.value.isRunning) return
     viewModelScope.launch(Dispatchers.IO) {
-        runCatching { conversationStore.delete(id) }
-            .onFailure { app.eventLogger.warn("AniobViewModel", "Could not delete chat: ${it.message}") }
-        if (wasActive && id == conversationId) clearChat()
+        val deleted = runCatching {
+            conversationStore.delete(id)
+            com.aniob.core.memory.ConversationKnowledgeStore(sharedKnowledgeStore, id).clear()
+        }.onFailure { app.eventLogger.warn("AniobViewModel", "Could not delete chat") }.isSuccess
+        if (deleted && wasActive && id == conversationId) clearChat()
     }
 }
 
-fun AniobViewModel.clearChat() {
+fun AniobViewModel.clearChat(title: String = "New chat") {
     // The cleared chat stays in the previous-chats list; new messages start a new thread.
+    if (_uiState.value.isRunning) return // Stop the current task before changing its conversation.
+    val previous = conversationId
     startNewConversation()
+    val next = conversationId
+    viewModelScope.launch(Dispatchers.IO) {
+        if (previous.isNotBlank()) conversationStore.close(previous, "User started a new chat")
+        conversationStore.create(next, title)
+    }
     _uiState.update {
         it.copy(
             chatMessages = emptyList(),

@@ -21,6 +21,7 @@ import com.aniob.core.safety.AskPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -29,15 +30,21 @@ import kotlinx.coroutines.withTimeoutOrNull
 fun AniobViewModel.submitTask(prompt: String) {
     val trimmed = prompt.trim()
     if (trimmed.isBlank()) return
+    if (handleConversationCommand(trimmed)) return
     if (tryApplyNaturalLanguageCorrection(trimmed)) return
 
     // Reject if another task is active to prevent double submission
-    if (_uiState.value.isRunning && activeTaskJob?.isActive == true) {
+    if (_uiState.value.isRunning) {
         app.eventLogger.warn("AniobViewModel", "Cannot start new task while a task is running")
         return
     }
 
     val taskId = "task_${System.currentTimeMillis()}"
+    val submittedChatId = activeConversationId()
+    conversationRegistrations[taskId] = viewModelScope.async(Dispatchers.IO) {
+        runCatching { conversationJournal.begin(com.aniob.app.db.ConversationTaskEntity(
+            taskId, submittedChatId, trimmed, System.currentTimeMillis())) }.isSuccess
+    }
     val leaseGen = app.taskOwner.acquireLease(taskId)
     val generation = ++activeGeneration
     val task = AniobTask(id = taskId, rawPrompt = trimmed)
@@ -77,6 +84,10 @@ fun AniobViewModel.submitTask(prompt: String) {
 
     activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
         app.taskOwner.attachJob(leaseGen, currentCoroutineContext()[kotlinx.coroutines.Job]!!)
+        if (conversationRegistrations[taskId]?.await() != true) {
+            updateToIdle { it.copy(statusMessage = "Could not save the request. Check device storage and retry.") }
+            return@launch
+        }
 
         // Briefly wait for first-run registration; a no-op once the registry is warm. Without
         // it, a launch typed during the first probe resolves against an empty registry.
@@ -136,6 +147,7 @@ fun AniobViewModel.submitTask(prompt: String) {
                         ) "Please choose an installed app" else "Please choose a destination"
                     )
                 }
+                finishConversationTask(taskId, "NEEDS_CHOICE", "Waiting for a destination selection")
                 return@launch
             }
             is com.aniob.core.workflow.WorkflowDecision.NeedsClarification -> {
@@ -151,6 +163,7 @@ fun AniobViewModel.submitTask(prompt: String) {
                         statusMessage = "Clarification needed"
                     )
                 }
+                finishConversationTask(taskId, "NEEDS_CLARIFICATION", workflowDecision.question)
                 return@launch
             }
             is com.aniob.core.workflow.WorkflowDecision.DelegateToExisting -> {
@@ -199,6 +212,7 @@ fun AniobViewModel.submitTask(prompt: String) {
                     lastRoutingReason = "Ambiguous device toggle — asked instead of guessing"
                 )
             }
+            finishConversationTask(taskId, "NEEDS_CLARIFICATION", "Device command needs a target")
             return@launch
         }
 
@@ -211,7 +225,7 @@ fun AniobViewModel.submitTask(prompt: String) {
                     lastProviderUsed = "EXTERNAL_AI"
                 )
             }
-            val chatId = activeConversationId()
+            val chatId = submittedChatId
             val history = runCatching {
                 conversationStore.historyForLlm(chatId, maxTurns = com.aniob.core.external.ChatTurn.MAX_TURNS)
             }.getOrElse { emptyList() }
@@ -221,7 +235,7 @@ fun AniobViewModel.submitTask(prompt: String) {
                 // Keyed to the conversation, not the task, so the gateway sees one session per chat.
                 cloudProvider = if (isCloudConfigured()) getCloudProvider(sessionId = chatId) else null,
                 localProvider = localLlmProvider,
-                sharedKnowledgeStore = sharedKnowledgeStore
+                sharedKnowledgeStore = com.aniob.core.memory.ConversationKnowledgeStore(sharedKnowledgeStore, chatId)
             )
             val powerState = AniobDeviceTelemetry.getRealState(app)
             val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
@@ -234,12 +248,12 @@ fun AniobViewModel.submitTask(prompt: String) {
                 autoMode = autoMode,
                 history = history,
                 onDelta = { delta ->
-                    if (generation == activeGeneration) {
+                    if (generation == activeGeneration && chatId == conversationId) {
                         _uiState.update { it.copy(streamingBubbleText = it.streamingBubbleText + delta, isStreaming = true) }
                     }
                 }
             )
-            if (generation != activeGeneration || !currentCoroutineContext().isActive) return@launch
+            if (generation != activeGeneration || chatId != conversationId || !currentCoroutineContext().isActive) return@launch
             val answered = result is com.aniob.core.external.ExternalAiResult.Success
             val assistantMessage = ChatMessage(
                 id = "msg_asst_${java.util.UUID.randomUUID()}",
@@ -251,19 +265,23 @@ fun AniobViewModel.submitTask(prompt: String) {
                 provider = result.provider,
                 retryPrompt = if (answered) null else trimmed
             )
+            // Persist while this task still owns the busy reservation. A follow-up must not
+            // start against history that excludes the answer it just saw.
+            val saved = runCatching {
+                if (answered) conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider, taskId)
+                conversationJournal.finish(taskId, if (answered) "ANSWERED" else "FAILED",
+                    "${result.javaClass.simpleName} via ${result.provider}", assistantMessage.content)
+            }.onFailure { app.eventLogger.warn("ConversationJournal", "Could not save answer history") }.isSuccess
+            if (generation != activeGeneration || chatId != conversationId || !currentCoroutineContext().isActive) return@launch
             updateToIdle {
                 it.copy(
                     isStreaming = false,
                     streamingBubbleText = "",
-                    statusMessage = if (answered) "Ready" else "Could not answer — try again",
+                    statusMessage = if (!saved) "History could not be saved — check device storage" else if (answered) "Ready" else "Could not answer — try again",
                     lastRoutingReason = if (answered) "Answered via ${result.provider}" else "Answer unavailable",
                     chatMessages = it.chatMessages + assistantMessage,
                     lastProviderUsed = result.provider
                 )
-            }
-            if (answered && chatId == conversationId) {
-                runCatching { conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider) }
-                    .onFailure { app.eventLogger.warn("AniobViewModel", "Could not save chat turn: ${it.message}") }
             }
 
             // Record Session Telemetry for analytics and audit
@@ -293,7 +311,10 @@ fun AniobViewModel.submitTask(prompt: String) {
         val admitted = AniobFastLane.admit(lane) {
             runPreExecutionGates(task, effectiveTask, effectivePrompt, resolvedShortcut)
         }
-        if (!admitted) return@launch
+        if (!admitted) {
+            finishConversationTask(taskId, "WAITING", "Pre-execution gate did not admit execution; inspect recorded outcome")
+            return@launch
+        }
 
         // Task is self-contained -> Proceed directly. The finally closes the research run when
         // the pipeline is cancelled (Stop) or throws before its own endTask call.
@@ -307,5 +328,10 @@ fun AniobViewModel.submitTask(prompt: String) {
                 )
             )
         }
+    }
+    activeTaskJob?.invokeOnCompletion { failure ->
+        if (failure != null) finishConversationTask(taskId,
+            if (failure is kotlinx.coroutines.CancellationException) "STOPPED" else "FAILED",
+            if (failure is kotlinx.coroutines.CancellationException) "Task cancelled" else "Task execution raised ${failure.javaClass.simpleName}")
     }
 }

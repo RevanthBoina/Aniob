@@ -43,7 +43,7 @@ jobs:
           lines = open(sys.argv[1], encoding='utf-8', errors='replace').read().splitlines()
           compiler = [line for line in lines if re.search(r'^e:|^ERROR:|error:', line)]
           failures = [line for line in lines if re.search(r' FAILED|^> (?!Task)|^Execution failed|^Caused by:', line)]
-          diagnostics = compiler + failures
+          diagnostics = compiler + failures + [line for line in lines if not line.lstrip().startswith("at ")][:160]
           if not diagnostics:
               annotate('\n'.join(lines[-40:]))
           # One annotation per ~2,800 characters: a step may publish only a few annotations,

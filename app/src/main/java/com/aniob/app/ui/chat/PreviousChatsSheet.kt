@@ -82,12 +82,12 @@ fun PreviousChatsSheet(
                                         conversation.updatedAt,
                                         System.currentTimeMillis(),
                                         DateUtils.MINUTE_IN_MILLIS
-                                    ).toString(),
+                                    ).toString() + " · ${conversation.status}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            IconButton(onClick = { onDelete(conversation.id) }) {
+                            IconButton(onClick = { onDelete(conversation.id) }, enabled = canSwitch) {
                                 Icon(Icons.Default.DeleteOutline, contentDescription = "Delete chat")
                             }
                         }

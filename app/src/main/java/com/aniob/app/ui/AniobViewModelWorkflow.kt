@@ -83,6 +83,11 @@ internal fun AniobViewModel.executeOwnedWorkflowAction(
         }
 
         val result = app.workflowCoordinator.executeAction(action, taskId, leaseGen)
+        finishConversationTask(taskId, when (result) {
+            is com.aniob.core.workflow.WorkflowResult.LaunchAccepted -> "LAUNCH_ACCEPTED"
+            is com.aniob.core.workflow.WorkflowResult.WaitingForUser -> "WAITING"
+            else -> "UNVERIFIED"
+        }, "Workflow result: ${result.javaClass.simpleName}; consult recorded workflow evidence")
         when (result) {
             is com.aniob.core.workflow.WorkflowResult.WaitingForUser -> {
                 AniobForegroundService.notifyWaitingForUser(app, destName)

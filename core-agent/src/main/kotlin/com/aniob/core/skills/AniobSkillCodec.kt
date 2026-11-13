@@ -330,7 +330,7 @@ object AniobSkillCodec {
         if (version != "2.1" && version != "2.0" && version != "1" && version != "1.0") {
             throw SkillParseException("Unsupported skill version '$version'")
         }
-        if (steps.isEmpty()) throw SkillParseException("Skill must have at least one step")
+        if (steps.isEmpty() && status != SkillStatus.DRAFT) throw SkillParseException("Skill must have at least one step")
 
         return AniobSkill(
             name = name,
@@ -439,7 +439,7 @@ object AniobSkillCodec {
             )
         }
 
-        if (steps.isEmpty()) throw SkillParseException("Skill must have at least one step")
+        if (steps.isEmpty() && status != SkillStatus.DRAFT) throw SkillParseException("Skill must have at least one step")
 
         return AniobSkill(
             name = name,
