@@ -65,7 +65,10 @@ internal fun AniobViewModel.handleConversationCommand(text: String): Boolean {
                     getCloudProvider("learn_${activeConversationId()}"))
                 val dir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills").apply { mkdirs() }
                 // Proposals never overwrite an existing active or draft skill, even on name collision.
-                val unique = draft.copy(name = "${draft.name}_${java.util.UUID.randomUUID().toString().take(8)}")
+                val digest = java.security.MessageDigest.getInstance("SHA-256").digest(index.toByteArray())
+                    .joinToString("") { "%02x".format(it) }
+                val unique = draft.copy(name = "${draft.name}_${java.util.UUID.randomUUID().toString().take(8)}",
+                    description = "${draft.description} [index_sha256=$digest; session=${activeConversationId()}]")
                 val file = File(dir, "${unique.name}.json")
                 val temporary = File(dir, "${unique.name}.pending")
                 temporary.writeText(AniobSkillCodec.encode(unique))
@@ -120,7 +123,15 @@ private suspend fun AniobViewModel.auditConversations(target: String): String {
     val reports = mutableListOf<String>()
     for (conversation in selected) {
         val tasks = app.database.conversationJournalDao().tasks(conversation.id)
-        val transcript = conversationStore.messages(conversation.id).joinToString("\n") { "${it.role}: ${it.content}" }
+        val stepEvidence = mutableListOf<String>()
+        for (task in tasks.takeLast(30)) {
+            app.database.auditLogDao().getByTask(task.taskId).takeLast(10).forEach { step ->
+                stepEvidence += "Task ${task.taskId} step ${step.stepIndex}: ${step.actionType}; " +
+                    "recorded verification=${step.verificationStatus}; payload=${step.sanitizedPayload.take(500)}"
+            }
+        }
+        val transcript = conversationStore.messages(conversation.id).takeLast(30).joinToString("\n") { "${it.role}: ${it.content}" } +
+            "\nRecorded action log entries (not independently re-verified by this audit):\n" + stepEvidence.joinToString("\n")
         val result = ConversationAuditor.audit(conversation.status, conversation.stopReason,
             tasks.map { AuditTask(it.taskId, it.prompt, it.outcome, it.reason) }, transcript,
             if (isCloudConfigured()) getCloudProvider("audit_${conversation.id}") else null)

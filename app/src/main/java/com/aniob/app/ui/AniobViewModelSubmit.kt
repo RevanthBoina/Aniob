@@ -265,19 +265,23 @@ fun AniobViewModel.submitTask(prompt: String) {
                 provider = result.provider,
                 retryPrompt = if (answered) null else trimmed
             )
+            // Persist while this task still owns the busy reservation. A follow-up must not
+            // start against history that excludes the answer it just saw.
+            val saved = runCatching {
+                if (answered) conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider, taskId)
+                conversationJournal.finish(taskId, if (answered) "ANSWERED" else "FAILED",
+                    "${result.javaClass.simpleName} via ${result.provider}", assistantMessage.content)
+            }.onFailure { app.eventLogger.warn("ConversationJournal", "Could not save answer history") }.isSuccess
+            if (generation != activeGeneration || chatId != conversationId || !currentCoroutineContext().isActive) return@launch
             updateToIdle {
                 it.copy(
                     isStreaming = false,
                     streamingBubbleText = "",
-                    statusMessage = if (answered) "Ready" else "Could not answer — try again",
+                    statusMessage = if (!saved) "History could not be saved — check device storage" else if (answered) "Ready" else "Could not answer — try again",
                     lastRoutingReason = if (answered) "Answered via ${result.provider}" else "Answer unavailable",
                     chatMessages = it.chatMessages + assistantMessage,
                     lastProviderUsed = result.provider
                 )
-            }
-            if (answered && chatId == conversationId) {
-                runCatching { conversationStore.appendExchange(chatId, trimmed, result.answer, result.provider, taskId) }
-                    .onFailure { app.eventLogger.warn("AniobViewModel", "Could not save chat turn: ${it.message}") }
             }
 
             // Record Session Telemetry for analytics and audit
