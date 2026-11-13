@@ -23,6 +23,8 @@ class ConversationContextBoundaryTest {
         assertNull(vm.uiState.value.lastSealedOutcome)
         assertNull(vm.uiState.value.queuedPrompt)
         assertFalse(vm.tryApplyNaturalLanguageCorrection("actually it worked"))
+        vm.recordSealedOutcome("old-task", SealedOutcome.failed("Late closure from the previous chat"))
+        assertNull(vm.uiState.value.lastSealedTaskId)
     }
 
     @Test fun newAndSwitchCommandsCannotChangeAnInFlightConversation() {

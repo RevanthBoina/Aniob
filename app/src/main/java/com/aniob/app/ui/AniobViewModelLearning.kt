@@ -356,7 +356,10 @@ internal fun AniobViewModel.advancePhase(phase: AgentPhase, thought: String = ""
 
 /** The only way a run's result is stored: a SealedOutcome, which cannot be VERIFIED without evidence. */
 internal fun AniobViewModel.recordSealedOutcome(taskId: String, sealed: SealedOutcome) {
-    _uiState.update { it.copy(lastSealedOutcome = sealed, lastSealedTaskId = taskId) }
+    _uiState.update { state ->
+        if (state.activeTask?.id == taskId || state.lastSealedTaskId == taskId)
+            state.copy(lastSealedOutcome = sealed, lastSealedTaskId = taskId) else state
+    }
     finishConversationTask(taskId, sealed.outcome.name, sealed.reason)
     viewModelScope.launch(Dispatchers.IO) {
         try {
