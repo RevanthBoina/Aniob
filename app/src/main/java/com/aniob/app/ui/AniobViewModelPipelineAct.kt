@@ -10,6 +10,7 @@ import com.aniob.core.execution.DispatchCommand
 import com.aniob.core.execution.StepPipeline
 import com.aniob.core.execution.StepResult
 import com.aniob.core.grillme.AniobGrillMeResult
+import com.aniob.core.run.TaskWaitState
 import com.aniob.core.narration.AgentPhase
 import com.aniob.core.ladder.AniobExecutionRouter
 import com.aniob.core.verify.FastVerify
@@ -41,7 +42,13 @@ internal suspend fun AniobViewModel.pipelineAct(
         var proposal = proposed.proposal
         var targetNode = proposed.targetNode
         var plannedBurst = proposed.plannedBurst
-        persistRunningMarker(task, currentStep + 1, proposal.action.describeAction())
+        // Recorded BEFORE dispatch: if the process dies now, that dispatch is the uncertain effect.
+        persistRunningMarker(
+            task,
+            currentStep + 1,
+            proposal.action.describeAction(),
+            verifiedActions.map { it.describeAction() }
+        )
 
         val captureLambda: suspend () -> AniobScreenState = {
             screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
@@ -513,6 +520,9 @@ internal suspend fun AniobViewModel.pipelineAct(
                         res.resolvedNode ?: com.aniob.core.execution.AniobActionExecutor
                             .resolveTarget(res.action, currentScreen)?.node
                     )
+                    // PART 5: this is a question too, so the run parks (and can be resumed with
+                    // the user's answer) instead of closing as a failed task.
+                    parkTask(pipe, TaskWaitState.USER_INPUT, _uiState.value.statusMessage)
                     return PipelineFlow.Return
                 }
                 deferredPlanHint = null
@@ -535,10 +545,14 @@ internal suspend fun AniobViewModel.pipelineAct(
             pendingDeviceClarify = null
             val parsedAsk = deviceAsk
                 ?: com.aniob.core.grillme.AniobAskUser.parse((res.action as? AniobAction.Fail)?.reason)
-            if (parsedAsk != null && task.grillAnswers.isEmpty()) {
-                val ask = grillMeEngine.sanitizeQuestion(parsedAsk)
-                setPhase(AgentPhase.ASKING)
-                updateToIdle {
+            // PART 5: the question PARKED the run instead of tearing it down. The same question is
+            // never asked twice in one task (that was the old `grillAnswers.isEmpty()` rule, which
+            // also blocked a *different* question after the first answer); an answered question
+            // resumes the SAME run from this step.
+            val ask = parsedAsk?.let { grillMeEngine.sanitizeQuestion(it) }
+            if (ask != null && askedQuestions.add(ask.question.replace(Regex("\\s+"), " ").trim().lowercase())) {
+                parkTask(pipe, TaskWaitState.USER_INPUT, ask.question)
+                _uiState.update {
                     it.copy(
                         activeTask = task,
                         grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(ask)),

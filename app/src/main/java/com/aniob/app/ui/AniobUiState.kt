@@ -23,6 +23,13 @@ data class AniobUiState(
     val activeTask: AniobTask? = null,
     val isRunning: Boolean = false,
     val isPaused: Boolean = false,
+    /**
+     * PART 4/5: the task is waiting for the user (a question, a confirmation or a manual handover)
+     * instead of running. Distinct from [isRunning] so the UI never shows a parked task as working.
+     */
+    val waitingForUser: Boolean = false,
+    /** How many instructions the user typed that the running task has not processed yet. */
+    val pendingInstructionCount: Int = 0,
     val currentStep: Int = 0,
     val grillMeResult: AniobGrillMeResult? = null,
     val showGrillMeSheet: Boolean = false,

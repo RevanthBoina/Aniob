@@ -29,7 +29,13 @@ data class ExecutorRequest(
      * rendered by `BurstPlanScope.renderDeferredHint`. It is context, never an instruction to act:
      * the model re-grounds its own plan on the screen below and continues from there.
      */
-    val carriedPlanHint: String? = null
+    val carriedPlanHint: String? = null,
+    /**
+     * Instructions the user added while the task was already running, verbatim and in order.
+     * Additive to [goal]: the task's own goal is not replaced, and a verified action that already
+     * ran is not repeated because of them.
+     */
+    val additionalInstructions: List<String> = emptyList()
 ) {
     /**
      * Formats the executor request into a clean prompt string for LLMs.
@@ -51,6 +57,13 @@ data class ExecutorRequest(
         }
         appendLine()
         appendLine("GOAL: $goal")
+        if (additionalInstructions.isNotEmpty()) {
+            appendLine(
+                "ADDED BY THE USER WHILE THIS TASK WAS RUNNING (apply to the same task; " +
+                    "steps already verified are not repeated): " +
+                    additionalInstructions.joinToString(" | ") { "\"$it\"" }
+            )
+        }
         if (clarifications.isNotEmpty()) {
             appendLine("CLARIFICATIONS: " + clarifications.entries.joinToString("; ") { "${it.key}=${it.value}" })
         }

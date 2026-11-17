@@ -2,6 +2,14 @@ package com.aniob.app.ui
 
 import androidx.test.core.app.ApplicationProvider
 import com.aniob.app.AniobApplication
+import com.aniob.core.domain.AniobTask
+import com.aniob.core.domain.SuccessCriteria
+import com.aniob.core.domain.TaskContext
+import com.aniob.core.domain.TaskStatus
+import com.aniob.core.run.RunLane
+import com.aniob.core.run.TaskInputKind
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -157,5 +165,141 @@ class AniobViewModelExecutionWiringTest {
         }
         assertTrue("Observable criteria evaluates to non-empty verdict", observableVerdict.isNotEmpty())
         assertTrue("All criteria passed on landed screen", observableVerdict.all { it.state == com.aniob.core.domain.CriterionState.PASSED })
+    }
+
+    // ---------------------------------------------------------------------------------------- //
+    // PART 4/5: the running task keeps its identity and its progress; new words join it.
+    // ---------------------------------------------------------------------------------------- //
+
+    /** A run object as the pipeline leaves it when it asks the user something. */
+    private fun parkedRun(task: AniobTask, step: Int = 2, generation: Long = 1L): PipelineRun {
+        val pipe = PipelineRun(
+            task = task,
+            taskGeneration = generation,
+            lane = RunLane.STANDARD,
+            laneShortcut = null,
+            researchMode = com.aniob.app.research.FeatureSelection(),
+            resolvedCriteria = SuccessCriteria(),
+            startTime = System.currentTimeMillis(),
+            hydration = null,
+            accessibility = null,
+            maxSteps = 8,
+            taskContext = TaskContext(
+                instruction = task.rawPrompt,
+                taskId = task.id,
+                condensedHistory = listOf("observed inbox")
+            ),
+            screenBefore = null,
+            fastReflexOpen = false
+        )
+        pipe.currentStep = step
+        pipe.parked = true
+        return pipe
+    }
+
+    @Test
+    fun anInstructionTypedWhileRunningJoinsTheSameTask() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(id = "task_88", rawPrompt = "Read my two newest emails", status = TaskStatus.RUNNING)
+        vm.activeGeneration = 1L
+        vm.openTaskInputChannel(task.id)
+        vm._uiState.update { it.copy(activeTask = task, isRunning = true) }
+
+        vm.submitTask("Also tell me who sent the newest one")
+
+        val queued = vm.taskInputs!!.takeInstructions()
+        assertEquals("the instruction is queued for THIS task", 1, queued.size)
+        assertEquals("Also tell me who sent the newest one", queued.single().text)
+        assertEquals("the task keeps its id", "task_88", vm.uiState.value.activeTask?.id)
+        assertEquals("the newest goal is not replaced", "Read my two newest emails", vm.uiState.value.activeTask?.rawPrompt)
+        assertEquals(1, vm.uiState.value.pendingInstructionCount)
+        assertTrue("the task is still running", vm.uiState.value.isRunning)
+        assertTrue(
+            "the instruction is visible in the transcript of the same task",
+            vm.uiState.value.chatMessages.any { it.content == "Also tell me who sent the newest one" }
+        )
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun aNewInstructionWakesOnlyTheWaitingModelRequest() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(id = "task_89", rawPrompt = "Summarize the newest emails in Gmail", status = TaskStatus.RUNNING)
+        vm.activeGeneration = 1L
+        vm.openTaskInputChannel(task.id)
+        vm._uiState.update { it.copy(activeTask = task, isRunning = true) }
+        val signal = vm.inputSignal!!
+
+        vm.submitTask("Skip the older ones")
+
+        assertTrue("the outstanding model request is interrupted", signal.isCompleted)
+        assertEquals("Skip the older ones", vm.taskInputs!!.takeInstructions().single().text)
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun aLateReplyToAnInterruptedRequestIsDiscarded() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(id = "task_90", rawPrompt = "Read the newest messages", status = TaskStatus.RUNNING)
+        vm.activeGeneration = 1L
+        vm.openTaskInputChannel(task.id)
+        vm._uiState.update { it.copy(activeTask = task, isRunning = true) }
+
+        val result = vm.awaitModelRequest {
+            // The user types while the model is thinking.
+            vm.taskInputs!!.post(TaskInputKind.INSTRUCTION, "the newest two only")
+            vm.signalNewInput()
+            "reply computed from the OLD wording"
+        }
+
+        assertTrue("a late reply may not override a newer instruction", result is ModelRequestResult.Superseded)
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun aClarificationResumesTheSameTaskFromTheSameStep() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(id = "task_91", rawPrompt = "Read my two newest emails", status = TaskStatus.RUNNING)
+        val pipe = parkedRun(task, step = 2)
+        vm.activeGeneration = 1L
+        vm.activePipeline = pipe
+        vm.openTaskInputChannel(task.id)
+        vm._uiState.update {
+            it.copy(activeTask = task, isRunning = false, showGrillMeSheet = true, currentStep = 2)
+        }
+
+        val resumed = vm.prepareResume(task, mapOf("app_read.account" to "work@example.com"))
+
+        assertNotNull("a parked run is resumable", resumed)
+        assertEquals("same task id", "task_91", resumed!!.task.id)
+        assertEquals("same step: nothing is replayed from step 0", 2, resumed.currentStep)
+        assertEquals("the original goal is unchanged", "Read my two newest emails", resumed.taskContext.instruction)
+        assertEquals(listOf("observed inbox"), resumed.taskContext.condensedHistory)
+        assertEquals("work@example.com", resumed.taskContext.grillAnswers["app_read.account"])
+        assertFalse("the run is no longer parked", resumed.parked)
+        assertTrue("the task is running again", vm.uiState.value.isRunning)
+        assertFalse("the question sheet is closed", vm.uiState.value.showGrillMeSheet)
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun anInstructionCannotCloseATaskItHasNotProcessed() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(id = "task_92", rawPrompt = "Read my two newest emails", status = TaskStatus.RUNNING)
+        vm.activeGeneration = 1L
+        vm.openTaskInputChannel(task.id)
+        vm._uiState.update { it.copy(activeTask = task, isRunning = true) }
+
+        vm.submitTask("and the third one too")
+
+        assertFalse("closing is refused while an instruction is pending", vm.mayCloseTask())
+        vm.taskInputs!!.takeInstructions()
+        assertTrue("once processed, closing is allowed again", vm.mayCloseTask())
+        vm.closeTaskInputChannel()
     }
 }

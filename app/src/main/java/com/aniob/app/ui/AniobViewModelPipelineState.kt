@@ -30,7 +30,8 @@ internal sealed class PipelineFlow<out T> {
  * coroutine exactly as the locals were.
  */
 internal class PipelineRun(
-    val task: AniobTask,
+    /** The live task record. Answers given mid-run are merged in (`copy`), never re-created. */
+    var task: AniobTask,
     val taskGeneration: Long,
     val lane: RunLane,
     val laneShortcut: ResolvedIntentShortcut?,
@@ -96,4 +97,26 @@ internal class PipelineRun(
     // Consecutive plans that could not execute even their first member: the screen is not
     // settling, so the rest of the run plans one action at a time.
     var burstZeroProgressReplans = 0
+
+    // -------------------------------------------------------------------------------------- //
+    // Same-task continuation (a clarification answer, a manual handover, an added instruction).
+    // These live on the run, not the session, so a resumed run continues from where it parked.
+    // -------------------------------------------------------------------------------------- //
+    // The fast-lane launch target, resolved once before the first step.
+    var fastLaunchTarget: String? = null
+    // Whether intent shortcuts were enabled when the run started; restored when the run ends.
+    var shortcutsWereEnabled = true
+    // True once this run has entered its step loop: a resumed run never re-runs the fast lane.
+    var stepsEntered = false
+    // True while the run waits for the user. A parked run is resumable, not finished.
+    var parked = false
+    // The step the last resume continued from (only for the log/telemetry, never for replay).
+    var resumedFromStep: Int? = null
+    // Normalised questions already put to the user in this run: never ask the same one twice.
+    val askedQuestions = mutableSetOf<String>()
+    // PART 2/7: observed app-data evidence for a read request (null when the task is not one).
+    // Fed by every observation; consulted before any completion is reported.
+    var readEvidence: com.aniob.core.execution.AppReadEvidence? = null
+    // Packages that own the data being read; an account chooser is only recognised inside them.
+    var readTargetPackages: Set<String> = emptySet()
 }

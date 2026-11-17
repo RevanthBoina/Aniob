@@ -249,6 +249,13 @@ fun AniobViewModel.onGrillAnswersSubmitted(answers: Map<String, String>, remembe
     rememberKeys.forEach { key ->
         answers[key]?.let { rememberGrillAnswer(key, it) }
     }
+    // PART 5: if the run that asked is still parked, resume IT. The task keeps its id, goal,
+    // verified actions, history and the screen it stopped on; the answer joins the same context as
+    // a clarification. Re-running the pipeline from step 0 (the old path below) is only correct when
+    // there is no live run to continue — for example after a process death.
+    val answeredTask = currentTask.copy(grillAnswers = currentTask.grillAnswers + answers)
+    if (resumeParkedTask(answeredTask, answers)) return
+
     val clarifiedPrompt = buildString {
         append(currentTask.clarifiedGoal.ifBlank { currentTask.rawPrompt })
         answers.forEach { (q, a) -> append(" [$q: $a]") }

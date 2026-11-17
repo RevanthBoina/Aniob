@@ -477,6 +477,9 @@ internal fun AniobViewModel.postSummaryCard(summary: TaskSummary) {
 
 /** Captured arguments only: no later task's mutable UI state is read by this write. */
 internal fun AniobViewModel.finishConversationTask(taskId: String, outcome: String, reason: String) {
+    // PART 4: the task is closed, so its input channel goes with it. A prompt typed after this point
+    // belongs to a NEW task; it must never be appended to a context that will not run again.
+    closeTaskInputChannel(taskId)
     viewModelScope.launch(Dispatchers.IO) {
         runCatching {
             conversationRegistrations.remove(taskId)?.await()

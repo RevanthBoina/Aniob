@@ -12,6 +12,7 @@ import kotlinx.coroutines.isActive
 import com.aniob.core.narration.AgentPhase
 import com.aniob.core.narration.ThinkSource
 import com.aniob.core.intent.AniobTaskIntentClassifier
+import com.aniob.core.knowledge.AniobAppRegistry
 import com.aniob.core.ladder.AniobLaunchHub
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
@@ -128,7 +129,6 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
     // A full tree walk taken purely as a diff baseline. A launch is proven by the foreground
     // package and a reflex by its dispatch, so neither needs a before-image; every consumer
     // below already treats a null baseline as "no diff".
-    val fastLaunchTarget = laneShortcut?.targetPackage?.takeIf { lane == RunLane.FAST_LAUNCH && accessibility != null }
     // The state of this run. Everything the three step phases and the closing phase share lives
     // here; values are read and written exactly where the single function used to do it.
     val pipe = PipelineRun(
@@ -149,60 +149,10 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
         fastReflexOpen = lane == RunLane.FAST_REFLEX && executionRouter.intentShortcutsEnabled
     )
     with(pipe) {
-
-        fun recordTrajectory(
-            stepIndex: Int,
-            observation: String,
-            action: AniobAction,
-            provider: String,
-            latencyMs: Long,
-            screenHash: String,
-            verified: Boolean,
-            textEvidence: String? = null,
-            targetBounds: AniobRect? = null
-        ) {
-            hippocampusTracker.recordStep(
-                AniobHippocampusTracker.HippocampusStep(
-                    stepIndex = stepIndex,
-                    observation = observation,
-                    thought = action.thought,
-                    action = action,
-                    latencyMs = latencyMs,
-                    screenHash = screenHash,
-                    provider = provider,
-                    verified = verified,
-                    textEvidence = textEvidence,
-                    targetBounds = targetBounds
-                )
-            )
-            executionTracker.recordEvent(
-                AniobExecutionTracker.TrajectoryEvent(
-                    stepIndex = stepIndex,
-                    observationSummary = observation,
-                    thought = action.thought,
-                    toolName = action.toolName,
-                    action = action,
-                    latencyMs = latencyMs,
-                    outcome = if (verified) "SUCCESS" else "FAILURE",
-                    isVerified = verified,
-                    textEvidence = textEvidence,
-                    targetBounds = targetBounds
-                )
-            )
-            app.eventLogger.logStep(
-                com.aniob.app.metrics.EventLogger.TrajectoryStep(
-                    stepIndex = stepIndex,
-                    observation = observation,
-                    thought = action.thought,
-                    action = action,
-                    latencyMs = latencyMs,
-                    screenHash = screenHash,
-                    provider = provider,
-                    textEvidence = textEvidence,
-                    targetBounds = targetBounds
-                )
-            )
-        }
+        // Run-scoped state that a RESUMED run also needs: the fast-lane target is resolved once,
+        // and the shortcut switch is restored when the run really ends (not when it parks).
+        fastLaunchTarget = laneShortcut?.targetPackage?.takeIf { lane == RunLane.FAST_LAUNCH && accessibility != null }
+        shortcutsWereEnabled = executionRouter.intentShortcutsEnabled
 
         stepPipe = StepPipeline(
             limits = agentLimits,
@@ -275,7 +225,6 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
         // actually checked against instead of being re-evaluated on a later screen.
         // A shortcut this run switched off (an action the device does not have) is restored when
         // the run ends, so one failed dispatch cannot degrade every later task in the batch.
-        val shortcutsWereEnabled = executionRouter.intentShortcutsEnabled
         // Model routing for this task: one on-device attempt, then cloud, and cloud stays chosen.
         executionLlm = com.aniob.core.ladder.ExecutionLlmGateway { cloudEscalationAllowed }
         // Pre-observe scrolls already made in this run, per screen identity.
@@ -288,11 +237,122 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
         // Consecutive plans that could not execute even their first member: the screen is not
         // settling, so the rest of the run plans one action at a time.
 
-        val setupDurationMs = (System.currentTimeMillis() - startTime).coerceAtLeast(0L)
-        app.researchTelemetry.setSetupLatency(setupDurationMs)
+        // PART 2/7: a read request ("what are my two newest emails?") carries task-scoped
+        // evidence. The destination decides which packages count; opening the app or a model
+        // saying "done" never satisfies it — only content observed inside that app does.
+        readEvidence = com.aniob.core.intent.AniobAppDataRead.detect(task.rawPrompt)?.let { request ->
+            val readPlan = com.aniob.core.ladder.AniobAppDataReadPlanner.plan(
+                request,
+                AniobAppRegistry.getInstance(),
+                { isLaunchablePackage(it) }
+            )
+            val targets = when (readPlan) {
+                is com.aniob.core.ladder.AppDataReadPlan.Ready ->
+                    setOfNotNull(readPlan.destination.packageName)
+                is com.aniob.core.ladder.AppDataReadPlan.Ambiguous ->
+                    readPlan.candidates.mapNotNull { it.packageName }.toSet()
+                is com.aniob.core.ladder.AppDataReadPlan.Unresolved -> emptySet()
+            }
+            readTargetPackages = targets
+            com.aniob.core.execution.AppReadEvidence(request, targets)
+        }
+
+        activePipeline = pipe
+        openTaskInputChannel(task.id)
+        // false = the run parked for the user (question / handover); it keeps its identity and is
+        // resumed from here by `resumeParkedTask`, never restarted from step 0.
+        if (!runPipelineSteps(pipe)) return
+
+        pipelineComplete(pipe)
+    }
+}
+
+/**
+ * Records one step in the three trajectory sinks (hippocampus, execution tracker, event log).
+ *
+ * Extracted from [executeTaskPipeline]'s scope so a RESUMED run writes exactly the same record:
+ * the resumed loop lives in [runPipelineSteps], which cannot see that function's locals.
+ */
+internal fun AniobViewModel.recordTrajectory(
+    stepIndex: Int,
+    observation: String,
+    action: AniobAction,
+    provider: String,
+    latencyMs: Long,
+    screenHash: String,
+    verified: Boolean,
+    textEvidence: String? = null,
+    targetBounds: AniobRect? = null
+) {
+    hippocampusTracker.recordStep(
+        AniobHippocampusTracker.HippocampusStep(
+            stepIndex = stepIndex,
+            observation = observation,
+            thought = action.thought,
+            action = action,
+            latencyMs = latencyMs,
+            screenHash = screenHash,
+            provider = provider,
+            verified = verified,
+            textEvidence = textEvidence,
+            targetBounds = targetBounds
+        )
+    )
+    executionTracker.recordEvent(
+        AniobExecutionTracker.TrajectoryEvent(
+            stepIndex = stepIndex,
+            observationSummary = observation,
+            thought = action.thought,
+            toolName = action.toolName,
+            action = action,
+            latencyMs = latencyMs,
+            outcome = if (verified) "SUCCESS" else "FAILURE",
+            isVerified = verified,
+            textEvidence = textEvidence,
+            targetBounds = targetBounds
+        )
+    )
+    app.eventLogger.logStep(
+        com.aniob.app.metrics.EventLogger.TrajectoryStep(
+            stepIndex = stepIndex,
+            observation = observation,
+            thought = action.thought,
+            action = action,
+            latencyMs = latencyMs,
+            screenHash = screenHash,
+            provider = provider,
+            textEvidence = textEvidence,
+            targetBounds = targetBounds
+        )
+    )
+}
+
+/**
+ * The observation/planning/action loop of one run, plus the cleanup that belongs to it.
+ *
+ * Split out of [executeTaskPipeline] so the SAME run can be resumed after a question, a
+ * confirmation or a manual handover: everything the loop reads lives in [PipelineRun] (task context,
+ * step index, last screen, verified actions, provider lock), so resuming continues the work instead
+ * of replaying it. Called once by [executeTaskPipeline] and again by the resume path in
+ * `AniobViewModelTaskInput.kt`.
+ *
+ * @return true when the run finished (its closing phase must run), false when it parked waiting for
+ *         the user — a parked run keeps its identity and is resumed, never restarted.
+ */
+internal suspend fun AniobViewModel.runPipelineSteps(pipe: PipelineRun): Boolean {
+    with(pipe) {
+        // First entry only: a resume must not re-measure (or re-run) the run's setup.
+        val tryFastLane = !stepsEntered
+        stepsEntered = true
+        if (tryFastLane) {
+            val setupDurationMs = (System.currentTimeMillis() - startTime).coerceAtLeast(0L)
+            app.researchTelemetry.setSetupLatency(setupDurationMs)
+        }
 
         try {
-            if (fastLaunchTarget != null && accessibility != null && laneShortcut != null &&
+            // The fast-lane launch is attempted exactly once per run. A resume starts from the
+            // screen the task was paused on, not from the launch that already happened.
+            if (tryFastLane && fastLaunchTarget != null && accessibility != null && laneShortcut != null &&
                 taskGeneration == activeGeneration && _uiState.value.isRunning
             ) {
                 val label = laneShortcut.label ?: fastLaunchTarget
@@ -397,26 +457,7 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
                     screenBefore = accessibility.captureCurrentScreenState()
                 }
             }
-            while (fastLaunchProof == null && currentStep < maxSteps && _uiState.value.isRunning) {
-                val observed = when (val flow = pipelineObserve(pipe)) {
-                    is PipelineFlow.Next -> flow.value
-                    PipelineFlow.Continue -> continue
-                    PipelineFlow.Break -> break
-                    PipelineFlow.Return -> return
-                }
-                val proposed = when (val flow = pipelinePropose(pipe, observed)) {
-                    is PipelineFlow.Next -> flow.value
-                    PipelineFlow.Continue -> continue
-                    PipelineFlow.Break -> break
-                    PipelineFlow.Return -> return
-                }
-                when (pipelineAct(pipe, observed, proposed)) {
-                    is PipelineFlow.Next -> Unit
-                    PipelineFlow.Continue -> continue
-                    PipelineFlow.Break -> break
-                    PipelineFlow.Return -> return
-                }
-            }
+            runStepLoop(pipe)
         } finally {
             // A shortcut disabled mid-run because this device could not dispatch it is a property
             // of the run, not of the session.
@@ -429,9 +470,44 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
         if (taskGeneration != activeGeneration) {
             // A newer task took ownership; record this one honestly but do not touch the live UI.
             app.researchTelemetry.endTask(com.aniob.app.research.ResearchOutcome.INTERRUPTED, "superseded", runId = task.id)
-            return
+            return false
         }
 
-        pipelineComplete(pipe)
+        return !parked
+    }
+}
+
+/**
+ * The step loop alone: observe, propose, act — until a proof, a limit, a stop or a park.
+ *
+ * Kept separate from [runPipelineSteps] so a closing phase that finds an unprocessed instruction
+ * can keep working inside the SAME run (same context, same step counter, same verified actions)
+ * without re-running the run's setup or its cleanup.
+ */
+internal suspend fun AniobViewModel.runStepLoop(pipe: PipelineRun) {
+    with(pipe) {
+        while (fastLaunchProof == null && currentStep < maxSteps && _uiState.value.isRunning) {
+            // Instructions the user typed while the last step ran are folded in HERE, before the
+            // screen is read and the model is asked: the plan then follows the newest wording.
+            drainInstructionsInto(pipe)
+            val observed = when (val flow = pipelineObserve(pipe)) {
+                is PipelineFlow.Next -> flow.value
+                PipelineFlow.Continue -> continue
+                PipelineFlow.Break -> break
+                PipelineFlow.Return -> return
+            }
+            val proposed = when (val flow = pipelinePropose(pipe, observed)) {
+                is PipelineFlow.Next -> flow.value
+                PipelineFlow.Continue -> continue
+                PipelineFlow.Break -> break
+                PipelineFlow.Return -> return
+            }
+            when (pipelineAct(pipe, observed, proposed)) {
+                is PipelineFlow.Next -> Unit
+                PipelineFlow.Continue -> continue
+                PipelineFlow.Break -> break
+                PipelineFlow.Return -> return
+            }
+        }
     }
 }
