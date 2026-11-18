@@ -202,6 +202,17 @@ object AniobTaskIntentClassifier {
             return AniobIntent.WEB_RESEARCH
         }
 
+        // 2.5 App-data retrieval ("check my two newest emails", "what are my latest messages?",
+        // "summarize the newest emails in Gmail"). This MUST sit before the question-form rung
+        // below: answering "What are my two newest emails?" with prose is the defect this rule
+        // exists for — the information only exists inside the app, so it has to be read there.
+        // [AniobAppDataRead] is the single narrow rule (data noun + ownership/slice + read form,
+        // with explanation and compose forms excluded), so "What is Gmail?" and "Write an email
+        // template" keep falling through to the conversational answers below.
+        if (AniobAppDataRead.isReadRequest(prompt)) {
+            return AniobIntent.DEVICE_AUTOMATION
+        }
+
         // 3. Knowledge QA - what is, who is, explain, etc.
         // e.g., "What is open settings?" is KNOWLEDGE_QA, not DEVICE_AUTOMATION
         if (knowledgePrefixes.any { lower.startsWith(it) } ||
@@ -283,6 +294,13 @@ object AniobTaskIntentClassifier {
             .map { it.trim() }
             .filter { it.length in 2..40 }
             .forEach { if (it !in mustContain) mustContain += it }
+
+        // An app-data read ("check my two newest emails") is only honestly claimed from inside the
+        // app that owns the data: opening it is the precondition, never the answer. When the prompt
+        // names an app the catalog knows, its package becomes a foreground requirement.
+        AniobAppDataRead.detect(prompt)?.appHint?.let { hint ->
+            appCatalog[hint]?.let { pkg -> if (pkg !in mustShowPackage) mustShowPackage += pkg }
+        }
 
         // Hardware toggles assert a WORLD state the screen cannot show (BUG-06): probe the
         // device, never the pixels. The LAST toggle cue wins, so "on and off flash light" ends OFF.

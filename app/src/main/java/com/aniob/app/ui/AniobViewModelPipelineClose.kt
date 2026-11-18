@@ -3,11 +3,13 @@ package com.aniob.app.ui
 import androidx.lifecycle.viewModelScope
 import com.aniob.app.background.AniobBackgroundController
 import com.aniob.app.research.ResearchRun
+import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.research.ResearchSummaryRow
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.app.ui.model.EvidenceItem
 import com.aniob.app.ui.model.Outcome
 import com.aniob.core.domain.*
+import com.aniob.core.narration.ThinkSource
 import com.aniob.core.exec.ExecOutcome
 import com.aniob.core.exec.ExecReport
 import com.aniob.core.execution.StepResult
@@ -28,6 +30,31 @@ import com.aniob.app.ui.AniobViewModel.CompletedLearningSnapshot
  */
 internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
     with(pipe) {
+        // PART 4: a final response may not close a task that still has an unprocessed instruction.
+        // The instruction is folded into the SAME context and the loop keeps working; only when no
+        // instruction is left does this run get to report an outcome.
+        var pendingAdded = drainInstructionsInto(pipe)
+        while (pendingAdded > 0 && _uiState.value.isRunning) {
+            setPhase(AgentPhase.PLANNING, ThinkSource.RULES, "Continuing with your new instruction")
+            _uiState.update { it.copy(isRunning = true) }
+            // The step loop's own cleanup already ran when it ended. This continuation is still the
+            // SAME task, so it re-takes the accessibility task flag while it works and gives it back
+            // afterwards; nothing about ownership or generation changes.
+            AniobAccessibilityService.isTaskActive = true
+            try {
+                runStepLoop(pipe)
+            } finally {
+                AniobAccessibilityService.isTaskActive = false
+            }
+            if (pipe.parked) return
+            pendingAdded = drainInstructionsInto(pipe)
+        }
+        if (!mayCloseTask()) {
+            // Input that landed between the last drain and this report. The task may not present a
+            // result it has not processed, so it says what is true instead.
+            finalOutcome = Outcome.UNVERIFIED
+            terminalReason = "A newer instruction arrived before this report; it was not applied."
+        }
         // The loop has ended; nothing assigns the last step result any more.
         val stepResult = pipe.stepResult
         // A confirmed SUCCESS was checked against the screen the pipeline verified. A fresh capture
@@ -91,6 +118,22 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
         ) {
             // Confirmed with no machine-checkable criterion: honest "unverified", never a failure.
             finalOutcome = Outcome.UNVERIFIED
+        }
+
+        // PART 2/7: a read request is judged against what was OBSERVED inside the app. Opening the
+        // inbox, tapping a row, a successful dispatch and a model that says "read it" all satisfy
+        // nothing here: only distinct content captured from the target app does.
+        val readVerdict = com.aniob.core.execution.AppReadCompletionGate.evaluate(readEvidence)
+        if (readVerdict.blocksCompletion) {
+            val rejected = readVerdict as com.aniob.core.execution.AppReadCompletionGate.Verdict.Rejected
+            if (finalOutcome == null || finalOutcome == Outcome.SUCCESS) {
+                finalOutcome = Outcome.UNVERIFIED
+                terminalReason = rejected.reason
+            }
+            readEvidence?.evidenceLines()?.takeIf { it.isNotEmpty() }?.let { seen ->
+                // Only observed text is quoted; when nothing was seen this says so instead.
+                terminalReason = terminalReason + " Observed: " + seen.joinToString("; ")
+            }
         }
 
         // FINAL GATE (BUG-01/06): SUCCESS may not survive an unmet or unprobed criterion — even

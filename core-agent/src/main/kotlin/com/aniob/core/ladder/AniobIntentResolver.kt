@@ -75,6 +75,10 @@ data class ResolvedIntentShortcut(
  * (built at startup from the platform's own launcher inventory) and returns a package — plus the
  * launcher component when known. Only genuine *system reflexes* (torch, battery, dial, URL, geo)
  * remain literal here, because for those the dispatch really is the outcome.
+ *
+ * Reading data **inside** an app ("my two newest emails") is a third shape: the destination is a
+ * lookup ([AniobAppDataReadPlanner]), the launch is observed, and the read itself happens in the
+ * step loop. See [appDataRead].
  */
 object AniobIntentResolver {
 
@@ -175,6 +179,7 @@ object AniobIntentResolver {
             ?: AniobReflexResolver.resolve(raw, lower)
             ?: capabilityPlan(lower)
             ?: installViaStore(lower)
+            ?: appDataRead(raw, isAppLaunchable)
             ?: appViaRegistry(raw, isAppLaunchable)
             ?: webFallback(raw, isAppLaunchable)
             ?: clockOrAlarm(lower, isAppLaunchable)
@@ -331,6 +336,48 @@ object AniobIntentResolver {
             requiresObservation = true,
             label = if (pkg != null) "Play Store listing ($pkg)" else "Play Store search ($name)",
             extras = pkg?.let { mapOf(EXTRA_INSTALL_PACKAGE to it) }.orEmpty()
+        )
+    }
+
+    // ------------------------------------------------------------------ #
+    // reading app data: the app (or its page), never a "solved" shortcut
+    // ------------------------------------------------------------------ #
+
+    /**
+     * "check my two newest emails" / "summarize the newest emails in Gmail" / "read my latest
+     * messages": the FIRST hop is opening the app that owns the data (or its supported web page),
+     * and the read itself is planned from the screen that app shows.
+     *
+     * Two invariants:
+     *
+     *  - the returned shortcut always sets [ResolvedIntentShortcut.requiresObservation], because
+     *    opening an inbox is not reading it. A shortcut that finished on dispatch would report
+     *    "Gmail opened" as "emails read" — the exact false success this work removes;
+     *  - an unresolved or ambiguous destination returns null, so the ordinary ladder (registry
+     *    hook, observed step loop, or a targeted question) handles it instead of the agent
+     *    inventing an app. No Gmail API, no fabricated message content.
+     */
+    private fun appDataRead(raw: String, isAppLaunchable: (String) -> Boolean): ResolvedIntentShortcut? {
+        val plan = AniobAppDataReadPlanner.planForPrompt(raw, AniobAppRegistry.getInstance(), isAppLaunchable)
+        val ready = plan as? AppDataReadPlan.Ready ?: return null
+        val destination = ready.destination
+        val label = destination.label
+        if (destination.webUrl != null) {
+            return ResolvedIntentShortcut(
+                action = ACTION_VIEW,
+                uriString = destination.webUrl,
+                requiresObservation = true,
+                label = "$label (web)"
+            )
+        }
+        val pkg = destination.packageName ?: return null
+        return ResolvedIntentShortcut(
+            action = ACTION_MAIN,
+            targetPackage = pkg,
+            category = CATEGORY_LAUNCHER,
+            launchActivity = destination.launchActivity,
+            requiresObservation = true,
+            label = label
         )
     }
 

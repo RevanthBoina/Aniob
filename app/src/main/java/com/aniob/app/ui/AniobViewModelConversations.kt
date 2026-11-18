@@ -218,8 +218,32 @@ internal fun AniobViewModel.buildSummary(
     )
 }
 
-/** Persists active task marker in Room so process death can be honestly reviewed on next open. */
-internal fun AniobViewModel.persistRunningMarker(task: AniobTask, stepIndex: Int, lastKnownEffect: String = "") {
+/**
+ * Persists the running marker in Room so a process death can be reviewed honestly on next open.
+ *
+ * PART 6: the marker is deliberately NOT a checkpoint. It records (a) what Aniob had already seen
+ * verified and (b) which action may have reached an external app without being confirmed; nothing in
+ * it is ever executed again automatically. The two parts are prefixed so the recovery card can tell
+ * "already done" apart from "unknown, go and look".
+ */
+internal fun AniobViewModel.persistRunningMarker(
+    task: AniobTask,
+    stepIndex: Int,
+    lastKnownEffect: String = "",
+    verifiedSoFar: List<String> = emptyList()
+) {
+    val recordedEffect = buildString {
+        if (verifiedSoFar.isNotEmpty()) {
+            append("verified: ")
+            append(verifiedSoFar.joinToString(" | ").take(300))
+            append("; ")
+        }
+        if (lastKnownEffect.startsWith(com.aniob.core.run.AniobInterruptedTask.WAITING_PREFIX)) {
+            append(lastKnownEffect.take(160))
+        } else if (lastKnownEffect.isNotBlank()) {
+            append("may have happened: ").append(lastKnownEffect.take(160))
+        }
+    }.trim()
     viewModelScope.launch(Dispatchers.IO) {
         try {
             app.database.activeTaskDao().setActiveTask(
@@ -227,7 +251,7 @@ internal fun AniobViewModel.persistRunningMarker(task: AniobTask, stepIndex: Int
                     taskId = task.id,
                     rawPrompt = task.rawPrompt,
                     currentStep = stepIndex,
-                    lastKnownEffect = lastKnownEffect,
+                    lastKnownEffect = recordedEffect,
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -264,6 +288,42 @@ internal fun AniobViewModel.updateToIdle(transform: (AniobUiState) -> AniobUiSta
     _uiState.update { current ->
         transform(current).copy(isRunning = false)
     }
+}
+
+/**
+ * PART 6: the explicit, user-started continuation of an interrupted task.
+ *
+ * Nothing here re-runs the dead run. It clears the marker, then submits a NEW task whose prompt
+ * carries the recorded uncertainty so the agent's first move is to look at the live screen and
+ * re-check — never to repeat a possibly completed action. Deliberately not automatic: a persisted
+ * marker is evidence, not a checkpoint.
+ */
+fun AniobViewModel.continueInterruptedTask() {
+    if (_uiState.value.isRunning) return
+    val summary = _uiState.value.interruptedSummary ?: return
+    val report = com.aniob.core.run.AniobInterruptedTask.parse(
+        taskId = "recovered",
+        prompt = summary.prompt,
+        step = summary.steps,
+        lastKnownEffect = summary.evidence.joinToString("; ") { item ->
+            if (item.met) "verified: ${item.label}" else "may have happened: ${item.label}"
+        }
+    )
+    clearRunningMarker()
+    _uiState.update {
+        it.copy(
+            interruptedSummary = null,
+            statusMessage = "Continuing the interrupted task — checking the screen first"
+        )
+    }
+    app.eventLogger.info("AniobViewModel", "User started a safe continuation of an interrupted task")
+    submitTask(report.continuationPrompt())
+}
+
+/** Dismisses the interrupted card without continuing: the marker is cleared too, so it cannot return. */
+fun AniobViewModel.dismissInterruptedTask() {
+    clearRunningMarker()
+    _uiState.update { it.copy(interruptedSummary = null) }
 }
 
 /** Reads the persisted marker on cold start and surfaces it as an Interrupted card. */
@@ -330,19 +390,31 @@ internal fun AniobViewModel.restoreInterruptedSummary() {
 
         val prompt = marker.rawPrompt
         val step = marker.currentStep
-        val lastEffect = marker.lastKnownEffect
+        // PART 6: the marker is explained, never executed. Verified work is listed as verified, an
+        // action that was in flight is listed as unknown, and a task that was waiting for the user
+        // says so — no auto-retry of anything that may already have happened.
+        val report = com.aniob.core.run.AniobInterruptedTask.parse(
+            taskId = marker.taskId,
+            prompt = prompt,
+            step = step,
+            lastKnownEffect = marker.lastKnownEffect
+        )
         val summary = buildSummary(
             prompt = prompt,
             outcome = Outcome.INTERRUPTED,
             steps = step,
             durationMs = 0L,
-            provider = "NONE",
-            evidence = emptyList(),
-            reason = if (lastEffect.isNotBlank()) {
-                "Interrupted at step $step. Last known effect: $lastEffect. Review external effects before retrying."
-            } else {
-                "Interrupted at step $step. Review external effects before retrying."
-            }
+            provider = if (report.verified.isEmpty()) "NONE" else "RECOVERED",
+            evidence = report.verified.map { label ->
+                com.aniob.app.ui.model.EvidenceItem(label = label, met = true, detail = "Verified before the interruption")
+            } + report.needsChecking.map { label ->
+                com.aniob.app.ui.model.EvidenceItem(
+                    label = label,
+                    met = false,
+                    detail = "Effect unknown — check this in the app before continuing"
+                )
+            },
+            reason = report.reason()
         )
         clearRunningMarker()
         kotlinx.coroutines.withContext(Dispatchers.Main) {

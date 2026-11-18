@@ -33,9 +33,32 @@ fun AniobViewModel.submitTask(prompt: String) {
     if (handleConversationCommand(trimmed)) return
     if (tryApplyNaturalLanguageCorrection(trimmed)) return
 
-    // Reject if another task is active to prevent double submission
+    // PART 5: a task parked on a question is not running, but it is still the task the user is
+    // talking to. Free text typed now joins it (verbatim) and the run resumes, instead of the words
+    // starting a second task and abandoning the one that was asked for.
+    val parkedRun = activePipeline?.takeIf { it.parked && it.task.id == _uiState.value.activeTask?.id }
+    if (parkedRun != null) {
+        if (com.aniob.core.run.TaskContinuation.isCancellation(trimmed)) {
+            stopCurrentTask()
+            return
+        }
+        if (deliverTaskInput(trimmed)) {
+            resumeParkedTask(parkedRun.task, emptyMap())
+            return
+        }
+    }
+
+    // PART 4: while a task runs, the user's words belong to THAT task. They are appended verbatim
+    // (ordering kept), the outstanding model request — and only that — is cancelled, and the run
+    // re-plans with the new instruction. A prompt that is an explicit cancel ends the task.
     if (_uiState.value.isRunning) {
-        app.eventLogger.warn("AniobViewModel", "Cannot start new task while a task is running")
+        if (deliverTaskInput(trimmed)) return
+        // No channel belongs to the active task (a chat-only answer is streaming): say so instead
+        // of dropping the text silently, and do not start a second task.
+        app.eventLogger.warn("AniobViewModel", "New instruction while a non-task request runs")
+        _uiState.update {
+            it.copy(statusMessage = "Still finishing the current answer — say \"stop\" to cancel it first.")
+        }
         return
     }
 

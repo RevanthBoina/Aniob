@@ -123,6 +123,13 @@ class AniobViewModel(
     internal var activeTaskJob: kotlinx.coroutines.Job? = null
     @Volatile internal var activeGeneration: Long = 0L
 
+    // Same-task continuation (Parts 4/5). The run is published here so a new instruction, a
+    // clarification answer or a manual handover reaches the RUNNING task instead of replacing it.
+    @Volatile internal var activePipeline: PipelineRun? = null
+    @Volatile internal var taskInputs: TaskInputChannel? = null
+    @Volatile internal var inputSignal: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    @Volatile internal var taskWaitState: TaskWaitState = TaskWaitState.NONE
+
     /** Question raised by the last device command that failed because it needed a choice. */
     @Volatile internal var pendingDeviceClarify: com.aniob.core.grillme.GrillQuestion? = null
 

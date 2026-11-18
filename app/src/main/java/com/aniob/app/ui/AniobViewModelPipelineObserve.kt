@@ -2,6 +2,8 @@ package com.aniob.app.ui
 
 import com.aniob.core.providers.AniobModelFiles
 import com.aniob.app.background.AniobBackgroundController
+import com.aniob.app.background.AniobForegroundService
+import com.aniob.core.grillme.AniobGrillMeResult
 import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.model.Outcome
 import com.aniob.core.domain.*
@@ -145,6 +147,49 @@ internal suspend fun AniobViewModel.pipelineObserve(pipe: PipelineRun): Pipeline
             }
         }
         if (!reflexStub) appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
+
+        // PART 2/7: an app-data read is only "done" when the data was actually on screen. Every
+        // observation of this run feeds the task's evidence; only text captured from the target app
+        // counts, and duplicates across steps collapse, so scrolling adds evidence and repeating a
+        // screen does not. Nothing here can invent an item the tree did not contain.
+        readEvidence?.observe(currentScreen, currentStep)
+
+        // PART 3: the ONE place an app-data read may interrupt the user, and only about an account
+        // that is genuinely ambiguous (two or more signed-in accounts on a chooser screen). One
+        // account is read without asking; the same question is never asked twice in a task; the
+        // answer parks and resumes THIS run, so reading continues in the same task.
+        if (readEvidence != null && taskInputs != null) {
+            val chooser = com.aniob.core.ladder.AniobAccountChooserScreen.detect(
+                currentScreen,
+                readTargetPackages
+            )
+            if (chooser != null) {
+                val askedKey = com.aniob.core.ladder.AniobAppReadAccountPolicy.QUESTION_ID
+                val decision = com.aniob.core.ladder.AniobAppReadAccountPolicy.decide(
+                    chooser,
+                    askedAlready = askedQuestions.contains(askedKey)
+                )
+                if (decision is com.aniob.core.ladder.AccountHandover.AskOnce) {
+                    askedQuestions.add(askedKey)
+                    parkTask(pipe, com.aniob.core.run.TaskWaitState.USER_INPUT, decision.question.question)
+                    _uiState.update {
+                        it.copy(
+                            activeTask = task,
+                            grillMeResult = AniobGrillMeResult(
+                                needsClarification = true,
+                                questions = listOf(decision.question)
+                            ),
+                            showGrillMeSheet = true,
+                            statusMessage = decision.question.question
+                        )
+                    }
+                    AniobForegroundService.notifyGrillQuestion(
+                        app, task.id, decision.question, task.clarifiedGoal.ifBlank { task.rawPrompt }
+                    )
+                    return PipelineFlow.Return
+                }
+            }
+        }
 
         // Evaluate Execution Ladder with real power state and on-device model status
         val powerState = AniobDeviceTelemetry.getRealState(app)

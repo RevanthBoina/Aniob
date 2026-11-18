@@ -551,7 +551,12 @@ internal suspend fun AniobViewModel.pipelinePropose(
 
                 val canEscalateToCloud = userRouting != "local-only" && isCloudConfigured() && powerState.isNetworkAvailable
 
-                val plannedAction = if (localCanDrive) {
+                // PART 4: the model call is the only part of this step a newer instruction may
+                // interrupt. If one arrives, this reply is discarded before it can shape an
+                // action, the step keeps its verified state, and the loop re-plans with the
+                // instruction folded in (see `drainInstructionsInto`).
+                val plannedOutcome = awaitModelRequest<AniobAction> {
+                if (localCanDrive) {
                     cloudEscalationAllowed = canEscalateToCloud
                     val cloudWasSticky = executionLlm.stickyCloud
                     executionLlm.plan(
@@ -620,6 +625,13 @@ internal suspend fun AniobViewModel.pipelinePropose(
                 } else {
                     AniobAction.Fail("No capable provider available: ${decision.reason}")
                 }
+                }
+                if (plannedOutcome is ModelRequestResult.Superseded) {
+                    // Nothing was dispatched for this reply: re-plan with the user's words.
+                    _uiState.update { it.copy(statusMessage = "New instruction noted — re-planning this step") }
+                    return@with PipelineFlow.Continue
+                }
+                val plannedAction = (plannedOutcome as ModelRequestResult.Ready).value
 
                 // Watchdog check
                 val watchdogKey = currentScreen.screenHash.ifBlank { currentScreen.treeHash }

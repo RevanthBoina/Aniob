@@ -22,7 +22,15 @@ data class TaskContext(
     val consecutiveFailures: Int = 0,
     val rejectedFinishCount: Int = 0,
     val taskId: String = "",
-    val hasFastSkippedSteps: Boolean = false
+    val hasFastSkippedSteps: Boolean = false,
+    /**
+     * Instructions the user added **while this task was running**, in their own words and in order.
+     *
+     * They are additive: [instruction] is still the task's original goal, so a continuation refines
+     * the work instead of restarting it. Only verified progress changes the plan — a new instruction
+     * never replays an action that already ran.
+     */
+    val additionalInstructions: List<String> = emptyList()
 ) {
     data class TokenBudget(
         val maxTotal: Int = 32_000,
@@ -38,6 +46,18 @@ data class TaskContext(
             lastScreenState = screen,
             condensedHistory = if (historyEntry == null) condensedHistory else condensedHistory + historyEntry
         )
+
+    /**
+     * Appends instructions the user added mid-task, keeping the original goal first.
+     *
+     * Duplicates are dropped: saying "and only the unread ones" twice must not make the model
+     * treat it as two different requirements.
+     */
+    fun withInstructions(newInstructions: List<String>): TaskContext {
+        val merged = (additionalInstructions + newInstructions.map { it.trim() }.filter { it.isNotEmpty() })
+            .distinct()
+        return if (merged == additionalInstructions) this else copy(additionalInstructions = merged)
+    }
 
     /** Appends the action of the step being closed so the trajectory stays in lockstep with history. */
     fun withAction(action: AniobAction): TaskContext = copy(trajectory = trajectory + action)
@@ -61,6 +81,10 @@ data class TaskContext(
      */
     fun plannerView(): String = buildString {
         appendLine("GOAL: $instruction")
+        if (additionalInstructions.isNotEmpty()) {
+            appendLine("ADDED BY THE USER DURING THIS TASK (same task, earlier verified steps stand):")
+            additionalInstructions.forEach { appendLine("- $it") }
+        }
         if (!successCriteria.isEmpty) appendLine("SUCCESS CRITERIA: $successCriteria")
         if (grillAnswers.isNotEmpty()) {
             appendLine("CLARIFICATIONS: " + grillAnswers.entries.joinToString("; ") { "${it.key}=${it.value}" })
@@ -102,6 +126,7 @@ data class TaskContext(
 
         return ExecutorRequest(
             goal = instruction,
+            additionalInstructions = additionalInstructions,
             clarifications = grillAnswers,
             activeSubgoal = activeSubgoal,
             requiredCriteria = criteriaList,
