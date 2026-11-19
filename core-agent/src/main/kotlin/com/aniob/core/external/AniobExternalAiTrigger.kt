@@ -29,6 +29,17 @@ data class ChatTurn(val role: String, val content: String) {
             }
             return "Conversation so far:\n$earlier\n\nUser: ${window.last().content}"
         }
+
+        /** Formats an observed post-execution result as a factual turn for continuous agent loops. */
+        fun formatExecutionResult(
+            stepIndex: Int,
+            actionSummary: String,
+            success: Boolean,
+            detail: String
+        ): String {
+            val outcome = if (success) "SUCCEEDED" else "FAILED"
+            return "Step $stepIndex execution result ($outcome) for $actionSummary: $detail"
+        }
     }
 }
 
@@ -94,8 +105,54 @@ sealed interface ExternalAiResult {
 class AniobExternalAiTrigger(
     private val cloudProvider: AniobCloudLlmProvider?,
     private val localProvider: AniobLocalLlmProvider?,
-    private val sharedKnowledgeStore: AniobSharedKnowledgeStore
+    private val sharedKnowledgeStore: AniobSharedKnowledgeStore,
+    private val actionStepProvider: AniobActionStepProvider? = null
 ) {
+
+    /**
+     * Dispatches one continuous agent turn with structured [ChatTurn] history so the LLM sees
+     * the original goal, prior actions, actual execution outcomes, and follow-ups together.
+     */
+    suspend fun queryAgentTurn(
+        systemPrompt: String,
+        history: List<ChatTurn>,
+        observationPrompt: String,
+        screenshotBase64: String? = null,
+        maxTokens: Int = 512,
+        onFirstToken: () -> Unit = {}
+    ): Result<String> {
+        if (actionStepProvider != null) {
+            return actionStepProvider.getNextActionRawStreaming(
+                systemPrompt = systemPrompt,
+                history = history,
+                userPrompt = observationPrompt,
+                screenshotBase64 = screenshotBase64,
+                maxTokens = maxTokens,
+                onFirstToken = onFirstToken
+            )
+        }
+        val cloud = cloudProvider
+        if (cloud != null && cloud.isConfigured) {
+            return try {
+                var notified = false
+                val response = cloud.generateStreaming(
+                    turns = history + ChatTurn(ChatTurn.USER, observationPrompt),
+                    systemPrompt = systemPrompt
+                ) { delta ->
+                    if (!notified && delta.isNotEmpty()) {
+                        notified = true
+                        onFirstToken()
+                    }
+                }
+                Result.success(response)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+        return Result.failure(IllegalStateException("No agent step or cloud provider configured"))
+    }
 
     suspend fun query(
         prompt: String,

@@ -36,6 +36,7 @@ internal fun AniobViewModel.setActiveConversation(id: String) {
 /** A correction, queued follow-up or contextual device command must not target another chat. */
 internal fun AniobViewModel.clearConversationTaskContext() {
     lastCompletedLearningSnapshot = null
+    lastResumablePipeline = null
     taskStickyTarget = null
     conversationPrefs.edit().remove("queued_prompt").apply()
     _uiState.update { it.copy(activeTask = null, lastSealedTaskId = null, lastSealedOutcome = null,

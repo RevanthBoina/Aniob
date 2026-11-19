@@ -22,15 +22,14 @@ class AniobExecutionRouter(
     private val replayEngine: AniobReplayEngine = AniobReplayEngine(),
     private val skillMatcher: AniobSkillMatcher = AniobSkillMatcher(),
     private val semanticSkillMatcher: AniobSemanticSkillMatcher? = null,
-    private val planningAgent: AniobPlanningAgent? = null,
     private val memoryStore: AniobEmbeddingStore? = null
 ) {
     private fun modelFallbackForUnboundSkill(prompt: String, screen: AniobScreenState, step: Int,
         signature: String, power: DevicePowerState, model: String?, failures: Int, missing: Boolean,
-        progress: TaskProgress?, mode: String, observed: String?, sticky: RouteTarget?, skill: String): ExecutionPlanResult {
+        mode: String, sticky: RouteTarget?, skill: String): ExecutionPlanResult {
         failedSkills += skill
         activeSkill = null
-        return planStep(prompt, screen, step, signature, power, model, failures, missing, progress, mode, observed, sticky)
+        return planStep(prompt, screen, step, signature, power, model, failures, missing, mode, sticky)
     }
 
     /** Shared with the learning pipeline so hydration and replay hit the same store. */
@@ -162,8 +161,7 @@ class AniobExecutionRouter(
         data class SkillStepExecution(val action: AniobAction, val skill: AniobSkill, val reason: String) : ExecutionPlanResult()
         data class ModelDispatch(
             val decision: RouteDecision,
-            val progressSummary: String? = null,
-            val progress: TaskProgress? = null
+            val retrievedContext: String? = null
         ) : ExecutionPlanResult()
         data class CannotProceed(val reason: String) : ExecutionPlanResult()
     }
@@ -177,9 +175,7 @@ class AniobExecutionRouter(
         installedModelId: String? = null,
         lastLocalFailCount: Int = 0,
         isModelFileMissing: Boolean = false,
-        previousProgress: TaskProgress? = null,
         userRoutingMode: String = "auto",
-        lastObservedResult: String? = null,
         /** Per-task provider lock; see [AniobAutoRouter.decideRoute]. */
         taskStickyTarget: RouteTarget? = null
     ): ExecutionPlanResult {
@@ -335,13 +331,13 @@ class AniobExecutionRouter(
                 if (step != null) {
                     val action = step.toAniobAction(skillMatch.extractedSlots) ?: return modelFallbackForUnboundSkill(
                         taskPrompt, screenState, stepIndex, taskSignature, powerState, installedModelId,
-                        lastLocalFailCount, isModelFileMissing, previousProgress, userRoutingMode,
-                        lastObservedResult, taskStickyTarget, skill.name)
+                        lastLocalFailCount, isModelFileMissing, userRoutingMode,
+                        taskStickyTarget, skill.name)
                     val target = action.semanticTarget()
                     if (target != null && com.aniob.core.execution.AniobActionExecutor.resolveTarget(action, screenState)?.node == null) {
                         return modelFallbackForUnboundSkill(taskPrompt, screenState, stepIndex, taskSignature,
-                            powerState, installedModelId, lastLocalFailCount, isModelFileMissing, previousProgress,
-                            userRoutingMode, lastObservedResult, taskStickyTarget, skill.name)
+                            powerState, installedModelId, lastLocalFailCount, isModelFileMissing,
+                            userRoutingMode, taskStickyTarget, skill.name)
                     }
                     return ExecutionPlanResult.SkillStepExecution(
                         action = action,
@@ -361,16 +357,6 @@ class AniobExecutionRouter(
                 retrievedContext = memories.first().text
             }
         }
-
-        // Planning Progress condensation: prefrontal-cortex summary replaces the full
-        // interleaved observation history in the LLM prompt (~80% token reduction).
-        val previousOp = lastObservedResult ?: if (stepIndex > 0) "Step ${stepIndex - 1} executed" else null
-        val progress = planningAgent?.updateProgress(
-            userInstruction = taskPrompt,
-            previousOperation = previousOp,
-            previousProgress = previousProgress,
-            focusContent = retrievedContext
-        )
 
         // Step 3 & 4: AutoRouter decides between Local SLM and Omniroute Cloud
         val decision = AniobAutoRouter.decideRoute(
@@ -392,8 +378,7 @@ class AniobExecutionRouter(
 
         return ExecutionPlanResult.ModelDispatch(
             decision = decision,
-            progressSummary = progress?.summary,
-            progress = progress
+            retrievedContext = retrievedContext
         )
     }
 

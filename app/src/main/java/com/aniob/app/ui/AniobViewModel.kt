@@ -81,7 +81,6 @@ class AniobViewModel(
     internal val reflectionAgent = AniobReflectionAgent()
     internal val executionRouter = AniobExecutionRouter(
         semanticSkillMatcher = semanticSkillMatcher,
-        planningAgent = planningAgent,
         memoryStore = memoryStore
     )
     /** The single learning pipeline; shares the router's FastPath engine and Room. */
@@ -126,6 +125,8 @@ class AniobViewModel(
     // Same-task continuation (Parts 4/5). The run is published here so a new instruction, a
     // clarification answer or a manual handover reaches the RUNNING task instead of replacing it.
     @Volatile internal var activePipeline: PipelineRun? = null
+    /** Incomplete/paused/delegated run retained in the active chat so "Proceed"/"Continue" resumes it. */
+    @Volatile internal var lastResumablePipeline: PipelineRun? = null
     @Volatile internal var taskInputs: TaskInputChannel? = null
     @Volatile internal var inputSignal: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     @Volatile internal var taskWaitState: TaskWaitState = TaskWaitState.NONE

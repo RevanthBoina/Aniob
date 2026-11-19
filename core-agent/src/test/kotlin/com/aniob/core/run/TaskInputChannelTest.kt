@@ -162,4 +162,55 @@ class TaskInputChannelTest {
         )
         assertEquals("a blank answer is not an answer", ctx, TaskContinuation.applyAnswers(ctx, mapOf("x" to "")))
     }
+
+    @Test
+    fun `continuation commands are recognized and resume context without replacing goal`() {
+        assertTrue(TaskContinuation.isContinuationCommand("Proceed"))
+        assertTrue(TaskContinuation.isContinuationCommand("Continue."))
+        assertTrue(TaskContinuation.isContinuationCommand("Yes, proceed"))
+        assertFalse(TaskContinuation.isContinuationCommand("Open Settings"))
+        assertFalse(TaskContinuation.isContinuationCommand("Stop"))
+
+        val updated = TaskContinuation.applyToContext(
+            ctx,
+            listOf(TaskInput(seq = 1L, kind = TaskInputKind.INSTRUCTION, text = "Proceed", receivedAt = 1L))
+        )
+        assertEquals("Read my two newest emails", updated.instruction)
+        assertTrue("pure Proceed does not become an extra requirement", updated.additionalInstructions.isEmpty())
+        assertTrue(updated.conversationHistory.any { it.content == "Proceed" })
+    }
+
+    @Test
+    fun `task context preserves execution results and structured conversation turns`() {
+        val updated = ctx
+            .withConversationTurn(com.aniob.core.external.ChatTurn.USER, "Read my two newest emails")
+            .withConversationTurn(com.aniob.core.external.ChatTurn.ASSISTANT, "open_app(com.google.android.gm)")
+            .withExecutionResult(
+                com.aniob.core.domain.ActionExecutionRecord(
+                    stepIndex = 0,
+                    actionSummary = "open_app(com.google.android.gm)",
+                    success = true,
+                    detail = "Opened Gmail inbox",
+                    screenPackage = "com.google.android.gm"
+                )
+            )
+            .withConversationTurn(
+                com.aniob.core.external.ChatTurn.USER,
+                com.aniob.core.external.ChatTurn.formatExecutionResult(
+                    stepIndex = 0,
+                    actionSummary = "open_app(com.google.android.gm)",
+                    success = true,
+                    detail = "Opened Gmail inbox"
+                )
+            )
+
+        val turns = updated.priorConversationTurns()
+        assertTrue(turns.any { it.role == com.aniob.core.external.ChatTurn.ASSISTANT && it.content.contains("open_app") })
+        assertTrue(turns.any { it.role == com.aniob.core.external.ChatTurn.USER && it.content.contains("SUCCEEDED") })
+
+        val req = updated.buildExecutorRequest(
+            com.aniob.core.domain.AniobScreenState(packageName = "com.google.android.gm")
+        )
+        assertTrue(req.lastResult?.contains("Opened Gmail inbox") == true)
+    }
 }

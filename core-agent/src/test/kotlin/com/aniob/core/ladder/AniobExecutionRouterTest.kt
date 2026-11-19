@@ -50,11 +50,10 @@ class AniobExecutionRouterTest {
     }
 
     @Test
-    fun `model dispatch carries condensed progress summary when planning agent present`() {
-        val router = AniobExecutionRouter(planningAgent = AniobPlanningAgent())
+    fun `model dispatch routes without synthetic progress fabrication`() {
+        val router = AniobExecutionRouter()
         router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
 
-        // Isolate the model rung; automatic skills now recognize paraphrases at any task step.
         val result = router.planStep(
             taskPrompt = "Open wifi settings",
             screenState = screen,
@@ -65,9 +64,7 @@ class AniobExecutionRouterTest {
 
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
         val dispatch = result as AniobExecutionRouter.ExecutionPlanResult.ModelDispatch
-        assertNotNull("Summary must be produced by the planning agent", dispatch.progressSummary)
-        assertTrue(dispatch.progressSummary!!.contains("Task: Open wifi settings"))
-        assertTrue(dispatch.progressSummary!!.contains("Completed 1"))
+        assertNull("No memory retrieved when memory store is absent", dispatch.retrievedContext)
     }
 
     @Test
@@ -132,27 +129,9 @@ class AniobExecutionRouterTest {
     }
 
     @Test
-    fun `router works with nullable planning agent`() {
-        val router = AniobExecutionRouter(planningAgent = null)
-        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
-
-        val result = router.planStep(
-            taskPrompt = "Open wifi settings",
-            screenState = screen,
-            stepIndex = 4,
-            taskSignature = "open wifi settings",
-            powerState = power
-        )
-
-        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
-        val dispatch = result as AniobExecutionRouter.ExecutionPlanResult.ModelDispatch
-        assertNull("No summary when planning agent is disabled", dispatch.progressSummary)
-    }
-
-    @Test
-    fun `previous progress accumulates across consecutive model dispatches`() {
-        val router = AniobExecutionRouter(planningAgent = AniobPlanningAgent())
-        router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
+    fun `router routes cleanly across consecutive model dispatches`() {
+        val router = AniobExecutionRouter()
+        router.skillsEnabled = false
 
         val first = router.planStep(
             taskPrompt = "Open wifi settings",
@@ -160,36 +139,22 @@ class AniobExecutionRouterTest {
             stepIndex = 4,
             taskSignature = "open wifi settings",
             powerState = power
-        ) as AniobExecutionRouter.ExecutionPlanResult.ModelDispatch
-
-        // Feed a prior TaskProgress with 1 completed op; the router should append its own
-        // "Step 4 executed" operation → completed grows to 2.
+        )
         val second = router.planStep(
             taskPrompt = "Open wifi settings",
             screenState = screen,
             stepIndex = 5,
             taskSignature = "open wifi settings",
-            powerState = power,
-            previousProgress = TaskProgress(
-                completed = listOf("Step 3 executed"),
-                pending = listOf("Continue: Open wifi settings"),
-                summary = first.progressSummary.orEmpty()
-            )
-        ) as AniobExecutionRouter.ExecutionPlanResult.ModelDispatch
-
-        assertEquals("Task: Open wifi settings", second.progressSummary?.substringBefore(" |"))
-        assertEquals(
-            "Completed count must accumulate: 1 prior + 1 new = 2",
-            2,
-            second.progressSummary!!.substringAfter("Completed ").substringBefore(":").toInt()
+            powerState = power
         )
-        assertTrue(second.progressSummary!!.contains("Step 3 executed"))
-        assertTrue(second.progressSummary!!.contains("Step 4 executed"))
+
+        assertTrue(first is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+        assertTrue(second is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
     }
 
     @Test
     fun `disabled fast path must not attempt cache lookup`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.fastPathEnabled = false
 
         // Negative control: when fastPathEnabled is false, lookup must immediately return null
@@ -215,7 +180,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `remember replay returns the cached actions and skips every model rung`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.rememberReplayEnabled = true
         var lookups = 0
         router.rememberLookup = { goal, seen ->
@@ -240,7 +205,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `remember replay is off unless the ablation condition enables it`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
         var lookups = 0
         router.rememberLookup = { _, _ ->
@@ -262,7 +227,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `a cache miss falls through to the normal model rung`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
         router.rememberReplayEnabled = true
         router.rememberLookup = { _, _ -> null }
@@ -280,7 +245,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `an empty cache result is a miss, not an empty replay`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.skillsEnabled = false // Isolate model/cache behavior from automatic skill selection.
         router.rememberReplayEnabled = true
         router.rememberLookup = { _, _ -> emptyList() }
@@ -298,7 +263,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `the intent shortcut is resolved before the remember cache`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.rememberReplayEnabled = true
         var lookups = 0
@@ -327,7 +292,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `app launch turns "open app and do x" into a zero-model first action`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { goal ->
             if (goal.startsWith("Open Contacts")) AppLaunchTarget("com.android.contacts", "Contacts") else null
@@ -349,7 +314,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `app launch is gated by the shortcut switch`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = false
         var calls = 0
         router.appLaunchResolver = {
@@ -371,7 +336,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `app launch only applies to the first step`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
 
         val result = router.planStep(
@@ -387,7 +352,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `an alarm prompt becomes a complete direct intent, ahead of the app launch`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
 
@@ -410,7 +375,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `an alarm the prompt wants to see is dispatched and then observed`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
 
@@ -433,7 +398,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `a single goal alarm still completes from the dispatch alone`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
 
         val result = router.planStep(
@@ -453,7 +418,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `a settings panel prompt is resolved before any model call`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
 
         val result = router.planStep(
@@ -473,7 +438,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `an unresolved prompt falls through to the model`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.appLaunchResolver = { null }
 
         val result = router.planStep(
@@ -489,7 +454,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `a named app in a longer task becomes an observable app launch, not a finished intent`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { null }
 
@@ -506,7 +471,7 @@ class AniobExecutionRouterTest {
 
     @Test
     fun `a throwing resolver never breaks planning`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.appLaunchResolver = { error("catalog exploded") }
 
         val result = router.planStep(

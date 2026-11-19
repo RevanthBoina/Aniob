@@ -62,6 +62,39 @@ fun AniobViewModel.submitTask(prompt: String) {
         return
     }
 
+    // Continue the existing incomplete/delegated/stopped task in this conversation instead of
+    // starting a disconnected task or routing "Proceed"/"Continue" to chat Q&A.
+    if (shouldContinueResumableTask(trimmed) && resumeResumableTask(trimmed)) {
+        return
+    }
+    if (com.aniob.core.run.TaskContinuation.isContinuationCommand(trimmed)) {
+        if (_uiState.value.interruptedSummary != null) {
+            continueInterruptedTask()
+            return
+        }
+        if (_uiState.value.chatMessages.isEmpty()) {
+            val userMsg = ChatMessage(
+                id = "msg_user_${java.util.UUID.randomUUID()}",
+                role = "user",
+                content = trimmed
+            )
+            val asstMsg = ChatMessage(
+                id = "msg_asst_${java.util.UUID.randomUUID()}",
+                role = "assistant",
+                content = "There is no active or incomplete task to continue. Tell me what you'd like me to do.",
+                badge = "Ready"
+            )
+            _uiState.update {
+                it.copy(
+                    chatMessages = it.chatMessages + userMsg + asstMsg,
+                    statusMessage = "Ready"
+                )
+            }
+            return
+        }
+    }
+    lastResumablePipeline = null
+
     val taskId = "task_${System.currentTimeMillis()}"
     val submittedChatId = activeConversationId()
     conversationRegistrations[taskId] = viewModelScope.async(Dispatchers.IO) {

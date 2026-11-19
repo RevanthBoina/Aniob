@@ -170,11 +170,46 @@ object TaskContinuation {
         "never mind", "nevermind", "forget it", "forget that", "quit", "wait stop"
     )
 
+    private val continuationPhrases = setOf(
+        "proceed", "continue", "resume", "go on", "go ahead", "keep going", "carry on",
+        "continue task", "proceed with task", "resume task", "please proceed", "please continue",
+        "ok proceed", "okay proceed", "ok continue", "okay continue", "yes proceed", "yes continue",
+        "yes, proceed", "yes, continue", "done, proceed", "done, continue", "i did it",
+        "done", "try again"
+    )
+
     fun isCancellation(text: String): Boolean {
         val normalized = text.trim().lowercase().trimEnd('.', '!', '?', ' ')
         if (normalized in cancellationPhrases) return true
         return normalized == "stop the task" || normalized == "cancel the task" ||
             normalized == "stop current task"
+    }
+
+    /**
+     * Recognizes explicit user continuation commands ("Proceed", "Continue", "Resume", etc.)
+     * so they resume the active/recent task context instead of starting a disconnected chat query.
+     */
+    fun isContinuationCommand(text: String): Boolean {
+        val normalized = text.trim().lowercase().replace(Regex("\\s+"), " ").trimEnd('.', '!', '?', ' ')
+        if (normalized in continuationPhrases) return true
+        return normalized.startsWith("proceed ") || normalized.startsWith("continue ") ||
+            normalized.startsWith("resume ") || normalized == "keep going" ||
+            normalized.endsWith(" proceed") || normalized.endsWith(" continue")
+    }
+
+    /**
+     * Recognizes likely follow-up instructions meant to refine or advance an incomplete task
+     * (e.g. "also ...", "instead ...", "now tap ...", "try the second one").
+     */
+    fun isFollowUpInstruction(text: String): Boolean {
+        if (isContinuationCommand(text)) return true
+        val normalized = text.trim().lowercase().replace(Regex("\\s+"), " ")
+        val prefixes = listOf(
+            "and ", "also ", "then ", "now ", "instead ", "actually ", "try ",
+            "select ", "tap ", "click ", "choose ", "pick ", "use ", "enter ", "type ",
+            "scroll ", "after that", "next "
+        )
+        return prefixes.any { normalized.startsWith(it) }
     }
 
     /**
@@ -192,13 +227,18 @@ object TaskContinuation {
         if (instructions.isEmpty()) return ctx
         val added = instructions.map { it.text }
         val existing = ctx.additionalInstructions
-        val merged = (existing + added).distinct()
+        val nonPureContinuations = added.filterNot { isContinuationCommand(it) && it.trim().split(' ').size <= 2 }
+        val merged = (existing + nonPureContinuations).distinct()
         val historyEntries = added.map { "the user added an instruction: \"$it\"" }
-        return ctx.copy(
+        var updated = ctx.copy(
             additionalInstructions = merged,
             condensedHistory = ctx.condensedHistory + historyEntries,
             rejectedFinishCount = 0
         )
+        added.forEach { text ->
+            updated = updated.withConversationTurn(com.aniob.core.external.ChatTurn.USER, text)
+        }
+        return updated
     }
 
     /** An answer to a task question joins the goal the same way a Grill-Me answer does. */
@@ -208,6 +248,9 @@ object TaskContinuation {
             grillAnswers = ctx.grillAnswers + (key to answer.text),
             condensedHistory = ctx.condensedHistory + "the user answered \"$key\": \"${answer.text}\"",
             rejectedFinishCount = 0
+        ).withConversationTurn(
+            com.aniob.core.external.ChatTurn.USER,
+            "Clarification ($key): ${answer.text}"
         )
     }
 
@@ -221,12 +264,19 @@ object TaskContinuation {
     fun applyAnswers(ctx: TaskContext, answers: Map<String, String>): TaskContext {
         val cleaned = answers.filterValues { it.isNotBlank() }
         if (cleaned.isEmpty()) return ctx
-        return ctx.copy(
+        var updated = ctx.copy(
             grillAnswers = ctx.grillAnswers + cleaned,
             condensedHistory = ctx.condensedHistory +
                 cleaned.map { (question, answer) -> "the user answered \"$question\": \"$answer\"" },
             rejectedFinishCount = 0
         )
+        cleaned.forEach { (question, answer) ->
+            updated = updated.withConversationTurn(
+                com.aniob.core.external.ChatTurn.USER,
+                "Clarification ($question): $answer"
+            )
+        }
+        return updated
     }
 
     /**

@@ -337,6 +337,36 @@ internal suspend fun AniobViewModel.pipelineAct(
                 taskContext = run.ctx
                 currentScreen = run.screen
                 lastPlanResult = run.lastResult
+                if (run.ran.isNotEmpty() || run.stop != com.aniob.core.execution.ActionBurstRunner.Stop.NONE) {
+                    val burstSummary = run.ran.joinToString(" -> ") { it.describeAction() }
+                        .ifBlank { burst.actions.firstOrNull()?.describeAction() ?: "burst" }
+                    val burstSuccess = run.stop == com.aniob.core.execution.ActionBurstRunner.Stop.NONE &&
+                        run.lastResult?.verification?.isSuccessful != false
+                    val burstDetail = run.detail.ifBlank {
+                        run.lastResult?.verification?.reason ?: "ran ${run.ran.size} action(s) on ${currentScreen.packageName}"
+                    }
+                    taskContext = taskContext
+                        .withExecutionResult(
+                            ActionExecutionRecord(
+                                stepIndex = currentStep,
+                                actionSummary = burstSummary,
+                                success = burstSuccess,
+                                detail = burstDetail,
+                                screenPackage = currentScreen.packageName,
+                                screenHash = currentScreen.treeHash
+                            )
+                        )
+                        .withConversationTurn(com.aniob.core.external.ChatTurn.ASSISTANT, burstSummary)
+                        .withConversationTurn(
+                            com.aniob.core.external.ChatTurn.USER,
+                            com.aniob.core.external.ChatTurn.formatExecutionResult(
+                                stepIndex = currentStep,
+                                actionSummary = burstSummary,
+                                success = burstSuccess,
+                                detail = burstDetail
+                            )
+                        )
+                }
                 val missedAction = run.missedAction
                 val missedNode = run.missedNode
                 val hasGroundingMiss = missedAction != null
@@ -501,6 +531,39 @@ internal suspend fun AniobViewModel.pipelineAct(
             )
         }
         taskContext = res.nextCtx
+        if (!planConsumedStep) {
+            val resultScreen = res.nextCtx.lastScreenState ?: currentScreen
+            val actualSuccess = res.terminalState == StepResult.TerminalState.SUCCESS ||
+                (res.verification?.isSuccessful == true && res.terminalState != StepResult.TerminalState.FAIL)
+            val actualDetail = when {
+                res.action is AniobAction.Fail -> (res.action as AniobAction.Fail).reason
+                !res.verification?.reason.isNullOrBlank() -> res.verification!!.reason
+                res.terminalState == StepResult.TerminalState.SUCCESS ->
+                    (res.action as? AniobAction.Finish)?.summary ?: "Verified"
+                else -> "pkg=${resultScreen.packageName}"
+            }
+            taskContext = taskContext
+                .withExecutionResult(
+                    ActionExecutionRecord(
+                        stepIndex = currentStep,
+                        actionSummary = res.action.describeAction(),
+                        success = actualSuccess,
+                        detail = actualDetail,
+                        screenPackage = resultScreen.packageName,
+                        screenHash = resultScreen.treeHash
+                    )
+                )
+                .withConversationTurn(com.aniob.core.external.ChatTurn.ASSISTANT, res.action.describeAction())
+                .withConversationTurn(
+                    com.aniob.core.external.ChatTurn.USER,
+                    com.aniob.core.external.ChatTurn.formatExecutionResult(
+                        stepIndex = currentStep,
+                        actionSummary = res.action.describeAction(),
+                        success = actualSuccess,
+                        detail = actualDetail
+                    )
+                )
+        }
         if (!res.verificationSkippedFast) observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
 
         if (!res.verificationSkippedFast && primaryProvider == "LOCAL_SLM") {

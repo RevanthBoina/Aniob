@@ -6,9 +6,11 @@ import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.core.domain.AniobTask
 import com.aniob.core.domain.TaskContext
+import com.aniob.core.domain.TaskStatus
 import com.aniob.core.narration.AgentPhase
 import com.aniob.core.narration.ThinkSource
 import com.aniob.core.run.TaskContinuation
+import com.aniob.core.run.TaskInput
 import com.aniob.core.run.TaskInputChannel
 import com.aniob.core.run.TaskInputKind
 import com.aniob.core.run.TaskWaitState
@@ -16,6 +18,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -149,6 +152,10 @@ internal fun AniobViewModel.deliverTaskInput(prompt: String): Boolean {
     }
 
     val input = channel.post(TaskInputKind.INSTRUCTION, prompt) ?: return false
+    if (_uiState.value.isPaused) {
+        pauseRequested = false
+        com.aniob.app.background.AniobBackgroundController.onTaskPaused(false)
+    }
     val message = ChatMessage(
         id = "msg_user_${java.util.UUID.randomUUID()}",
         role = "user",
@@ -156,6 +163,7 @@ internal fun AniobViewModel.deliverTaskInput(prompt: String): Boolean {
     )
     _uiState.update {
         it.copy(
+            isPaused = false,
             chatMessages = it.chatMessages + message,
             pendingInstructionCount = if (channel.hasPendingInstruction()) 1 else 0,
             statusMessage = "Adding to the running task: \"${input.text}\""
@@ -332,3 +340,91 @@ internal fun AniobViewModel.parkedRunFor(taskId: String): PipelineRun? =
 
 /** The context a parked run keeps, exposed for the completion text and for tests. */
 internal fun AniobViewModel.parkedContext(taskId: String): TaskContext? = parkedRunFor(taskId)?.taskContext
+
+// ---------------------------------------------------------------------------------------------- //
+// Resuming an incomplete / delegated / stopped / paused task on "Proceed" / "Continue" / follow-up
+// ---------------------------------------------------------------------------------------------- //
+
+internal fun AniobViewModel.shouldContinueResumableTask(prompt: String): Boolean {
+    val resumable = lastResumablePipeline ?: return false
+    if (resumable.task.status == TaskStatus.SUCCESS) return false
+    return TaskContinuation.isFollowUpInstruction(prompt)
+}
+
+internal fun AniobViewModel.prepareResumableContinuation(prompt: String): PipelineRun? {
+    val pipe = lastResumablePipeline ?: return null
+    val trimmed = prompt.trim()
+    if (trimmed.isBlank()) return null
+
+    lastResumablePipeline = null
+    val generation = ++activeGeneration
+    openTaskInputChannel(pipe.task.id)
+    activePipeline = pipe
+    pauseRequested = false
+    terminationStage.reset()
+
+    pipe.taskGeneration = generation
+    pipe.finalOutcome = null
+    pipe.terminalReason = ""
+    pipe.completedByIntent = false
+    pipe.intentVerdict = null
+    pipe.stepResult = null
+    pipe.fastLaunchProof = null
+    pipe.screenBefore = null
+    pipe.parked = false
+    pipe.resumedFromStep = pipe.currentStep
+    if (pipe.currentStep >= pipe.maxSteps) {
+        pipe.maxSteps = pipe.currentStep + agentLimits.maxStepsPerTask
+    }
+
+    val followUpInput = TaskInput(
+        seq = 0L,
+        kind = TaskInputKind.INSTRUCTION,
+        text = trimmed,
+        receivedAt = System.currentTimeMillis()
+    )
+    pipe.taskContext = TaskContinuation.applyToContext(
+        pipe.taskContext.copy(consecutiveFailures = 0),
+        listOf(followUpInput)
+    )
+    pipe.task = pipe.task.copy(
+        status = TaskStatus.RUNNING,
+        finishedAt = null
+    )
+
+    val userMessage = ChatMessage(
+        id = "msg_user_${java.util.UUID.randomUUID()}",
+        role = "user",
+        content = trimmed
+    )
+    _uiState.update { state ->
+        state.copy(
+            isRunning = true,
+            isPaused = false,
+            waitingForUser = false,
+            activeTask = pipe.task,
+            grillMeResult = null,
+            showGrillMeSheet = false,
+            chatMessages = state.chatMessages + userMessage,
+            statusMessage = "Continuing ${pipe.task.rawPrompt.take(60)}...",
+            currentStep = pipe.currentStep,
+            pendingInstructionCount = 0
+        )
+    }
+    setPhase(AgentPhase.PLANNING, ThinkSource.RULES, "Continuing task from step ${pipe.currentStep}")
+    app.eventLogger.info(
+        "AniobViewModel",
+        "Resuming incomplete task ${pipe.task.id} from step ${pipe.currentStep} with input: $trimmed"
+    )
+    return pipe
+}
+
+internal fun AniobViewModel.resumeResumableTask(prompt: String): Boolean {
+    val pipe = prepareResumableContinuation(prompt) ?: return false
+    val leaseGen = app.taskOwner.acquireLease(pipe.task.id)
+    activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
+        app.taskOwner.attachJob(leaseGen, currentCoroutineContext()[kotlinx.coroutines.Job]!!)
+        resumeParkedRun(pipe)
+    }
+    return true
+}

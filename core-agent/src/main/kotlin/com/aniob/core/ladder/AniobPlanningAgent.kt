@@ -1,31 +1,83 @@
 package com.aniob.core.ladder
 
-data class TaskProgress(val completed: List<String>, val pending: List<String>, val summary: String)
+import com.aniob.core.domain.TaskContext
 
+data class TaskProgress(
+    val completed: List<String>,
+    val pending: List<String>,
+    val summary: String,
+    val failed: List<String> = emptyList()
+)
+
+/**
+ * Tracks real task progress strictly from verified post-execution outcomes.
+ * Never assumes an attempted operation succeeded without execution evidence.
+ */
 class AniobPlanningAgent {
-    fun updateProgress(
+    fun recordExecution(
         userInstruction: String,
-        previousOperation: String?,
+        actionDescription: String?,
+        verifiedSuccess: Boolean,
+        detail: String?,
         previousProgress: TaskProgress?,
-        focusContent: String?
+        additionalInstructions: List<String> = emptyList()
     ): TaskProgress {
         val completed = previousProgress?.completed?.toMutableList() ?: mutableListOf()
-        if (previousOperation != null && previousOperation.isNotBlank()) {
-            if (completed.size < 10) completed.add(previousOperation)
+        val failed = previousProgress?.failed?.toMutableList() ?: mutableListOf()
+        if (!actionDescription.isNullOrBlank()) {
+            val detailSuffix = detail?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+            if (verifiedSuccess) {
+                completed.add("$actionDescription$detailSuffix")
+            } else {
+                failed.add("$actionDescription$detailSuffix")
+            }
         }
-        val pending = mutableListOf<String>()
-        val lower = userInstruction.lowercase()
-        if (completed.isEmpty()) {
-            pending.add(userInstruction)
-        } else {
-            pending.add("Continue: $userInstruction")
-            if (focusContent != null) pending.add("Use focus: $focusContent")
+        val pending = buildList {
+            add(userInstruction)
+            additionalInstructions.filter { it.isNotBlank() }.forEach { add(it) }
         }
         val summary = buildString {
-            append("Task: $userInstruction | ")
-            append("Completed ${completed.size}: ${completed.takeLast(3).joinToString(", ")} | ")
-            append("Pending: ${pending.joinToString(", ")}")
+            append("Goal: $userInstruction")
+            if (completed.isNotEmpty()) {
+                append(" | Verified(${completed.size}): ${completed.takeLast(3).joinToString("; ")}")
+            }
+            if (failed.isNotEmpty()) {
+                append(" | Failed(${failed.size}): ${failed.takeLast(2).joinToString("; ")}")
+            }
         }
-        return TaskProgress(completed, pending, summary)
+        return TaskProgress(
+            completed = completed,
+            pending = pending,
+            summary = summary,
+            failed = failed
+        )
+    }
+
+    fun summarizeExecution(taskContext: TaskContext): TaskProgress {
+        val completed = taskContext.executionResults
+            .filter { it.success }
+            .map { "${it.actionSummary}: ${it.detail}" }
+        val failed = taskContext.executionResults
+            .filter { !it.success }
+            .map { "${it.actionSummary}: ${it.detail}" }
+        val pending = buildList {
+            add(taskContext.instruction)
+            taskContext.additionalInstructions.filter { it.isNotBlank() }.forEach { add(it) }
+        }
+        val summary = buildString {
+            append("Goal: ${taskContext.instruction}")
+            if (completed.isNotEmpty()) {
+                append(" | Verified(${completed.size}): ${completed.takeLast(3).joinToString("; ")}")
+            }
+            if (failed.isNotEmpty()) {
+                append(" | Failed(${failed.size}): ${failed.takeLast(2).joinToString("; ")}")
+            }
+        }
+        return TaskProgress(
+            completed = completed,
+            pending = pending,
+            summary = summary,
+            failed = failed
+        )
     }
 }

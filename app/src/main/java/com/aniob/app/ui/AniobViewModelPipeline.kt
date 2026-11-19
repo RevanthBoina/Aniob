@@ -15,7 +15,6 @@ import com.aniob.core.intent.AniobTaskIntentClassifier
 import com.aniob.core.knowledge.AniobAppRegistry
 import com.aniob.core.ladder.AniobLaunchHub
 import com.aniob.core.ladder.ResolvedIntentShortcut
-import com.aniob.core.ladder.TaskProgress
 import com.aniob.core.run.AniobFastLane
 import com.aniob.core.run.RunLane
 import com.aniob.core.verify.FastVerify
@@ -88,16 +87,19 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
         instruction = resolvedGoalPrompt,
         successCriteria = resolvedCriteria,
         grillAnswers = task.grillAnswers,
-        taskId = task.id
+        taskId = task.id,
+        conversationHistory = listOf(
+            com.aniob.core.external.ChatTurn(
+                com.aniob.core.external.ChatTurn.USER,
+                resolvedGoalPrompt
+            )
+        )
     )
 
     AniobAccessibilityService.isTaskActive = true
     val startTime = System.currentTimeMillis()
     var finishRejections = 0
     verifiedActions.clear()
-
-    // Prefrontal-cortex condensation: TaskProgress summary (not full history) is
-    // threaded through the ladder so the LLM sees a pure-text progress summary.
 
     // Hippocampus: short-term episodic stream for this task ("hippocampus -> cortex" consolidation)
     hippocampusTracker.beginTask(task.id, task.clarifiedGoal)

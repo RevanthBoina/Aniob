@@ -302,4 +302,41 @@ class AniobViewModelExecutionWiringTest {
         assertTrue("once processed, closing is allowed again", vm.mayCloseTask())
         vm.closeTaskInputChannel()
     }
+
+    @Test
+    fun proceedOrContinueResumesIncompleteTaskInsteadOfStartingNewContext() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(
+            id = "task_93",
+            rawPrompt = "Install the APK and enable permissions",
+            status = TaskStatus.WAITING_FOR_USER
+        )
+        val pipe = parkedRun(task, step = 3)
+        pipe.parked = false
+        pipe.taskContext = pipe.taskContext.withExecutionResult(
+            com.aniob.core.domain.ActionExecutionRecord(
+                stepIndex = 2,
+                actionSummary = "tap(Install)",
+                success = false,
+                detail = "USER_ACTION: tap Install in the system dialog"
+            )
+        )
+        vm.lastResumablePipeline = pipe
+
+        assertTrue(vm.shouldContinueResumableTask("Proceed"))
+        assertTrue(vm.shouldContinueResumableTask("Continue"))
+        assertFalse(vm.shouldContinueResumableTask("What is the weather?"))
+
+        val resumed = vm.prepareResumableContinuation("Proceed")
+        assertNotNull(resumed)
+        assertEquals("task_93", resumed!!.task.id)
+        assertEquals("Install the APK and enable permissions", resumed.taskContext.instruction)
+        assertEquals(3, resumed.currentStep)
+        assertEquals(1, resumed.taskContext.executionResults.size)
+        assertTrue(resumed.taskContext.additionalInstructions.isEmpty())
+        assertTrue(vm.uiState.value.isRunning)
+        assertEquals("task_93", vm.uiState.value.activeTask?.id)
+        vm.closeTaskInputChannel()
+    }
 }

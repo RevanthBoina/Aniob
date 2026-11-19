@@ -56,7 +56,7 @@ class AniobMidTaskLaunchTest {
 
     @Test
     fun `a mid-task switch fires exactly once`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.midTaskLaunchResolver = { instagram }
         val prompt = "open clock, set an alarm, then open instagram"
@@ -74,7 +74,7 @@ class AniobMidTaskLaunchTest {
 
     @Test
     fun `the app this task already opened is not re-launched`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { clock }
         // A resolver that does not filter by itself: the router's per-task memory must still hold.
@@ -94,7 +94,7 @@ class AniobMidTaskLaunchTest {
 
     @Test
     fun `an app already in front is skipped`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.midTaskLaunchResolver = { clock }
 
@@ -107,7 +107,7 @@ class AniobMidTaskLaunchTest {
 
     @Test
     fun `without a mid-task resolver the ladder behaves as before`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.midTaskLaunchResolver = null
 
@@ -117,7 +117,7 @@ class AniobMidTaskLaunchTest {
 
     @Test
     fun `step 0 still uses the app launch resolver and never the mid-task one`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         var midTaskCalls = 0
         router.appLaunchResolver = { clock }
@@ -134,7 +134,7 @@ class AniobMidTaskLaunchTest {
 
     @Test
     fun `the reason distinguishes a start from a switch`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { clock }
         router.midTaskLaunchResolver = { instagram }
@@ -153,7 +153,7 @@ class AniobMidTaskLaunchTest {
         // "set alarm" names the clock app through the intent resolver (no launch verb, so the
         // step-0 planner deliberately passes). It must become an OpenApp step that the verifier can
         // confirm, never a DirectIntent that finishes without a post-condition.
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
         router.appLaunchResolver = { null }
         router.midTaskLaunchResolver = { null }
@@ -170,7 +170,7 @@ class AniobMidTaskLaunchTest {
 
     @Test
     fun `pure reflexes still finish immediately`() {
-        val router = AniobExecutionRouter(planningAgent = null)
+        val router = AniobExecutionRouter()
         router.intentShortcutsEnabled = true
 
         val torch = plan(router, homeScreen, 0, "turn on flashlight")
