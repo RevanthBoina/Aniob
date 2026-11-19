@@ -404,9 +404,11 @@ class ContinuousExecutionEndToEndTest {
         )
 
         val rendered = AniobCapabilityManifest.render(restricted, compact = false, executableOnly = true)
-        assertFalse(rendered.contains("- call ("))
-        assertFalse(rendered.contains("- file_find"))
-        assertFalse(rendered.contains("- message_whatsapp"))
+        assertFalse(rendered.contains("- call("))
+        assertFalse(rendered.contains("- file_find("))
+        assertFalse(rendered.contains("- file_open("))
+        assertFalse(rendered.contains("- file_read("))
+        assertFalse(rendered.contains("- message_whatsapp("))
     }
 
     @Test

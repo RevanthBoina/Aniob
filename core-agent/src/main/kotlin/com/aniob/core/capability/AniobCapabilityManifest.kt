@@ -228,13 +228,13 @@ object AniobCapabilityManifest {
             notes += "Notification access is OFF: notification_* and otp_* and media_now_playing cannot run."
         }
         if (!state.callPhone) {
-            notes += "Call permission is not granted: call opens the dialer and the user taps Call."
+            notes += "Phone permission (CALL_PHONE) is OFF: call cannot run until enabled in Settings > Apps > Aniob > Permissions."
         }
         if (!state.contacts) {
-            notes += "Contacts permission is not granted: call/messages need a phone number, not a name."
+            notes += "Contacts permission is OFF: contact-name lookup for call/messages cannot run without Contacts permission."
         }
         if (!state.allFilesAccess) {
-            notes += "file_find: without All-files access only photos/video/audio are visible (extension= filters local names when visible); file_read extracts text from text/Office/pdf on a best-effort basis and says so honestly when it cannot; files in Google Drive or WhatsApp folders need doc_pick (system picker)."
+            notes += "All-files access is OFF: file_find/file_open/file_read storage queries cannot run; use doc_pick (system picker) or pass a SAF uri."
         }
         if (notes.isEmpty()) return@buildString
         if (!brief) appendLine("Live status:")
