@@ -314,14 +314,25 @@ class AniobViewModelExecutionWiringTest {
         )
         val pipe = parkedRun(task, step = 3)
         pipe.parked = false
-        pipe.taskContext = pipe.taskContext.withExecutionResult(
-            com.aniob.core.domain.ActionExecutionRecord(
-                stepIndex = 2,
-                actionSummary = "tap(Install)",
-                success = false,
-                detail = "USER_ACTION: tap Install in the system dialog"
+        pipe.taskContext = pipe.taskContext
+            .recordCorrelatedOutcome(
+                com.aniob.core.domain.ActionExecutionRecord(
+                    actionId = "act_s1_m0_0",
+                    stepIndex = 1,
+                    actionSummary = "open_app(com.android.packageinstaller)",
+                    status = com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED,
+                    detail = "Opened installer"
+                )
             )
-        )
+            .recordCorrelatedOutcome(
+                com.aniob.core.domain.ActionExecutionRecord(
+                    actionId = "act_s2_m0_1",
+                    stepIndex = 2,
+                    actionSummary = "tap(Install)",
+                    status = com.aniob.core.domain.ExecutionOutcomeStatus.UNCERTAIN,
+                    detail = "USER_ACTION: tap Install in the system dialog"
+                )
+            )
         vm.lastResumablePipeline = pipe
 
         assertTrue(vm.shouldContinueResumableTask("Proceed"))
@@ -333,10 +344,85 @@ class AniobViewModelExecutionWiringTest {
         assertEquals("task_93", resumed!!.task.id)
         assertEquals("Install the APK and enable permissions", resumed.taskContext.instruction)
         assertEquals(3, resumed.currentStep)
-        assertEquals(1, resumed.taskContext.executionResults.size)
+        assertEquals(2, resumed.taskContext.executionResults.size)
+        assertEquals(1, resumed.taskContext.verifiedExecutionRecords().size)
         assertTrue(resumed.taskContext.additionalInstructions.isEmpty())
         assertTrue(vm.uiState.value.isRunning)
         assertEquals("task_93", vm.uiState.value.activeTask?.id)
         vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun proceedAfterStepZeroVerifiedActionAdvancesStepSoStepZeroShortcutNeverReplays() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(
+            id = "task_94",
+            rawPrompt = "Open Settings and enable dark theme",
+            status = TaskStatus.ABORTED
+        )
+        val pipe = parkedRun(task, step = 0)
+        pipe.parked = false
+        pipe.taskContext = pipe.taskContext.recordCorrelatedOutcome(
+            com.aniob.core.domain.ActionExecutionRecord(
+                actionId = "act_s0_m0_0",
+                stepIndex = 0,
+                actionSummary = "open_app(com.android.settings)",
+                status = com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED,
+                detail = "Foreground app confirmed: com.android.settings"
+            )
+        )
+        vm.lastResumablePipeline = pipe
+
+        val resumed = vm.prepareResumableContinuation("Continue")
+        assertNotNull(resumed)
+        assertEquals(1, resumed!!.currentStep)
+        assertEquals(1, resumed.taskContext.verifiedExecutionRecords().size)
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun classifyStepOutcomeNeverTreatsMissingOrSkippedVerificationAsVerified() {
+        val dummyCtx = TaskContext(instruction = "Tap save")
+        val tapAction = com.aniob.core.domain.AniobAction.Tap(
+            target = com.aniob.core.domain.SemanticTarget.Text("Save")
+        )
+
+        val missingVerify = com.aniob.core.execution.StepResult(
+            action = tapAction,
+            dispatch = com.aniob.core.execution.DispatchCommand.NoOp("done"),
+            verification = null,
+            nextCtx = dummyCtx,
+            terminalState = com.aniob.core.execution.StepResult.TerminalState.CONTINUE
+        )
+        assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.UNVERIFIED, classifyStepOutcome(missingVerify))
+
+        val skippedFast = com.aniob.core.execution.StepResult(
+            action = tapAction,
+            dispatch = com.aniob.core.execution.DispatchCommand.NoOp("done"),
+            verification = com.aniob.core.verifier.DeterministicVerifier.VerificationResult(
+                isExpected = true,
+                durationMs = 10L,
+                reason = "skipped"
+            ),
+            nextCtx = dummyCtx,
+            terminalState = com.aniob.core.execution.StepResult.TerminalState.CONTINUE,
+            verificationSkippedFast = true
+        )
+        assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.UNVERIFIED, classifyStepOutcome(skippedFast))
+
+        val verified = com.aniob.core.execution.StepResult(
+            action = tapAction,
+            dispatch = com.aniob.core.execution.DispatchCommand.NoOp("done"),
+            verification = com.aniob.core.verifier.DeterministicVerifier.VerificationResult(
+                isExpected = true,
+                durationMs = 15L,
+                reason = "Screen changed"
+            ),
+            nextCtx = dummyCtx,
+            terminalState = com.aniob.core.execution.StepResult.TerminalState.CONTINUE,
+            verificationSkippedFast = false
+        )
+        assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED, classifyStepOutcome(verified))
     }
 }

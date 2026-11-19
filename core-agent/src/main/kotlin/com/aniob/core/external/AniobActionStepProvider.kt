@@ -38,7 +38,7 @@ interface AniobActionStepProvider {
         onFirstToken: () -> Unit = {}
     ): Result<String> = getNextActionRawStreaming(
         systemPrompt = systemPrompt,
-        userPrompt = ChatTurn.flatten(history + ChatTurn(ChatTurn.USER, userPrompt)),
+        userPrompt = ChatTurn.flatten(history + ChatTurn(ChatTurn.OBSERVATION, userPrompt)),
         screenshotBase64 = screenshotBase64,
         maxTokens = maxTokens,
         onFirstToken = onFirstToken
@@ -52,7 +52,7 @@ interface AniobActionStepProvider {
         maxTokens: Int = 512
     ): Result<String> = getNextActionRaw(
         systemPrompt = systemPrompt,
-        userPrompt = ChatTurn.flatten(history + ChatTurn(ChatTurn.USER, userPrompt)),
+        userPrompt = ChatTurn.flatten(history + ChatTurn(ChatTurn.OBSERVATION, userPrompt)),
         screenshotBase64 = screenshotBase64,
         maxTokens = maxTokens
     )

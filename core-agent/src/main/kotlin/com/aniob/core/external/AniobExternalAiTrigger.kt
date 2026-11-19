@@ -6,13 +6,19 @@ import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.tools.DevicePowerState
 import kotlinx.coroutines.CancellationException
 
-/** One turn of a conversation, oldest first. [role] is "user" or "assistant". */
-data class ChatTurn(val role: String, val content: String) {
+/** One turn of a conversation, oldest first. [role] is "user", "assistant", "tool", or "observation". */
+data class ChatTurn(
+    val role: String,
+    val content: String,
+    val actionId: String? = null
+) {
     companion object {
         const val USER = "user"
         const val ASSISTANT = "assistant"
+        const val TOOL = "tool"
+        const val OBSERVATION = "observation"
 
-        /** How many turns (including the new user turn) a provider sends per request. */
+        /** How many turns (including the new user/observation turn) a provider sends per request. */
         const val MAX_TURNS = 12
 
         /**
@@ -24,21 +30,56 @@ data class ChatTurn(val role: String, val content: String) {
             val window = turns.takeLast(MAX_TURNS)
             if (window.size <= 1) return window.firstOrNull()?.content.orEmpty()
             val earlier = window.dropLast(1).joinToString("\n") { turn ->
-                val speaker = if (turn.role == ASSISTANT) "Assistant" else "User"
-                "$speaker: ${turn.content}"
+                when (turn.role) {
+                    ASSISTANT -> if (turn.actionId != null) {
+                        "Assistant [action_id=${turn.actionId}]: ${turn.content}"
+                    } else {
+                        "Assistant: ${turn.content}"
+                    }
+                    TOOL -> if (turn.actionId != null) {
+                        "ExecutionResult [action_id=${turn.actionId}]: ${turn.content}"
+                    } else {
+                        "ExecutionResult: ${turn.content}"
+                    }
+                    OBSERVATION -> "ScreenObservation: ${turn.content}"
+                    else -> "User: ${turn.content}"
+                }
             }
-            return "Conversation so far:\n$earlier\n\nUser: ${window.last().content}"
+            val last = window.last()
+            val tail = when (last.role) {
+                OBSERVATION -> "ScreenObservation:\n${last.content}"
+                TOOL -> if (last.actionId != null) {
+                    "ExecutionResult [action_id=${last.actionId}]: ${last.content}"
+                } else {
+                    "ExecutionResult: ${last.content}"
+                }
+                ASSISTANT -> if (last.actionId != null) {
+                    "Assistant [action_id=${last.actionId}]: ${last.content}"
+                } else {
+                    "Assistant: ${last.content}"
+                }
+                else -> "User: ${last.content}"
+            }
+            return "Conversation so far:\n$earlier\n\n$tail"
         }
 
-        /** Formats an observed post-execution result as a factual turn for continuous agent loops. */
+        /** Formats an observed post-execution result correlated by [actionId] for continuous agent loops. */
         fun formatExecutionResult(
+            actionId: String,
             stepIndex: Int,
             actionSummary: String,
-            success: Boolean,
-            detail: String
-        ): String {
-            val outcome = if (success) "SUCCEEDED" else "FAILED"
-            return "Step $stepIndex execution result ($outcome) for $actionSummary: $detail"
+            status: String,
+            detail: String,
+            evidence: String? = null
+        ): String = buildString {
+            append("step=").append(stepIndex)
+            append(" | action_id=").append(actionId)
+            append(" | status=").append(status)
+            append(" | action=").append(actionSummary)
+            append(" | detail=").append(detail)
+            if (!evidence.isNullOrBlank()) {
+                append(" | evidence=").append(evidence)
+            }
         }
     }
 }
@@ -105,54 +146,8 @@ sealed interface ExternalAiResult {
 class AniobExternalAiTrigger(
     private val cloudProvider: AniobCloudLlmProvider?,
     private val localProvider: AniobLocalLlmProvider?,
-    private val sharedKnowledgeStore: AniobSharedKnowledgeStore,
-    private val actionStepProvider: AniobActionStepProvider? = null
+    private val sharedKnowledgeStore: AniobSharedKnowledgeStore
 ) {
-
-    /**
-     * Dispatches one continuous agent turn with structured [ChatTurn] history so the LLM sees
-     * the original goal, prior actions, actual execution outcomes, and follow-ups together.
-     */
-    suspend fun queryAgentTurn(
-        systemPrompt: String,
-        history: List<ChatTurn>,
-        observationPrompt: String,
-        screenshotBase64: String? = null,
-        maxTokens: Int = 512,
-        onFirstToken: () -> Unit = {}
-    ): Result<String> {
-        if (actionStepProvider != null) {
-            return actionStepProvider.getNextActionRawStreaming(
-                systemPrompt = systemPrompt,
-                history = history,
-                userPrompt = observationPrompt,
-                screenshotBase64 = screenshotBase64,
-                maxTokens = maxTokens,
-                onFirstToken = onFirstToken
-            )
-        }
-        val cloud = cloudProvider
-        if (cloud != null && cloud.isConfigured) {
-            return try {
-                var notified = false
-                val response = cloud.generateStreaming(
-                    turns = history + ChatTurn(ChatTurn.USER, observationPrompt),
-                    systemPrompt = systemPrompt
-                ) { delta ->
-                    if (!notified && delta.isNotEmpty()) {
-                        notified = true
-                        onFirstToken()
-                    }
-                }
-                Result.success(response)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-        return Result.failure(IllegalStateException("No agent step or cloud provider configured"))
-    }
 
     suspend fun query(
         prompt: String,

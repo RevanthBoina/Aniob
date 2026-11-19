@@ -100,11 +100,31 @@ internal suspend fun AniobViewModel.pipelinePropose(
                         }
                         screenBefore = landed ?: screenBefore
                         if (shortcut.requiresObservation) {
-                            if (landed != null) {
+                            val intentActionId = taskContext.allocateActionId(currentStep, 0)
+                            val intentStatus = if (landed != null) {
                                 app.researchTelemetry.markIntentShortcutUsed()
+                                ExecutionOutcomeStatus.VERIFIED
                             } else {
                                 app.researchTelemetry.recordShortcutAttempt(attempted = true, degraded = true, reason = "Screen did not land")
+                                ExecutionOutcomeStatus.UNCERTAIN
                             }
+                            val intentSummary = "DEVICE_CONTROL(${shortcut.label ?: shortcut.action})"
+                            val intentDetail = if (landed != null) {
+                                "Landed on ${landed.packageName}"
+                            } else {
+                                "System intent dispatched; target screen did not confirm within settle window"
+                            }
+                            taskContext = taskContext.recordCorrelatedOutcome(
+                                ActionExecutionRecord(
+                                    actionId = intentActionId,
+                                    stepIndex = currentStep,
+                                    actionSummary = intentSummary,
+                                    status = intentStatus,
+                                    detail = intentDetail,
+                                    screenPackage = landed?.packageName ?: screenBefore?.packageName.orEmpty(),
+                                    screenHash = landed?.treeHash.orEmpty()
+                                )
+                            )
                             currentStep++
                             return PipelineFlow.Continue
                         }
@@ -329,7 +349,11 @@ internal suspend fun AniobViewModel.pipelinePropose(
                 // on-device model gets the terse catalogue; a cloud model the full one.
                 val capabilityState = AniobCapabilityProbe.snapshot(app)
                 fun withCapabilities(base: String, compact: Boolean): String =
-                    base + "\n\n" + com.aniob.core.capability.AniobCapabilityManifest.render(capabilityState, compact)
+                    base + "\n\n" + com.aniob.core.capability.AniobCapabilityManifest.render(
+                        state = capabilityState,
+                        compact = compact,
+                        executableOnly = true
+                    )
                 val baseSystemPrompt = withCapabilities(configuredPrompt, compact = localCanDrive)
                 val systemPrompt = if (burstEnabled) {
                     baseSystemPrompt +
@@ -648,10 +672,27 @@ internal suspend fun AniobViewModel.pipelinePropose(
                 }
 
                 val targetSom = loopAction.semanticTarget() as? SemanticTarget.SomIndex
-                val effectiveAction = if (targetSom != null && currentScreen.nodes.none { it.id == targetSom.index }) {
-                    AniobAction.Fail("Node id ${targetSom.index} not present on current screen")
-                } else {
-                    loopAction
+                val capabilityBlock = when {
+                    !capabilityState.accessibility && (
+                        loopAction.semanticTarget() != null ||
+                            loopAction is AniobAction.Swipe ||
+                            loopAction is AniobAction.PressKey
+                        ) -> {
+                        plannedBurst = null
+                        "Accessibility is OFF: enable Aniob in Settings > Accessibility to run ${loopAction.toolName}, or use an available DEVICE_CONTROL command."
+                    }
+                    loopAction is AniobAction.DeviceControl ->
+                        com.aniob.core.capability.AniobCapabilityManifest.blockedReason(loopAction.command, capabilityState)
+                    else -> null
+                }
+                val effectiveAction = when {
+                    capabilityBlock != null -> {
+                        plannedBurst = null
+                        AniobAction.Fail(capabilityBlock)
+                    }
+                    targetSom != null && currentScreen.nodes.none { it.id == targetSom.index } ->
+                        AniobAction.Fail("Node id ${targetSom.index} not present on current screen")
+                    else -> loopAction
                 }
 
                 proposal = StepPipeline.Proposal.Model(effectiveAction, primaryProvider)

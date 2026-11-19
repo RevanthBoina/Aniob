@@ -181,36 +181,37 @@ class TaskInputChannelTest {
     }
 
     @Test
-    fun `task context preserves execution results and structured conversation turns`() {
+    fun `task context preserves execution results and correlated conversation turns`() {
+        val actionId = ctx.allocateActionId(0, 0)
         val updated = ctx
-            .withConversationTurn(com.aniob.core.external.ChatTurn.USER, "Read my two newest emails")
-            .withConversationTurn(com.aniob.core.external.ChatTurn.ASSISTANT, "open_app(com.google.android.gm)")
-            .withExecutionResult(
+            .withConversationTurn(com.aniob.core.external.ChatTurn.USER, "Read my two newest items")
+            .recordCorrelatedOutcome(
                 com.aniob.core.domain.ActionExecutionRecord(
+                    actionId = actionId,
                     stepIndex = 0,
-                    actionSummary = "open_app(com.google.android.gm)",
-                    success = true,
-                    detail = "Opened Gmail inbox",
-                    screenPackage = "com.google.android.gm"
-                )
-            )
-            .withConversationTurn(
-                com.aniob.core.external.ChatTurn.USER,
-                com.aniob.core.external.ChatTurn.formatExecutionResult(
-                    stepIndex = 0,
-                    actionSummary = "open_app(com.google.android.gm)",
-                    success = true,
-                    detail = "Opened Gmail inbox"
+                    actionSummary = "open_app(com.example.mail)",
+                    status = com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED,
+                    detail = "Opened inbox",
+                    screenPackage = "com.example.mail"
                 )
             )
 
         val turns = updated.priorConversationTurns()
-        assertTrue(turns.any { it.role == com.aniob.core.external.ChatTurn.ASSISTANT && it.content.contains("open_app") })
-        assertTrue(turns.any { it.role == com.aniob.core.external.ChatTurn.USER && it.content.contains("SUCCEEDED") })
+        assertTrue(turns.any {
+            it.role == com.aniob.core.external.ChatTurn.ASSISTANT &&
+                it.actionId == actionId &&
+                it.content.contains("open_app")
+        })
+        assertTrue(turns.any {
+            it.role == com.aniob.core.external.ChatTurn.TOOL &&
+                it.actionId == actionId &&
+                it.content.contains("VERIFIED")
+        })
 
         val req = updated.buildExecutorRequest(
-            com.aniob.core.domain.AniobScreenState(packageName = "com.google.android.gm")
+            com.aniob.core.domain.AniobScreenState(packageName = "com.example.mail")
         )
-        assertTrue(req.lastResult?.contains("Opened Gmail inbox") == true)
+        assertTrue(req.lastResult?.contains("Opened inbox") == true)
+        assertTrue(req.lastAction?.contains(actionId) == true)
     }
 }

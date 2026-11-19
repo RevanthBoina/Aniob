@@ -48,6 +48,32 @@ object AniobCapabilityManifest {
         else -> null
     }
 
+    /** True when [command] can actually execute under the current runtime permissions/services. */
+    fun isCommandExecutable(command: DeviceCommand, state: DeviceState): Boolean =
+        blockedReason(command, state) == null
+
+    /** Only the [DeviceCommand]s executable in the current runtime [state]. */
+    fun availableCommands(state: DeviceState = DeviceState()): List<DeviceCommand> =
+        DeviceCommand.entries.filter { isCommandExecutable(it, state) }
+
+    /** Generic action tools executable in the current runtime [state] (no app-specific logic). */
+    fun availableActionTools(state: DeviceState = DeviceState()): List<String> = buildList {
+        if (state.accessibility) {
+            add("TAP")
+            add("LONG_PRESS")
+            add("INPUT_TEXT")
+            add("SWIPE")
+            add("SYSTEM_KEY")
+        }
+        add("OPEN_APP")
+        if (availableCommands(state).isNotEmpty()) {
+            add("DEVICE_CONTROL")
+        }
+        add("WAIT")
+        add("FINISH")
+        add("FAIL")
+    }
+
     /** Single sentence used by answer-only prompts so even a Q&A reply never denies the capability. */
     const val IDENTITY_LINE: String =
         "Aniob is wired into this Android phone and operates it for the user: it can open apps, tap, type, " +
@@ -63,17 +89,33 @@ object AniobCapabilityManifest {
             "Pick the fastest route and reply with ONE JSON action. If only the user can unblock it, " +
             "reply FAIL with the exact setting to turn on."
 
-    fun render(state: DeviceState = DeviceState(), compact: Boolean = false): String =
-        if (compact) compactText(state) else fullText(state)
+    fun render(
+        state: DeviceState = DeviceState(),
+        compact: Boolean = false,
+        executableOnly: Boolean = false
+    ): String = if (compact) compactText(state, executableOnly) else fullText(state, executableOnly)
 
-    private fun fullText(state: DeviceState): String = buildString {
+    private fun fullText(state: DeviceState, executableOnly: Boolean): String = buildString {
+        val allowedTools = availableActionTools(state)
         appendLine("DEVICE CAPABILITIES (read first):")
-        appendLine(
-            "You are connected to this Android phone and operate it for the user: you see the screen, tap, " +
-                "type, scroll, open any installed app, press Back/Home/Recents, take screenshots, read the " +
-                "clipboard and notifications, and control media, volume, flashlight, calls, messages, " +
-                "alarms, timers, calendar, maps, files and storage."
-        )
+        if (executableOnly && !state.accessibility) {
+            appendLine(
+                "You are connected to this Android phone. Accessibility screen control is currently OFF, " +
+                    "so UI gestures (TAP, LONG_PRESS, INPUT_TEXT, SWIPE, SYSTEM_KEY) are NOT executable right now. " +
+                    "Available tools: ${allowedTools.joinToString(", ")}. Use an available DEVICE_CONTROL command, " +
+                    "OPEN_APP, or FAIL naming Settings > Accessibility if screen control is required."
+            )
+        } else {
+            appendLine(
+                "You are connected to this Android phone and operate it for the user: you see the screen, tap, " +
+                    "type, scroll, open any installed app, press Back/Home/Recents, take screenshots, read the " +
+                    "clipboard and notifications, and control media, volume, flashlight, calls, messages, " +
+                    "alarms, timers, calendar, maps, files and storage."
+            )
+            if (executableOnly) {
+                appendLine("Available tools right now: ${allowedTools.joinToString(", ")}.")
+            }
+        }
         appendLine(
             "NEVER say you cannot operate the phone, lack access to it, or are only a text model: that is " +
                 "false here. If one route is blocked, take another (a different command, the screen, the web). " +
@@ -86,14 +128,16 @@ object AniobCapabilityManifest {
         )
         appendLine("DEVICE_CONTROL: {\"thought\":\"...\",\"tool\":\"DEVICE_CONTROL\",\"command\":\"<name>\",\"args\":{\"key\":\"value\"}}")
         appendLine(
-            "One command per step; its answer appears in the next step's history as \"result: ...\". " +
-                "Reply FINISH right after the command that completes the goal. Commands marked (asks) " +
+            "One command per step; its answer appears in the next step's history as \"ExecutionResult ...\". " +
+                "Reply FINISH only when observed evidence confirms the goal. Commands marked (asks) " +
                 "are confirmed with the user before they run. Verification codes are never shown to you: " +
                 "use otp_copy, then clipboard_paste or otp_paste."
         )
         appendLine("Commands:")
         for (group in DeviceCommandGroup.entries) {
-            val commands = DeviceCommand.entries.filter { it.group == group }
+            val commands = DeviceCommand.entries.filter { c ->
+                c.group == group && (!executableOnly || isCommandExecutable(c, state))
+            }
             if (commands.isEmpty()) continue
             appendLine("[${group.label}]")
             for (c in commands) {
@@ -105,11 +149,18 @@ object AniobCapabilityManifest {
         append(statusLines(state))
     }.trimEnd()
 
-    private fun compactText(state: DeviceState): String = buildString {
-        appendLine("DEVICE CAPABILITIES: you operate this Android phone (screen, apps, calls, media, files). Never say you can't or lack access; pick another route, or FAIL naming the setting to enable.")
-        appendLine("Prefer DEVICE_CONTROL (no UI, instant): {\"tool\":\"DEVICE_CONTROL\",\"command\":\"name\",\"args\":{\"k\":\"v\"}}. Result shows in next history. FINISH after it completes the goal.")
+    private fun compactText(state: DeviceState, executableOnly: Boolean): String = buildString {
+        val allowedTools = availableActionTools(state)
+        if (executableOnly && !state.accessibility) {
+            appendLine("DEVICE CAPABILITIES: Accessibility is OFF (no TAP/INPUT/SWIPE). Tools: ${allowedTools.joinToString(",")}.")
+        } else {
+            appendLine("DEVICE CAPABILITIES: you operate this Android phone (screen, apps, calls, media, files). Never say you can't or lack access; pick another route, or FAIL naming the setting to enable.")
+        }
+        appendLine("Prefer DEVICE_CONTROL (no UI, instant): {\"tool\":\"DEVICE_CONTROL\",\"command\":\"name\",\"args\":{\"k\":\"v\"}}. Result shows in next ExecutionResult. FINISH after verified evidence.")
         for (group in DeviceCommandGroup.entries) {
-            val commands = DeviceCommand.entries.filter { it.group == group }
+            val commands = DeviceCommand.entries.filter { c ->
+                c.group == group && (!executableOnly || isCommandExecutable(c, state))
+            }
             if (commands.isEmpty()) continue
             val line = commands.joinToString("; ") { c ->
                 val off = if (blockedReason(c, state) != null) "[off]" else ""

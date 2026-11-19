@@ -323,6 +323,28 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
                 lastExecutionResult = terminalReason.ifBlank { resultSummary },
                 finishedAt = System.currentTimeMillis()
             )
+            // If the run ended unverified/stopped/interrupted and the last trajectory action has
+            // no correlated VERIFIED execution record yet, record it as UNCERTAIN so a
+            // "Proceed" / "Continue" follow-up reconciles it against the live screen first.
+            if (finalTaskStatus != TaskStatus.SUCCESS) {
+                val lastTrajectoryAction = pipe.taskContext.trajectory.lastOrNull()
+                val lastRecorded = pipe.taskContext.latestExecutionResult()
+                if (lastTrajectoryAction != null &&
+                    (lastRecorded == null || lastRecorded.actionSummary != lastTrajectoryAction.describeAction())
+                ) {
+                    pipe.taskContext = pipe.taskContext.recordCorrelatedOutcome(
+                        ActionExecutionRecord(
+                            actionId = pipe.taskContext.allocateActionId(currentStep, 0),
+                            stepIndex = currentStep,
+                            actionSummary = lastTrajectoryAction.describeAction(),
+                            status = ExecutionOutcomeStatus.UNCERTAIN,
+                            detail = terminalReason.ifBlank { "Task ended before verification (${finalTaskStatus.name})" },
+                            screenPackage = finalScreen.packageName,
+                            screenHash = finalScreen.treeHash
+                        )
+                    )
+                }
+            }
             // Keep incomplete/delegated/paused/stopped runs resumable in the active chat so
             // "Proceed" or "Continue" resumes the same task instead of losing its context.
             lastResumablePipeline = if (finalTaskStatus == TaskStatus.SUCCESS) null else pipe

@@ -145,6 +145,9 @@ internal suspend fun AniobViewModel.pipelineObserve(pipe: PipelineRun): Pipeline
             }
         }
         if (!reflexStub) appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
+        if (!reflexStub && taskContext.hasUncertainExecution()) {
+            taskContext = taskContext.reconcileUncertainExecutions(currentScreen)
+        }
 
         // PART 2/7: an app-data read is only "done" when the data was actually on screen. Every
         // observation of this run feeds the task's evidence; only text captured from the target app

@@ -1,6 +1,7 @@
 package com.aniob.core.ladder
 
 import com.aniob.core.domain.ActionExecutionRecord
+import com.aniob.core.domain.ExecutionOutcomeStatus
 import com.aniob.core.domain.TaskContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -63,15 +64,23 @@ class AniobPlanningAgentTest {
     }
 
     @Test
-    fun `summarizeExecution derives completed and failed directly from TaskContext executionResults`() {
+    fun `summarizeExecution derives completed, failed, and uncertain directly from TaskContext executionResults`() {
         val ctx = TaskContext(instruction = "Enable Wi-Fi")
-            .withExecutionResult(ActionExecutionRecord(0, "open_app(Settings)", true, "Opened Settings"))
-            .withExecutionResult(ActionExecutionRecord(1, "tap(Wi-Fi)", false, "Control missing"))
+            .withExecutionResult(
+                ActionExecutionRecord("act_s0_m0_0", 0, "open_app(Settings)", ExecutionOutcomeStatus.VERIFIED, "Opened Settings")
+            )
+            .withExecutionResult(
+                ActionExecutionRecord("act_s1_m0_1", 1, "tap(Wi-Fi)", ExecutionOutcomeStatus.FAILED, "Control missing")
+            )
+            .withExecutionResult(
+                ActionExecutionRecord("act_s2_m0_2", 2, "tap(Toggle)", ExecutionOutcomeStatus.UNVERIFIED, "Verification skipped")
+            )
 
         val progress = agent.summarizeExecution(ctx)
 
         assertEquals(listOf("open_app(Settings): Opened Settings"), progress.completed)
         assertEquals(listOf("tap(Wi-Fi): Control missing"), progress.failed)
+        assertEquals(listOf("tap(Toggle): Verification skipped"), progress.uncertain)
         assertEquals(listOf("Enable Wi-Fi"), progress.pending)
     }
 

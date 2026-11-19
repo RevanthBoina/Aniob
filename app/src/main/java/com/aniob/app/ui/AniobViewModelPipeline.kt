@@ -354,12 +354,13 @@ internal suspend fun AniobViewModel.runPipelineSteps(pipe: PipelineRun): Boolean
         try {
             // The fast-lane launch is attempted exactly once per run. A resume starts from the
             // screen the task was paused on, not from the launch that already happened.
-            if (tryFastLane && fastLaunchTarget != null && accessibility != null && laneShortcut != null &&
+            val launchTarget = fastLaunchTarget
+            if (tryFastLane && launchTarget != null && accessibility != null && laneShortcut != null &&
                 taskGeneration == activeGeneration && _uiState.value.isRunning
             ) {
-                val label = laneShortcut.label ?: fastLaunchTarget
+                val label = laneShortcut.label ?: launchTarget
                 val openApp = AniobAction.OpenApp(
-                    packageName = fastLaunchTarget,
+                    packageName = launchTarget,
                     activityName = AniobLaunchHub.activityClassName(laneShortcut.launchActivity),
                     thought = "Open $label"
                 )
@@ -375,7 +376,7 @@ internal suspend fun AniobViewModel.runPipelineSteps(pipe: PipelineRun): Boolean
                     screenState = origin,
                     screenFingerprint = origin.treeHash
                 )
-                val closingVerdict = AniobFastLane.launchVerdict(resolvedCriteria, fastLaunchTarget)
+                val closingVerdict = AniobFastLane.launchVerdict(resolvedCriteria, launchTarget)
                 if (safety.isAllowed && !safety.requiresConfirmation && closingVerdict != null) {
                     setPhase(AgentPhase.PLANNING, ThinkSource.RULES)
                     primaryProvider = "APP_LAUNCH"
@@ -399,19 +400,42 @@ internal suspend fun AniobViewModel.runPipelineSteps(pipe: PipelineRun): Boolean
                         app.researchTelemetry.recordActionCompleted()
                     }
                     // Event-driven proof instead of idle-wait + settle + a second tree capture.
-                    val confirmed = dispatched && confirmLaunched(fastLaunchTarget)
+                    val confirmed = dispatched && confirmLaunched(launchTarget)
                     val launchLatencyMs = (System.currentTimeMillis() - dispatchedAt).coerceAtLeast(0L)
+                    val fastActionId = taskContext.allocateActionId(0, 0)
+                    val fastOutcomeStatus = when {
+                        confirmed -> ExecutionOutcomeStatus.VERIFIED
+                        dispatched -> ExecutionOutcomeStatus.UNCERTAIN
+                        else -> ExecutionOutcomeStatus.FAILED
+                    }
+                    taskContext = taskContext
+                        .withAction(openApp)
+                        .recordCorrelatedOutcome(
+                            ActionExecutionRecord(
+                                actionId = fastActionId,
+                                stepIndex = 0,
+                                actionSummary = openApp.describeAction(),
+                                status = fastOutcomeStatus,
+                                detail = when (fastOutcomeStatus) {
+                                    ExecutionOutcomeStatus.VERIFIED -> "Foreground app confirmed: $launchTarget"
+                                    ExecutionOutcomeStatus.UNCERTAIN -> "Fast-lane dispatch sent for $launchTarget; foreground not confirmed within ${launchLatencyMs}ms"
+                                    else -> "Fast-lane dispatch failed for $launchTarget"
+                                },
+                                screenPackage = if (confirmed) launchTarget else (accessibility.currentForegroundPackage().orEmpty()),
+                                verificationEvidence = if (confirmed) "foreground=$launchTarget" else null
+                            )
+                        )
                     if (confirmed) {
                         app.researchTelemetry.markIntentShortcutUsed()
                         recordTrajectory(
                             stepIndex = 0,
-                            observation = "foreground $fastLaunchTarget after ${openApp.toolName}",
+                            observation = "foreground $launchTarget after ${openApp.toolName}",
                             action = openApp,
                             provider = primaryProvider,
                             latencyMs = launchLatencyMs,
                             screenHash = "",
                             verified = true,
-                            textEvidence = fastLaunchTarget
+                            textEvidence = launchTarget
                         )
                         publishStep(
                             stepIndex = 0,
@@ -429,7 +453,7 @@ internal suspend fun AniobViewModel.runPipelineSteps(pipe: PipelineRun): Boolean
                                 latencyMs = launchLatencyMs,
                                 tokensUsed = 0,
                                 verifiedSuccess = true,
-                                textEvidence = fastLaunchTarget
+                                textEvidence = launchTarget
                             )
                         )
                         completedByIntent = true
@@ -437,7 +461,7 @@ internal suspend fun AniobViewModel.runPipelineSteps(pipe: PipelineRun): Boolean
                         finalOutcome = Outcome.SUCCESS
                         terminalReason = "Opened $label"
                         fastLaunchProof = AniobScreenState(
-                            packageName = fastLaunchTarget,
+                            packageName = launchTarget,
                             observationKind = "fast-lane"
                         )
                     } else {
@@ -448,7 +472,7 @@ internal suspend fun AniobViewModel.runPipelineSteps(pipe: PipelineRun): Boolean
                         )
                         app.eventLogger.info(
                             "AniobViewModel",
-                            "Fast-lane launch of $fastLaunchTarget not confirmed in ${launchLatencyMs}ms; using full observation"
+                            "Fast-lane launch of $launchTarget not confirmed in ${launchLatencyMs}ms; using full observation"
                         )
                     }
                 }

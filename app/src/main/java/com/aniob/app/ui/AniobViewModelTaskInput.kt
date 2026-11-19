@@ -275,9 +275,19 @@ internal fun AniobViewModel.prepareResume(task: AniobTask, answers: Map<String, 
         return null
     }
 
-    // The answer joins the SAME context: goal, verified actions, condensed history and the last
-    // screen stay exactly as they were. Nothing is replayed.
+    // The answer joins the SAME context: goal, verified actions, failed/uncertain outcomes,
+    // condensed history and the last screen stay exactly as they were. Nothing is replayed.
     pipe.taskContext = TaskContinuation.applyAnswers(pipe.taskContext, answers)
+    if (pipe.taskContext.verifiedExecutionRecords().isNotEmpty() && pipe.currentStep == 0) {
+        pipe.currentStep = 1
+    }
+    if (taskWaitState == TaskWaitState.MANUAL_TAKEOVER || taskWaitState == TaskWaitState.USER_INPUT) {
+        pipe.taskContext = pipe.taskContext.withConversationTurn(
+            com.aniob.core.external.ChatTurn.TOOL,
+            "User input / handover resolved; inspect current live screen before acting.",
+            actionId = pipe.taskContext.latestExecutionResult()?.actionId
+        )
+    }
     pipe.task = pipe.task.copy(
         grillAnswers = pipe.task.grillAnswers + answers,
         status = com.aniob.core.domain.TaskStatus.RUNNING
@@ -373,6 +383,9 @@ internal fun AniobViewModel.prepareResumableContinuation(prompt: String): Pipeli
     pipe.screenBefore = null
     pipe.parked = false
     pipe.resumedFromStep = pipe.currentStep
+    if (pipe.taskContext.verifiedExecutionRecords().isNotEmpty() && pipe.currentStep == 0) {
+        pipe.currentStep = 1
+    }
     if (pipe.currentStep >= pipe.maxSteps) {
         pipe.maxSteps = pipe.currentStep + agentLimits.maxStepsPerTask
     }
@@ -387,6 +400,12 @@ internal fun AniobViewModel.prepareResumableContinuation(prompt: String): Pipeli
         pipe.taskContext.copy(consecutiveFailures = 0),
         listOf(followUpInput)
     )
+    if (pipe.taskContext.hasUncertainExecution()) {
+        val currentLive = accessibility?.captureCurrentScreenState()
+        if (currentLive != null) {
+            pipe.taskContext = pipe.taskContext.reconcileUncertainExecutions(currentLive)
+        }
+    }
     pipe.task = pipe.task.copy(
         status = TaskStatus.RUNNING,
         finishedAt = null

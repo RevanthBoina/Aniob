@@ -3,24 +3,38 @@ package com.aniob.core.domain
 import com.aniob.core.external.ChatTurn
 
 /**
- * Actual outcome of executing one action against the device/environment.
- * Recorded only from real post-action execution and verification results.
+ * Honest verification outcome for one executed action.
+ * Missing or skipped verification must never be promoted to [VERIFIED].
+ */
+enum class ExecutionOutcomeStatus {
+    VERIFIED,
+    FAILED,
+    UNVERIFIED,
+    UNCERTAIN
+}
+
+/**
+ * Actual outcome of executing one action against the device/environment, correlated by [actionId].
  */
 data class ActionExecutionRecord(
+    val actionId: String = "",
     val stepIndex: Int,
     val actionSummary: String,
-    val success: Boolean,
+    val status: ExecutionOutcomeStatus,
     val detail: String,
     val screenPackage: String = "",
-    val screenHash: String = ""
-)
+    val screenHash: String = "",
+    val verificationEvidence: String? = null
+) {
+    val success: Boolean get() = status == ExecutionOutcomeStatus.VERIFIED
+}
 
 /**
  * Per-task context carried through every step of the loop.
  *
  * Preserves the original goal, follow-up instructions, structured conversation history,
- * previously executed actions, and their actual execution results across steps and
- * continuations ("Proceed" / "Continue").
+ * previously executed actions (correlated by stable [ActionExecutionRecord.actionId]), and their
+ * actual execution results across steps and continuations ("Proceed" / "Continue").
  */
 data class TaskContext(
     val instruction: String,
@@ -45,9 +59,9 @@ data class TaskContext(
      * never replays an action that already ran.
      */
     val additionalInstructions: List<String> = emptyList(),
-    /** Structured conversation turns (user/assistant) across the task lifecycle. */
+    /** Structured conversation turns (user/assistant/tool/observation) across the task lifecycle. */
     val conversationHistory: List<ChatTurn> = emptyList(),
-    /** Real post-execution outcomes for every attempted action in order. */
+    /** Real post-execution outcomes for every attempted action in order, correlated by actionId. */
     val executionResults: List<ActionExecutionRecord> = emptyList()
 ) {
     data class TokenBudget(
@@ -57,6 +71,9 @@ data class TaskContext(
         val remaining: Int get() = (maxTotal - usedEstimate).coerceAtLeast(0)
         val isExhausted: Boolean get() = remaining == 0
     }
+
+    fun allocateActionId(stepIndex: Int, memberIndex: Int = 0): String =
+        "act_s${stepIndex}_m${memberIndex}_${executionResults.size}"
 
     fun withStep(index: Int, screen: AniobScreenState?, historyEntry: String?): TaskContext =
         copy(
@@ -84,45 +101,125 @@ data class TaskContext(
     fun withExecutionResult(record: ActionExecutionRecord): TaskContext =
         copy(executionResults = executionResults + record)
 
-    /** Appends a structured user or assistant turn while keeping recent history bounded. */
-    fun withConversationTurn(role: String, content: String): TaskContext {
+    /** Appends a structured turn while keeping recent history bounded. */
+    fun withConversationTurn(
+        role: String,
+        content: String,
+        actionId: String? = null
+    ): TaskContext {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return this
         val last = conversationHistory.lastOrNull()
-        if (last != null && last.role == role && last.content == trimmed) return this
+        if (last != null && last.role == role && last.content == trimmed && last.actionId == actionId) {
+            return this
+        }
         return copy(
-            conversationHistory = (conversationHistory + ChatTurn(role, trimmed))
+            conversationHistory = (conversationHistory + ChatTurn(role, trimmed, actionId))
                 .takeLast(ChatTurn.MAX_TURNS * 2)
         )
     }
 
+    /** Records an assistant action and its correlated execution outcome together under [record.actionId]. */
+    fun recordCorrelatedOutcome(record: ActionExecutionRecord): TaskContext =
+        withExecutionResult(record)
+            .withConversationTurn(ChatTurn.ASSISTANT, record.actionSummary, actionId = record.actionId)
+            .withConversationTurn(
+                ChatTurn.TOOL,
+                ChatTurn.formatExecutionResult(
+                    actionId = record.actionId,
+                    stepIndex = record.stepIndex,
+                    actionSummary = record.actionSummary,
+                    status = record.status.name,
+                    detail = record.detail,
+                    evidence = record.verificationEvidence
+                ),
+                actionId = record.actionId
+            )
+
     fun latestExecutionResult(): ActionExecutionRecord? = executionResults.lastOrNull()
+
+    fun verifiedExecutionRecords(): List<ActionExecutionRecord> =
+        executionResults.filter { it.status == ExecutionOutcomeStatus.VERIFIED }
+
+    fun failedExecutionRecords(): List<ActionExecutionRecord> =
+        executionResults.filter { it.status == ExecutionOutcomeStatus.FAILED }
+
+    fun uncertainExecutionRecords(): List<ActionExecutionRecord> =
+        executionResults.filter {
+            it.status == ExecutionOutcomeStatus.UNVERIFIED || it.status == ExecutionOutcomeStatus.UNCERTAIN
+        }
+
+    fun hasUncertainExecution(): Boolean = uncertainExecutionRecords().isNotEmpty()
+
+    /**
+     * Reconciles any uncertain/unverified execution record against a fresh live screen capture
+     * before retrying, preventing blind re-execution when an earlier action may have taken effect.
+     */
+    fun reconcileUncertainExecutions(screen: AniobScreenState): TaskContext {
+        if (!hasUncertainExecution()) return this
+        val reconciled = executionResults.map { record ->
+            if (record.status == ExecutionOutcomeStatus.UNCERTAIN && !record.detail.contains("reconcile", ignoreCase = true)) {
+                record.copy(
+                    detail = "${record.detail} (reconcile against live screen pkg=${screen.packageName} before retrying)"
+                )
+            } else {
+                record
+            }
+        }
+        val summary = uncertainExecutionRecords().joinToString("; ") {
+            "[action_id=${it.actionId}] ${it.actionSummary}: ${it.detail}"
+        }
+        return copy(executionResults = reconciled)
+            .withConversationTurn(
+                ChatTurn.TOOL,
+                "RECONCILIATION_REQUIRED on pkg=${screen.packageName}: inspect the live screen before retrying uncertain action(s): $summary",
+                actionId = uncertainExecutionRecords().lastOrNull()?.actionId
+            )
+    }
 
     /**
      * Returns the prior structured conversation turns for the next agent LLM call, keeping the
-     * original user task and any added instructions visible alongside recent turns without the
-     * current step observation.
+     * original user task, added instructions, verified-vs-failed/uncertain state, and correlated
+     * action/result turns visible without duplicating the current observation.
      */
     fun priorConversationTurns(
         maxTurns: Int = ChatTurn.MAX_TURNS - 1
     ): List<ChatTurn> {
+        val verified = verifiedExecutionRecords()
+        val failed = failedExecutionRecords()
+        val uncertain = uncertainExecutionRecords()
         val goalHeader = buildString {
             append("Original task: ").append(instruction)
             if (additionalInstructions.isNotEmpty()) {
                 append("\nAdditional user instructions: ")
                 append(additionalInstructions.joinToString("; "))
             }
+            if (verified.isNotEmpty()) {
+                append("\nAlready VERIFIED actions (do not repeat): ")
+                append(verified.takeLast(5).joinToString("; ") { "[${it.actionId}] ${it.actionSummary}" })
+            }
+            if (failed.isNotEmpty()) {
+                append("\nPreviously FAILED actions: ")
+                append(failed.takeLast(3).joinToString("; ") { "[${it.actionId}] ${it.actionSummary}: ${it.detail}" })
+            }
+            if (uncertain.isNotEmpty()) {
+                append("\nUNCERTAIN/UNVERIFIED actions (check live screen before retrying): ")
+                append(uncertain.takeLast(3).joinToString("; ") { "[${it.actionId}] ${it.actionSummary}: ${it.detail}" })
+            }
         }
         val historyBudget = (maxTurns - 1).coerceAtLeast(0)
         val recentHistory = if (historyBudget == 0) emptyList() else conversationHistory.takeLast(historyBudget)
         val turns = mutableListOf<ChatTurn>()
-        val firstIsGoal = recentHistory.firstOrNull()?.let {
-            it.role == ChatTurn.USER && it.content.contains(instruction)
-        } == true
-        if (!firstIsGoal) {
-            turns += ChatTurn(ChatTurn.USER, goalHeader)
+        turns += ChatTurn(ChatTurn.USER, goalHeader)
+        // Avoid duplicating the raw goal-only opening user turn right after goalHeader.
+        val filteredHistory = if (
+            recentHistory.firstOrNull()?.let { it.role == ChatTurn.USER && it.content == instruction } == true
+        ) {
+            recentHistory.drop(1)
+        } else {
+            recentHistory
         }
-        turns += recentHistory
+        turns += filteredHistory
         return turns
     }
 
@@ -135,7 +232,7 @@ data class TaskContext(
         maxTurns: Int = ChatTurn.MAX_TURNS
     ): List<ChatTurn> =
         priorConversationTurns((maxTurns - 1).coerceAtLeast(1)) +
-            ChatTurn(ChatTurn.USER, currentObservationPrompt)
+            ChatTurn(ChatTurn.OBSERVATION, currentObservationPrompt)
 
     fun withFailure(): TaskContext = copy(consecutiveFailures = consecutiveFailures + 1)
 
@@ -199,10 +296,14 @@ data class TaskContext(
             successCriteria.describeList()
         } else emptyList()
 
-        val resolvedLastAction = lastAction ?: trajectory.lastOrNull()?.describeAction()
-        val resolvedLastResult = lastResult ?: executionResults.lastOrNull()?.let { record ->
-            val outcomeTag = if (record.success) "SUCCEEDED" else "FAILED"
-            "step ${record.stepIndex} ${record.actionSummary} -> $outcomeTag: ${record.detail}"
+        val latest = executionResults.lastOrNull()
+        val resolvedLastAction = lastAction ?: latest?.let {
+            if (it.actionId.isNotBlank()) "[action_id=${it.actionId}] ${it.actionSummary}" else it.actionSummary
+        } ?: trajectory.lastOrNull()?.describeAction()
+        val resolvedLastResult = lastResult ?: latest?.let { record ->
+            val prefix = if (record.actionId.isNotBlank()) "[action_id=${record.actionId} | status=${record.status.name}]" else "[status=${record.status.name}]"
+            val ev = record.verificationEvidence?.takeIf { it.isNotBlank() }?.let { " | evidence=$it" }.orEmpty()
+            "$prefix step ${record.stepIndex} ${record.actionSummary}: ${record.detail}$ev"
         } ?: condensedHistory.lastOrNull()
 
         return ExecutorRequest(
