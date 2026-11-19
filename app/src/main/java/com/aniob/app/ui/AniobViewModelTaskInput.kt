@@ -244,7 +244,14 @@ internal fun AniobViewModel.parkTask(pipe: PipelineRun, wait: TaskWaitState, rea
     setPhase(AgentPhase.ASKING, ThinkSource.RULES, reason)
     // A parked task is not running, so the marker must say so: if the process dies now, the
     // recovery card has to report "it was waiting for you", not "it was working".
-    persistRunningMarker(pipe.task, pipe.currentStep, "waiting for you: $reason", verifiedSoFarActions())
+    persistRunningMarker(
+        task = pipe.task,
+        stepIndex = pipe.currentStep,
+        lastKnownEffect = "waiting for you: $reason",
+        verifiedSoFar = verifiedSoFarActions(),
+        taskContext = pipe.taskContext,
+        pendingInstructions = taskInputs?.pendingInstructions()?.map { it.text }.orEmpty()
+    )
     app.eventLogger.info("AniobViewModel", "Task ${pipe.task.id} parked ($wait): $reason")
 }
 
@@ -352,7 +359,9 @@ internal fun AniobViewModel.parkedRunFor(taskId: String): PipelineRun? =
 internal fun AniobViewModel.parkedContext(taskId: String): TaskContext? = parkedRunFor(taskId)?.taskContext
 
 // ---------------------------------------------------------------------------------------------- //
-// Resuming an incomplete / delegated / stopped / paused task on "Proceed" / "Continue" / follow-up
+// Same-process continuation of an incomplete/delegated/stopped/paused task (NOT process-death
+// recovery — process-death restoration uses TaskRecoverySnapshot and always restores as
+// interrupted first before reconciling uncertain dispatches).
 // ---------------------------------------------------------------------------------------------- //
 
 internal fun AniobViewModel.shouldContinueResumableTask(prompt: String): Boolean {

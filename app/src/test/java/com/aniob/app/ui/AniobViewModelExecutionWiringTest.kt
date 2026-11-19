@@ -426,4 +426,79 @@ class AniobViewModelExecutionWiringTest {
         )
         assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED, classifyStepOutcome(verified))
     }
+
+    @Test
+    fun deviceControlEnforcesCallPhoneContactsAndAllFilesAccessIndependently() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        // In Robolectric default shadow state, CALL_PHONE, READ_CONTACTS, and all-files access are off.
+        val callResult = com.aniob.app.device.AniobDeviceControl.execute(
+            context = app,
+            command = com.aniob.core.domain.DeviceCommand.CALL,
+            args = mapOf("contact" to "Mom"),
+            service = null
+        )
+        assertFalse(callResult.ok)
+        assertNotNull(callResult.blockedBy)
+
+        val msgResult = com.aniob.app.device.AniobDeviceControl.execute(
+            context = app,
+            command = com.aniob.core.domain.DeviceCommand.MESSAGE_WHATSAPP,
+            args = mapOf("to" to "Alex", "text" to "hi"),
+            service = null
+        )
+        assertFalse(msgResult.ok)
+        assertNotNull(msgResult.blockedBy)
+
+        val fileResult = com.aniob.app.device.AniobDeviceControl.execute(
+            context = app,
+            command = com.aniob.core.domain.DeviceCommand.FILE_FIND,
+            args = mapOf("query" to "invoice"),
+            service = null
+        )
+        assertFalse(fileResult.ok)
+        assertNotNull(fileResult.blockedBy)
+    }
+
+    @Test
+    fun persistRunningMarkerStoresRecoverySnapshotSeparatelyFromInMemoryContinuation() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+
+        val task = AniobTask(id = "task_pd_1", rawPrompt = "Submit report", status = TaskStatus.RUNNING)
+        val ctx = TaskContext(instruction = "Submit report", taskId = "task_pd_1")
+            .withInstructions(listOf("Attach Q3 PDF"))
+            .recordCorrelatedOutcome(
+                com.aniob.core.domain.ActionExecutionRecord(
+                    actionId = "act_s0_m0_0",
+                    stepIndex = 0,
+                    actionSummary = "tap(Submit)",
+                    status = com.aniob.core.domain.ExecutionOutcomeStatus.UNCERTAIN,
+                    detail = "In flight when killed"
+                )
+            )
+
+        vm.persistRunningMarker(
+            task = task,
+            stepIndex = 1,
+            lastKnownEffect = "tap(Submit)",
+            verifiedSoFar = emptyList(),
+            taskContext = ctx,
+            pendingInstructions = listOf("Attach Q3 PDF")
+        )
+
+        val loaded = vm.loadPersistedRecoverySnapshot()
+        assertNotNull(loaded)
+        assertEquals("task_pd_1", loaded!!.taskId)
+        assertEquals("Submit report", loaded.originalInstruction)
+        assertEquals("RUNNING", loaded.lastKnownTaskStatus)
+        assertEquals(listOf("Attach Q3 PDF"), loaded.pendingInstructions)
+        assertEquals("act_s0_m0_0", loaded.executionResults.single().actionId)
+        assertEquals(
+            com.aniob.core.domain.ExecutionOutcomeStatus.UNCERTAIN,
+            loaded.executionResults.single().status
+        )
+
+        vm.clearRunningMarker()
+        assertNull(vm.loadPersistedRecoverySnapshot())
+    }
 }

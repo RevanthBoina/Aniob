@@ -22,12 +22,59 @@ data class ChatTurn(
         const val MAX_TURNS = 12
 
         /**
+         * Trims [turns] to at most [maxTurns] from the newest end without splitting an
+         * `(ASSISTANT, TOOL)` pair that shares a non-null [actionId], and never leaves an
+         * orphaned [TOOL] result at the head without its corresponding [ASSISTANT] action.
+         */
+        fun trimPreservingActionPairs(turns: List<ChatTurn>, maxTurns: Int): List<ChatTurn> {
+            if (maxTurns <= 0 || turns.isEmpty()) return emptyList()
+            // Group into atomic units: consecutive [ASSISTANT(actionId=X), TOOL(actionId=X)] share one unit.
+            val units = mutableListOf<List<ChatTurn>>()
+            var i = 0
+            while (i < turns.size) {
+                val cur = turns[i]
+                val next = turns.getOrNull(i + 1)
+                if (cur.role == ASSISTANT && !cur.actionId.isNullOrBlank() &&
+                    next != null && next.role == TOOL && next.actionId == cur.actionId
+                ) {
+                    units.add(listOf(cur, next))
+                    i += 2
+                } else {
+                    units.add(listOf(cur))
+                    i += 1
+                }
+            }
+            val selected = ArrayDeque<List<ChatTurn>>()
+            var total = 0
+            for (idx in units.indices.reversed()) {
+                val unit = units[idx]
+                if (total + unit.size > maxTurns) break
+                selected.addFirst(unit)
+                total += unit.size
+            }
+            val flattened = selected.flatten()
+            // Never start with an orphaned TOOL turn whose ASSISTANT action was trimmed away.
+            val dropLeadingOrphanTool = flattened.dropWhile { turn ->
+                turn.role == TOOL && !turn.actionId.isNullOrBlank() &&
+                    flattened.none { it.role == ASSISTANT && it.actionId == turn.actionId }
+            }
+            return dropLeadingOrphanTool
+        }
+
+        /**
          * Renders [turns] as one prompt for a provider that only accepts a single string.
          * A lone user turn is returned unchanged, so a first message is byte-identical to the
          * request sent before conversation memory existed.
          */
         fun flatten(turns: List<ChatTurn>): String {
-            val window = turns.takeLast(MAX_TURNS)
+            val window = when {
+                turns.size <= MAX_TURNS -> turns
+                turns.last().role == OBSERVATION && turns.first().role == USER && MAX_TURNS >= 3 -> {
+                    val middle = trimPreservingActionPairs(turns.subList(1, turns.size - 1), MAX_TURNS - 2)
+                    listOf(turns.first()) + middle + turns.last()
+                }
+                else -> trimPreservingActionPairs(turns, MAX_TURNS)
+            }
             if (window.size <= 1) return window.firstOrNull()?.content.orEmpty()
             val earlier = window.dropLast(1).joinToString("\n") { turn ->
                 when (turn.role) {

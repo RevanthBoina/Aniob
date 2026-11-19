@@ -35,8 +35,22 @@ object AniobCapabilityManifest {
         val dndAccess: Boolean = true
     )
 
-    /** Why [command] cannot run right now, as an instruction the user can act on; null when it can. */
-    fun blockedReason(command: DeviceCommand, state: DeviceState): String? = when {
+    /**
+     * Why [command] cannot run right now, as an instruction the user can act on; null when it can.
+     *
+     * Enforces all runtime gates in [DeviceState]: accessibility, notification access, DND access,
+     * location, phone call permission ([DeviceState.callPhone]), contacts lookup
+     * ([DeviceState.contacts]), and external storage / all-files access ([DeviceState.allFilesAccess]).
+     * When [args] is supplied (e.g. an explicit phone number instead of a contact name, or an
+     * explicit SAF `uri` for `file_open`/`file_read`), commands that do not need the missing
+     * permission remain permitted; when [args] is empty (capability catalogue inspection),
+     * permission-gated commands are reported unavailable whenever their permission is off.
+     */
+    fun blockedReason(
+        command: DeviceCommand,
+        state: DeviceState,
+        args: Map<String, String> = emptyMap()
+    ): String? = when {
         command.needsAccessibility && !state.accessibility ->
             "Turn on Aniob in Settings > Accessibility"
         command.needsNotificationAccess && !state.notificationAccess ->
@@ -45,7 +59,41 @@ object AniobCapabilityManifest {
             "Allow Aniob in Settings > Notifications > Do Not Disturb access"
         command == DeviceCommand.LOCATION_SHARE && !state.location ->
             "Allow location for Aniob in the app's permissions"
+        command == DeviceCommand.CALL && !state.callPhone ->
+            "Allow Phone permission (CALL_PHONE) for Aniob in Settings > Apps > Aniob > Permissions"
+        needsContactsFor(command, args) && !state.contacts ->
+            "Allow Contacts permission for Aniob in Settings > Apps > Aniob > Permissions"
+        needsAllFilesFor(command, args) && !state.allFilesAccess ->
+            "Allow \"All files access\" for Aniob in Settings > Apps > Special app access > All files access"
         else -> null
+    }
+
+    private fun needsContactsFor(command: DeviceCommand, args: Map<String, String>): Boolean {
+        if (command != DeviceCommand.CALL &&
+            command != DeviceCommand.MESSAGE_WHATSAPP &&
+            command != DeviceCommand.MESSAGE_TELEGRAM &&
+            command != DeviceCommand.MESSAGE_SMS
+        ) return false
+        if (args.isEmpty()) return true
+        if (!args["contact"].isNullOrBlank()) return true
+        val hasDirectNumber = !args["number"].isNullOrBlank() || !args["phone"].isNullOrBlank()
+        if (hasDirectNumber) return false
+        if (command == DeviceCommand.MESSAGE_TELEGRAM) {
+            val to = args["to"].orEmpty().trim()
+            if (to.startsWith("@") || (to.isNotEmpty() && to.none { it.isLetter() })) return false
+        }
+        return true
+    }
+
+    private fun needsAllFilesFor(command: DeviceCommand, args: Map<String, String>): Boolean {
+        if (command != DeviceCommand.FILE_FIND &&
+            command != DeviceCommand.FILE_OPEN &&
+            command != DeviceCommand.FILE_READ
+        ) return false
+        if ((command == DeviceCommand.FILE_OPEN || command == DeviceCommand.FILE_READ) &&
+            !args["uri"].isNullOrBlank()
+        ) return false
+        return true
     }
 
     /** True when [command] can actually execute under the current runtime permissions/services. */

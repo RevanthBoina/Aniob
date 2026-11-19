@@ -682,7 +682,11 @@ internal suspend fun AniobViewModel.pipelinePropose(
                         "Accessibility is OFF: enable Aniob in Settings > Accessibility to run ${loopAction.toolName}, or use an available DEVICE_CONTROL command."
                     }
                     loopAction is AniobAction.DeviceControl ->
-                        com.aniob.core.capability.AniobCapabilityManifest.blockedReason(loopAction.command, capabilityState)
+                        com.aniob.core.capability.AniobCapabilityManifest.blockedReason(
+                            loopAction.command,
+                            capabilityState,
+                            loopAction.args
+                        )
                     else -> null
                 }
                 val effectiveAction = when {

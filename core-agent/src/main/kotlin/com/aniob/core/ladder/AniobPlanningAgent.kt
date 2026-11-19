@@ -8,7 +8,8 @@ data class TaskProgress(
     val pending: List<String>,
     val summary: String,
     val failed: List<String> = emptyList(),
-    val uncertain: List<String> = emptyList()
+    val uncertain: List<String> = emptyList(),
+    val notExecuted: List<String> = emptyList()
 )
 
 /**
@@ -73,6 +74,9 @@ class AniobPlanningAgent {
                     it.status == ExecutionOutcomeStatus.UNCERTAIN
             }
             .map { "${it.actionSummary}: ${it.detail}" }
+        val notExecuted = taskContext.executionResults
+            .filter { it.status == ExecutionOutcomeStatus.NOT_EXECUTED }
+            .map { "${it.actionSummary}: ${it.detail}" }
         val pending = buildList {
             add(taskContext.instruction)
             taskContext.additionalInstructions.filter { it.isNotBlank() }.forEach { add(it) }
@@ -88,13 +92,17 @@ class AniobPlanningAgent {
             if (uncertain.isNotEmpty()) {
                 append(" | Uncertain(${uncertain.size}): ${uncertain.takeLast(2).joinToString("; ")}")
             }
+            if (notExecuted.isNotEmpty()) {
+                append(" | NotExecuted(${notExecuted.size}): ${notExecuted.takeLast(2).joinToString("; ")}")
+            }
         }
         return TaskProgress(
             completed = completed,
             pending = pending,
             summary = summary,
             failed = failed,
-            uncertain = uncertain
+            uncertain = uncertain,
+            notExecuted = notExecuted
         )
     }
 }

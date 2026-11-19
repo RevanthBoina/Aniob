@@ -345,8 +345,9 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
                     )
                 }
             }
-            // Keep incomplete/delegated/paused/stopped runs resumable in the active chat so
-            // "Proceed" or "Continue" resumes the same task instead of losing its context.
+            // Keep incomplete/delegated/paused/stopped runs resumable in-memory in the same process
+            // so "Proceed" or "Continue" resumes the same task without losing its context.
+            // (Process-death recovery is handled separately via TaskRecoverySnapshot.)
             lastResumablePipeline = if (finalTaskStatus == TaskStatus.SUCCESS) null else pipe
 
             val summaryCard = buildSummary(

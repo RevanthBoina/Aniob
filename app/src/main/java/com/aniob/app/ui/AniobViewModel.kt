@@ -124,14 +124,21 @@ class AniobViewModel(
     internal var activeTaskJob: kotlinx.coroutines.Job? = null
     @Volatile internal var activeGeneration: Long = 0L
 
-    // Same-task continuation (Parts 4/5). The run is published here so a new instruction, a
-    // clarification answer or a manual handover reaches the RUNNING task instead of replacing it.
+    // Same-process continuation only (Parts 4/5). These fields live strictly in memory:
+    //  - activePipeline / taskInputs route mid-task instructions & parked clarification answers
+    //    within the current process;
+    //  - lastResumablePipeline continues an incomplete/paused/stopped run in the same process.
+    // Cross-process process-death recovery is separate (`pendingInterruptedSnapshot` +
+    // `TaskRecoverySnapshot` + Room `ActiveTaskEntity`), restoring the task as interrupted and
+    // reconciling uncertain dispatches rather than assuming in-memory state survives process kill.
     @Volatile internal var activePipeline: PipelineRun? = null
-    /** Incomplete/paused/delegated run retained in the active chat so "Proceed"/"Continue" resumes it. */
+    /** Incomplete/paused/delegated run retained in-memory in the same process for "Proceed"/"Continue". */
     @Volatile internal var lastResumablePipeline: PipelineRun? = null
     @Volatile internal var taskInputs: TaskInputChannel? = null
     @Volatile internal var inputSignal: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     @Volatile internal var taskWaitState: TaskWaitState = TaskWaitState.NONE
+    /** Persisted process-death recovery snapshot restored on cold start (never auto-replayed). */
+    @Volatile internal var pendingInterruptedSnapshot: com.aniob.core.run.TaskRecoverySnapshot? = null
 
     /** Question raised by the last device command that failed because it needed a choice. */
     @Volatile internal var pendingDeviceClarify: com.aniob.core.grillme.GrillQuestion? = null

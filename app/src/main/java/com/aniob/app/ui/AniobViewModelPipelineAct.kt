@@ -44,10 +44,12 @@ internal suspend fun AniobViewModel.pipelineAct(
         var plannedBurst = proposed.plannedBurst
         // Recorded BEFORE dispatch: if the process dies now, that dispatch is the uncertain effect.
         persistRunningMarker(
-            task,
-            currentStep + 1,
-            proposal.action.describeAction(),
-            verifiedActions.map { it.describeAction() }
+            task = task,
+            stepIndex = currentStep + 1,
+            lastKnownEffect = proposal.action.describeAction(),
+            verifiedSoFar = verifiedActions.map { it.describeAction() },
+            taskContext = taskContext,
+            pendingInstructions = taskInputs?.pendingInstructions()?.map { it.text }.orEmpty()
         )
 
         val captureLambda: suspend () -> AniobScreenState = {
@@ -367,7 +369,10 @@ internal suspend fun AniobViewModel.pipelineAct(
                             detail = memberDetail,
                             screenPackage = memberScreen.packageName,
                             screenHash = memberScreen.treeHash,
-                            verificationEvidence = memberEvidence
+                            verificationEvidence = memberEvidence,
+                            preScreenHash = currentScreen.treeHash,
+                            expectedPackage = (memberStep.action as? AniobAction.OpenApp)?.packageName.orEmpty(),
+                            expectedText = (memberStep.action as? AniobAction.InputText)?.text.orEmpty()
                         )
                     )
                 }
@@ -375,27 +380,22 @@ internal suspend fun AniobViewModel.pipelineAct(
                     run.memberResults.size < plan.actions.size
                 ) {
                     val dropped = plan.actions.drop(run.memberResults.size)
-                    val remainderSummary = dropped.joinToString(" -> ") { it.describeAction() }
-                        .ifBlank { "burst_remainder" }
-                    val stopStatus = when (run.stop) {
-                        com.aniob.core.execution.ActionBurstRunner.Stop.BLOCKED,
-                        com.aniob.core.execution.ActionBurstRunner.Stop.ABORTED -> ExecutionOutcomeStatus.FAILED
-                        else -> ExecutionOutcomeStatus.UNCERTAIN
+                    val stopReason = run.detail.ifBlank {
+                        "burst stopped early (${run.stop.name}) after ${run.memberResults.size}/${plan.actions.size} action(s)"
                     }
-                    val stopDetail = run.detail.ifBlank {
-                        "Burst ended (${run.stop.name}) after ${run.memberResults.size}/${plan.actions.size} action(s)"
-                    }
-                    taskContext = taskContext.recordCorrelatedOutcome(
-                        ActionExecutionRecord(
-                            actionId = taskContext.allocateActionId(currentStep, run.memberResults.size),
-                            stepIndex = currentStep,
-                            actionSummary = remainderSummary,
-                            status = stopStatus,
-                            detail = stopDetail,
-                            screenPackage = currentScreen.packageName,
-                            screenHash = currentScreen.treeHash
+                    dropped.forEachIndexed { offset, skippedAction ->
+                        taskContext = taskContext.recordCorrelatedOutcome(
+                            ActionExecutionRecord(
+                                actionId = taskContext.allocateActionId(currentStep, run.memberResults.size + offset),
+                                stepIndex = currentStep,
+                                actionSummary = skippedAction.describeAction(),
+                                status = ExecutionOutcomeStatus.NOT_EXECUTED,
+                                detail = "Not executed ($stopReason; safe to plan again)",
+                                screenPackage = currentScreen.packageName,
+                                screenHash = currentScreen.treeHash
+                            )
                         )
-                    )
+                    }
                 }
                 val missedAction = run.missedAction
                 val missedNode = run.missedNode
@@ -585,7 +585,10 @@ internal suspend fun AniobViewModel.pipelineAct(
                     detail = actualDetail,
                     screenPackage = resultScreen.packageName,
                     screenHash = resultScreen.treeHash,
-                    verificationEvidence = stepEvidence
+                    verificationEvidence = stepEvidence,
+                    preScreenHash = currentScreen.treeHash,
+                    expectedPackage = (res.action as? AniobAction.OpenApp)?.packageName.orEmpty(),
+                    expectedText = (res.action as? AniobAction.InputText)?.text.orEmpty()
                 )
             )
         }

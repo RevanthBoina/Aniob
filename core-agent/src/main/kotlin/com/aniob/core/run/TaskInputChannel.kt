@@ -79,6 +79,10 @@ enum class TaskWaitState {
  *
  * Not thread-safe by design decision? No — it IS synchronised, because the user's submission runs
  * on the main thread while the pipeline runs on a worker, and both touch it.
+ *
+ * Scope boundary: [TaskInputChannel] is strictly an **in-memory, same-process** continuation
+ * channel. It does not survive Android process death; process-death restoration is handled
+ * separately by [TaskRecoverySnapshot] and `AniobInterruptedTask`.
  */
 class TaskInputChannel(
     val taskId: String,
