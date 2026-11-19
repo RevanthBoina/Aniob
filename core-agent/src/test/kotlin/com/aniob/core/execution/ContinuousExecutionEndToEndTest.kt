@@ -37,10 +37,11 @@ class ContinuousExecutionEndToEndTest {
 
     private fun node(id: Int, text: String, clickable: Boolean = true) = AniobNode(
         id = id,
+        className = "android.widget.Button",
         text = text,
-        clickable = clickable,
-        enabled = true,
-        visible = true,
+        isClickable = clickable,
+        isEnabled = true,
+        isVisibleToUser = true,
         bounds = AniobRect(10, id * 100, 300, id * 100 + 80)
     )
 
@@ -83,7 +84,7 @@ class ContinuousExecutionEndToEndTest {
         val stepPipeline = StepPipeline()
         var ctx = TaskContext(
             instruction = "Open Display settings",
-            successCriteria = SuccessCriteria(expectedTexts = listOf("Brightness"))
+            successCriteria = SuccessCriteria(mustContainText = listOf("Brightness"))
         )
 
         for (step in 0..2) {
