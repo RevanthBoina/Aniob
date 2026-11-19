@@ -266,6 +266,8 @@ object TaskContinuation {
         if (cleaned.isEmpty()) return ctx
         var updated = ctx.copy(
             grillAnswers = ctx.grillAnswers + cleaned,
+            condensedHistory = ctx.condensedHistory +
+                cleaned.map { (question, answer) -> "the user answered \"$question\": \"$answer\"" },
             rejectedFinishCount = 0
         )
         cleaned.forEach { (question, answer) ->
