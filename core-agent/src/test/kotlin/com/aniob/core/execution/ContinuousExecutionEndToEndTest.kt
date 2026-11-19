@@ -225,10 +225,8 @@ class ContinuousExecutionEndToEndTest {
 
     @Test
     fun `burst runner preserves individual member results and never treats unverified or failed burst as success`() = runBlocking {
-        val origin = screen("com.example.app", "h0", node(1, "Next"), node(2, "Confirm"))
-        // Action 1 updates the focused field without navigating away (same structural screen h0,
-        // node 1 changes label to "Next*"), so ActionBurstRunner executes member 2, which fails.
-        val afterFirst = screen("com.example.app", "h0", node(1, "Next*"), node(2, "Confirm"))
+        val origin = screen("com.example.app", "h0", node(1, "Next"), node(2, "Proceed"))
+        val afterFirst = screen("com.example.app", "h1", node(1, "Next"), node(2, "Proceed"))
         val pipeline = StepPipeline()
         var currentLive = origin
 
@@ -241,11 +239,12 @@ class ContinuousExecutionEndToEndTest {
                     proposal = StepPipeline.Proposal.Model(action, "OMNIROUTE_CLOUD"),
                     capture = { live },
                     dispatch = { act ->
-                        if ((act.semanticTarget() as? SemanticTarget.SomIndex)?.index == 1) {
+                        // StepPipeline retargets SomIndex -> Text("Next"), so inspect the target text.
+                        if (act.describeAction().contains("Next")) {
                             currentLive = afterFirst
-                            StepPipeline.DispatchOutcome(dispatched = true, reason = "tapped 1", screenAfter = afterFirst)
+                            StepPipeline.DispatchOutcome(dispatched = true, reason = "tapped Next", screenAfter = afterFirst)
                         } else {
-                            // Action 2 fails dispatch -> verification fails
+                            // Action 2 fails dispatch -> verification missing, terminalState FAIL
                             StepPipeline.DispatchOutcome(dispatched = false, reason = "target disappeared", screenAfter = afterFirst)
                         }
                     },
@@ -255,7 +254,7 @@ class ContinuousExecutionEndToEndTest {
         )
 
         val burst = ActionBurst(
-            thought = "Tap Next then Confirm",
+            thought = "Tap Next then Proceed",
             actions = listOf(
                 AniobAction.Tap(SemanticTarget.SomIndex(1)),
                 AniobAction.Tap(SemanticTarget.SomIndex(2))
@@ -267,6 +266,7 @@ class ContinuousExecutionEndToEndTest {
         assertEquals(2, outcome.memberResults.size)
         assertEquals(ActionBurstRunner.Stop.BLOCKED, outcome.stop)
         assertTrue(outcome.memberResults[0].verification?.isSuccessful == true)
+        assertEquals(StepResult.TerminalState.FAIL, outcome.memberResults[1].terminalState)
         assertFalse(outcome.memberResults[1].verification?.isSuccessful == true)
     }
 
