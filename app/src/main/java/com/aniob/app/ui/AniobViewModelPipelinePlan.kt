@@ -100,11 +100,31 @@ internal suspend fun AniobViewModel.pipelinePropose(
                         }
                         screenBefore = landed ?: screenBefore
                         if (shortcut.requiresObservation) {
-                            if (landed != null) {
+                            val intentActionId = taskContext.allocateActionId(currentStep, 0)
+                            val intentStatus = if (landed != null) {
                                 app.researchTelemetry.markIntentShortcutUsed()
+                                ExecutionOutcomeStatus.VERIFIED
                             } else {
                                 app.researchTelemetry.recordShortcutAttempt(attempted = true, degraded = true, reason = "Screen did not land")
+                                ExecutionOutcomeStatus.UNCERTAIN
                             }
+                            val intentSummary = "DEVICE_CONTROL(${shortcut.label ?: shortcut.action})"
+                            val intentDetail = if (landed != null) {
+                                "Landed on ${landed.packageName}"
+                            } else {
+                                "System intent dispatched; target screen did not confirm within settle window"
+                            }
+                            taskContext = taskContext.recordCorrelatedOutcome(
+                                ActionExecutionRecord(
+                                    actionId = intentActionId,
+                                    stepIndex = currentStep,
+                                    actionSummary = intentSummary,
+                                    status = intentStatus,
+                                    detail = intentDetail,
+                                    screenPackage = landed?.packageName ?: screenBefore?.packageName.orEmpty(),
+                                    screenHash = landed?.treeHash.orEmpty()
+                                )
+                            )
                             currentStep++
                             return PipelineFlow.Continue
                         }
@@ -304,11 +324,14 @@ internal suspend fun AniobViewModel.pipelinePropose(
                 // The cloud path can parse a burst; the local resolver is single-action, so
                 // the local prompt keeps the one-action shape.
                 val burstEnabled = researchMode.actionBursts && !localCanDrive && !burstsSuspended
+                val realProgressSummary = if (taskContext.executionResults.isNotEmpty()) {
+                    planningAgent.summarizeExecution(taskContext).summary
+                } else {
+                    null
+                }
                 val executorRequest = taskContext.buildExecutorRequest(
                     screen = currentScreen,
-                    activeSubgoal = taskProgress?.summary,
-                    lastAction = taskContext.trajectory.lastOrNull()?.describeAction(),
-                    lastResult = taskContext.condensedHistory.lastOrNull(),
+                    activeSubgoal = realProgressSummary,
                     burstMode = burstEnabled,
                     // The hint describes a plan that was split across screens, which only the
                     // burst contract understands; a single-action reply would just read it as
@@ -319,20 +342,23 @@ internal suspend fun AniobViewModel.pipelinePropose(
                 // A planning call spends the carried plan: it is context for exactly one
                 // request, and a second copy would describe a screen the model has left.
                 deferredPlanHint = null
-                val configuredPrompt = configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call."
+                val configuredPrompt = configLoader.prompt("system_prompt.txt")
+                    ?: "System: You are Aniob, a continuous Android agent. Respond with valid JSON action(s) matching the Aniob schema."
                 // The model is told, every run, that it is wired into this phone, which direct
                 // commands exist, and which of them are switched off right now. A small
                 // on-device model gets the terse catalogue; a cloud model the full one.
                 val capabilityState = AniobCapabilityProbe.snapshot(app)
                 fun withCapabilities(base: String, compact: Boolean): String =
-                    base + "\n\n" + com.aniob.core.capability.AniobCapabilityManifest.render(capabilityState, compact)
+                    base + "\n\n" + com.aniob.core.capability.AniobCapabilityManifest.render(
+                        state = capabilityState,
+                        compact = compact,
+                        executableOnly = true
+                    )
                 val baseSystemPrompt = withCapabilities(configuredPrompt, compact = localCanDrive)
                 val systemPrompt = if (burstEnabled) {
-                    // The bundled prompt insists on one action per reply; the plan contract
-                    // is appended so it overrides that line instead of fighting it.
                     baseSystemPrompt +
-                        "\n\nMULTI-ACTION PLANNING: ignore the single-action rule above. Reply with ONE " +
-                        "compact JSON object and nothing else:\n" +
+                        "\n\nMULTI-ACTION PLANNING: You may emit ONE compact JSON object " +
+                        "representing either a single action or a short grounded action sequence:\n" +
                         "{\"thought\": \"brief 10-word plan\", \"is_complete\": false, " +
                         "\"actions\": [{\"type\": \"tap|input|long_press|scroll|back|open_app|wait|device_control\", " +
                         "\"id\": 2, \"text\": \"only for input\", \"submit\": true}]}\n" +
@@ -358,6 +384,7 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     )
                 )
                 val activePrompt = assembledPrompt.text
+                val priorHistory = taskContext.priorConversationTurns()
 
                 // The plain one-action prompts, for any model that cannot read a burst contract.
                 fun singleActionPrompts(): Pair<String, String> {
@@ -375,9 +402,7 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     }
                     val singleObservation = taskContext.buildExecutorRequest(
                         screen = currentScreen,
-                        activeSubgoal = taskProgress?.summary,
-                        lastAction = taskContext.trajectory.lastOrNull()?.describeAction(),
-                        lastResult = taskContext.condensedHistory.lastOrNull(),
+                        activeSubgoal = realProgressSummary,
                         burstMode = false
                     ).toPromptString()
                     val singleTail = com.aniob.core.speed.PromptAssembler.Tail(observation = singleObservation)
@@ -483,6 +508,7 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     setPhase(AgentPhase.PLANNING, ThinkSource.MODEL_CLOUD, provider = "OmniRoute")
                     val raw = omniroute.getNextActionRawStreaming(
                         systemPrompt = systemPrompt,
+                        history = priorHistory,
                         userPrompt = activePrompt,
                         screenshotBase64 = screenshotBase64,
                         maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512,
@@ -523,9 +549,10 @@ internal suspend fun AniobViewModel.pipelinePropose(
                                     val repairMsg = "${AniobStructuredOutput.repairPrompt(text)}\n\nOriginal Request:\n$executorPrompt"
                                     val repaired = runCatching {
                                         omniroute.getNextActionRaw(
-                                            systemPrompt,
-                                            repairMsg,
-                                            null
+                                            systemPrompt = systemPrompt,
+                                            history = priorHistory,
+                                            userPrompt = repairMsg,
+                                            screenshotBase64 = null
                                         ).getOrNull()
                                     }.getOrNull()
                                     if (repaired != null) {
@@ -645,10 +672,31 @@ internal suspend fun AniobViewModel.pipelinePropose(
                 }
 
                 val targetSom = loopAction.semanticTarget() as? SemanticTarget.SomIndex
-                val effectiveAction = if (targetSom != null && currentScreen.nodes.none { it.id == targetSom.index }) {
-                    AniobAction.Fail("Node id ${targetSom.index} not present on current screen")
-                } else {
-                    loopAction
+                val capabilityBlock = when {
+                    !capabilityState.accessibility && (
+                        loopAction.semanticTarget() != null ||
+                            loopAction is AniobAction.Swipe ||
+                            loopAction is AniobAction.PressKey
+                        ) -> {
+                        plannedBurst = null
+                        "Accessibility is OFF: enable Aniob in Settings > Accessibility to run ${loopAction.toolName}, or use an available DEVICE_CONTROL command."
+                    }
+                    loopAction is AniobAction.DeviceControl ->
+                        com.aniob.core.capability.AniobCapabilityManifest.blockedReason(
+                            loopAction.command,
+                            capabilityState,
+                            loopAction.args
+                        )
+                    else -> null
+                }
+                val effectiveAction = when {
+                    capabilityBlock != null -> {
+                        plannedBurst = null
+                        AniobAction.Fail(capabilityBlock)
+                    }
+                    targetSom != null && currentScreen.nodes.none { it.id == targetSom.index } ->
+                        AniobAction.Fail("Node id ${targetSom.index} not present on current screen")
+                    else -> loopAction
                 }
 
                 proposal = StepPipeline.Proposal.Model(effectiveAction, primaryProvider)

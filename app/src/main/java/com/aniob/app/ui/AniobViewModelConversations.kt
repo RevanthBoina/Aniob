@@ -36,6 +36,7 @@ internal fun AniobViewModel.setActiveConversation(id: String) {
 /** A correction, queued follow-up or contextual device command must not target another chat. */
 internal fun AniobViewModel.clearConversationTaskContext() {
     lastCompletedLearningSnapshot = null
+    lastResumablePipeline = null
     taskStickyTarget = null
     conversationPrefs.edit().remove("queued_prompt").apply()
     _uiState.update { it.copy(activeTask = null, lastSealedTaskId = null, lastSealedOutcome = null,
@@ -219,18 +220,22 @@ internal fun AniobViewModel.buildSummary(
 }
 
 /**
- * Persists the running marker in Room so a process death can be reviewed honestly on next open.
+ * Persists the running marker in Room plus a structured [com.aniob.core.run.TaskRecoverySnapshot]
+ * so a process death can restore the task as interrupted on next open.
  *
- * PART 6: the marker is deliberately NOT a checkpoint. It records (a) what Aniob had already seen
- * verified and (b) which action may have reached an external app without being confirmed; nothing in
- * it is ever executed again automatically. The two parts are prefixed so the recovery card can tell
- * "already done" apart from "unknown, go and look".
+ * Scope boundary: in-memory same-process continuation uses `TaskInputChannel` / `activePipeline` /
+ * `lastResumablePipeline`, which do NOT survive process death. This marker/snapshot stores the
+ * original task, correlated action IDs, execution outcomes, pending instructions, and last known
+ * task status so cold restart restores the task as interrupted and reconciles any uncertain
+ * dispatch before continuing — without blindly replaying interrupted actions.
  */
 internal fun AniobViewModel.persistRunningMarker(
     task: AniobTask,
     stepIndex: Int,
     lastKnownEffect: String = "",
-    verifiedSoFar: List<String> = emptyList()
+    verifiedSoFar: List<String> = emptyList(),
+    taskContext: TaskContext? = null,
+    pendingInstructions: List<String> = emptyList()
 ) {
     val recordedEffect = buildString {
         if (verifiedSoFar.isNotEmpty()) {
@@ -244,6 +249,24 @@ internal fun AniobViewModel.persistRunningMarker(
             append("may have happened: ").append(lastKnownEffect.take(160))
         }
     }.trim()
+    val mergedPending = ((taskContext?.additionalInstructions.orEmpty()) + pendingInstructions)
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+    val snapshot = com.aniob.core.run.TaskRecoverySnapshot(
+        taskId = task.id,
+        originalInstruction = taskContext?.instruction?.ifBlank { task.rawPrompt } ?: task.rawPrompt,
+        lastKnownTaskStatus = task.status.name,
+        currentStep = stepIndex,
+        pendingInstructions = mergedPending,
+        executionResults = taskContext?.executionResults.orEmpty()
+    )
+    runCatching {
+        app.getSharedPreferences(TASK_RECOVERY_PREFS, android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_TASK_RECOVERY_SNAPSHOT, snapshot.toJson())
+            .apply()
+    }
     viewModelScope.launch(Dispatchers.IO) {
         try {
             app.database.activeTaskDao().setActiveTask(
@@ -261,7 +284,23 @@ internal fun AniobViewModel.persistRunningMarker(
     }
 }
 
+private const val TASK_RECOVERY_PREFS = "aniob_task_recovery"
+private const val KEY_TASK_RECOVERY_SNAPSHOT = "snapshot_json"
+
+internal fun AniobViewModel.loadPersistedRecoverySnapshot(): com.aniob.core.run.TaskRecoverySnapshot? =
+    runCatching {
+        val raw = app.getSharedPreferences(TASK_RECOVERY_PREFS, android.content.Context.MODE_PRIVATE)
+            .getString(KEY_TASK_RECOVERY_SNAPSHOT, null)
+        com.aniob.core.run.TaskRecoverySnapshot.fromJson(raw)
+    }.getOrNull()
+
 internal fun AniobViewModel.clearRunningMarker() {
+    runCatching {
+        app.getSharedPreferences(TASK_RECOVERY_PREFS, android.content.Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_TASK_RECOVERY_SNAPSHOT)
+            .apply()
+    }
     viewModelScope.launch(Dispatchers.IO) {
         try {
             app.database.activeTaskDao().clearActiveTasks()
@@ -301,14 +340,40 @@ internal fun AniobViewModel.updateToIdle(transform: (AniobUiState) -> AniobUiSta
 fun AniobViewModel.continueInterruptedTask() {
     if (_uiState.value.isRunning) return
     val summary = _uiState.value.interruptedSummary ?: return
-    val report = com.aniob.core.run.AniobInterruptedTask.parse(
-        taskId = "recovered",
-        prompt = summary.prompt,
-        step = summary.steps,
-        lastKnownEffect = summary.evidence.joinToString("; ") { item ->
-            if (item.met) "verified: ${item.label}" else "may have happened: ${item.label}"
+    val snapshot = pendingInterruptedSnapshot
+    pendingInterruptedSnapshot = null
+    val liveScreen = AniobAccessibilityService.instance?.captureCurrentScreenState()
+    val continuationPrompt = if (snapshot != null) {
+        val restored = snapshot.restoreAsInterrupted(liveScreen)
+        val verifiedDesc = restored.verifiedExecutionRecords()
+            .joinToString("; ") { "[${it.actionId}] ${it.actionSummary}" }
+        val uncertainDesc = restored.uncertainExecutionRecords()
+            .joinToString("; ") { "[${it.actionId}] ${it.actionSummary} (${it.detail})" }
+        val pendingDesc = restored.additionalInstructions.joinToString("; ")
+        buildString {
+            append(restored.instruction)
+            if (pendingDesc.isNotBlank()) {
+                append("\nPending user instructions: ").append(pendingDesc)
+            }
+            if (verifiedDesc.isNotBlank()) {
+                append("\nAlready verified before restart (do not repeat): ").append(verifiedDesc)
+            }
+            if (uncertainDesc.isNotBlank()) {
+                append("\nUncertain dispatch after restart (check live screen first; do not blindly replay): ")
+                append(uncertainDesc)
+            }
         }
-    )
+    } else {
+        val report = com.aniob.core.run.AniobInterruptedTask.parse(
+            taskId = "recovered",
+            prompt = summary.prompt,
+            step = summary.steps,
+            lastKnownEffect = summary.evidence.joinToString("; ") { item ->
+                if (item.met) "verified: ${item.label}" else "may have happened: ${item.label}"
+            }
+        )
+        report.continuationPrompt()
+    }
     clearRunningMarker()
     _uiState.update {
         it.copy(
@@ -317,11 +382,12 @@ fun AniobViewModel.continueInterruptedTask() {
         )
     }
     app.eventLogger.info("AniobViewModel", "User started a safe continuation of an interrupted task")
-    submitTask(report.continuationPrompt())
+    submitTask(continuationPrompt)
 }
 
 /** Dismisses the interrupted card without continuing: the marker is cleared too, so it cannot return. */
 fun AniobViewModel.dismissInterruptedTask() {
+    pendingInterruptedSnapshot = null
     clearRunningMarker()
     _uiState.update { it.copy(interruptedSummary = null) }
 }
@@ -379,39 +445,55 @@ internal fun AniobViewModel.restoreInterruptedSummary() {
 
         if (interrupted != null) return@launch
 
+        val persistedSnapshot = loadPersistedRecoverySnapshot()
         val marker = try {
             app.database.activeTaskDao().getActiveTask()
-        } catch (_: Exception) { null } ?: return@launch
+        } catch (_: Exception) { null }
+        if (marker == null && persistedSnapshot == null) return@launch
 
+        val recoveredTaskId = marker?.taskId ?: persistedSnapshot?.taskId.orEmpty()
         // If a task is currently executing with this taskId, it is live, not an interrupted prior task
-        if (_uiState.value.isRunning && _uiState.value.activeTask?.id == marker.taskId) {
+        if (_uiState.value.isRunning && _uiState.value.activeTask?.id == recoveredTaskId) {
             return@launch
         }
 
-        val prompt = marker.rawPrompt
-        val step = marker.currentStep
-        // PART 6: the marker is explained, never executed. Verified work is listed as verified, an
-        // action that was in flight is listed as unknown, and a task that was waiting for the user
-        // says so — no auto-retry of anything that may already have happened.
+        pendingInterruptedSnapshot = persistedSnapshot
+        val prompt = persistedSnapshot?.originalInstruction?.ifBlank { marker?.rawPrompt.orEmpty() }
+            ?: marker?.rawPrompt.orEmpty()
+        val step = persistedSnapshot?.currentStep ?: marker?.currentStep ?: 0
+        // PART 6: the marker/snapshot is restored honestly as interrupted, never auto-replayed.
         val report = com.aniob.core.run.AniobInterruptedTask.parse(
-            taskId = marker.taskId,
+            taskId = recoveredTaskId,
             prompt = prompt,
             step = step,
-            lastKnownEffect = marker.lastKnownEffect
+            lastKnownEffect = marker?.lastKnownEffect.orEmpty()
         )
+        val snapshotVerified = persistedSnapshot?.executionResults
+            ?.filter { it.status == ExecutionOutcomeStatus.VERIFIED }
+            ?.map { "[${it.actionId}] ${it.actionSummary}" }
+            .orEmpty()
+        val snapshotUncertain = persistedSnapshot?.executionResults
+            ?.filter {
+                it.status == ExecutionOutcomeStatus.UNCERTAIN ||
+                    it.status == ExecutionOutcomeStatus.UNVERIFIED
+            }
+            ?.map { "[${it.actionId}] ${it.actionSummary}" }
+            .orEmpty()
+        val verifiedLabels = if (snapshotVerified.isNotEmpty()) snapshotVerified else report.verified
+        val uncertainLabels = if (snapshotUncertain.isNotEmpty()) snapshotUncertain else report.needsChecking
         val summary = buildSummary(
             prompt = prompt,
             outcome = Outcome.INTERRUPTED,
             steps = step,
             durationMs = 0L,
-            provider = if (report.verified.isEmpty()) "NONE" else "RECOVERED",
-            evidence = report.verified.map { label ->
+            provider = if (verifiedLabels.isEmpty()) "NONE" else "RECOVERED",
+            evidence = verifiedLabels.map { label ->
                 com.aniob.app.ui.model.EvidenceItem(label = label, met = true, detail = "Verified before the interruption")
-            } + report.needsChecking.map { label ->
+            } + uncertainLabels.map { label ->
                 com.aniob.app.ui.model.EvidenceItem(
                     label = label,
                     met = false,
-                    detail = "Effect unknown — check this in the app before continuing"
+                    detail = "Effect unknown — reconcile on the live screen before continuing"
                 )
             },
             reason = report.reason()

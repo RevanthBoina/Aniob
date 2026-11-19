@@ -248,4 +248,60 @@ class AniobExternalAiTriggerTest {
         assertTrue(flat.contains("User: t9"))
         assertTrue(flat.endsWith("User: t20"))
     }
+
+    @Test
+    fun `AniobActionStepProvider renders correlated Assistant, ExecutionResult and ScreenObservation turns without User spoofing`() = kotlinx.coroutines.runBlocking {
+        var capturedSystem = ""
+        var capturedUser = ""
+        val stepProvider = object : AniobActionStepProvider {
+            override suspend fun getNextActionRawStreaming(
+                systemPrompt: String,
+                userPrompt: String,
+                screenshotBase64: String?,
+                maxTokens: Int,
+                onFirstToken: () -> Unit
+            ): Result<String> {
+                capturedSystem = systemPrompt
+                capturedUser = userPrompt
+                onFirstToken()
+                return Result.success("""{"tool":"FINISH","summary":"Done"}""")
+            }
+
+            override suspend fun getNextActionRaw(
+                systemPrompt: String,
+                userPrompt: String,
+                screenshotBase64: String?,
+                maxTokens: Int
+            ): Result<String> = Result.success("""{"tool":"FINISH","summary":"Done"}""")
+        }
+
+        val res = stepProvider.getNextActionRawStreaming(
+            systemPrompt = "Agent system",
+            history = listOf(
+                ChatTurn(ChatTurn.USER, "Original task: Open Settings"),
+                ChatTurn(ChatTurn.ASSISTANT, "open_app(com.android.settings)", actionId = "act_s0_m0_0"),
+                ChatTurn(
+                    ChatTurn.TOOL,
+                    ChatTurn.formatExecutionResult(
+                        actionId = "act_s0_m0_0",
+                        stepIndex = 0,
+                        actionSummary = "open_app(com.android.settings)",
+                        status = "VERIFIED",
+                        detail = "Opened Settings"
+                    ),
+                    actionId = "act_s0_m0_0"
+                )
+            ),
+            userPrompt = "CURRENT OBSERVATION:\nPackage: com.android.settings"
+        )
+
+        assertTrue(res.isSuccess)
+        assertEquals("Agent system", capturedSystem)
+        assertTrue(capturedUser.contains("User: Original task: Open Settings"))
+        assertTrue(capturedUser.contains("Assistant [action_id=act_s0_m0_0]: open_app(com.android.settings)"))
+        assertTrue(capturedUser.contains("ExecutionResult [action_id=act_s0_m0_0]:"))
+        assertTrue(capturedUser.contains("status=VERIFIED"))
+        assertFalse(capturedUser.contains("User: step=0"))
+        assertTrue(capturedUser.contains("ScreenObservation:\nCURRENT OBSERVATION:\nPackage: com.android.settings"))
+    }
 }

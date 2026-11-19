@@ -1,5 +1,66 @@
 package com.aniob.core.run
 
+import com.aniob.core.domain.ActionExecutionRecord
+import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.ExecutionOutcomeStatus
+import com.aniob.core.domain.TaskContext
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+
+/**
+ * Persisted recovery snapshot for process-death boundaries.
+ *
+ * Distinct from live same-process continuation (`TaskInputChannel` / `activePipeline`): this
+ * snapshot records the original task, correlated action IDs, execution outcomes, pending
+ * instructions, and last known task status so a cold restart can restore the task as interrupted
+ * and reconcile any uncertain dispatch before continuing — without blindly replaying actions.
+ */
+data class TaskRecoverySnapshot(
+    val taskId: String,
+    val originalInstruction: String,
+    val lastKnownTaskStatus: String,
+    val currentStep: Int,
+    val pendingInstructions: List<String> = emptyList(),
+    val executionResults: List<ActionExecutionRecord> = emptyList(),
+    val updatedAt: Long = System.currentTimeMillis()
+) {
+    /**
+     * Restores this snapshot as an interrupted [TaskContext] and reconciles any uncertain
+     * dispatches against [liveScreen] when available. Never auto-replays prior actions.
+     */
+    fun restoreAsInterrupted(liveScreen: AniobScreenState? = null): TaskContext {
+        var ctx = TaskContext(
+            instruction = originalInstruction,
+            stepIndex = currentStep,
+            taskId = taskId,
+            additionalInstructions = pendingInstructions.distinct()
+        )
+        for (record in executionResults) {
+            ctx = ctx.recordCorrelatedOutcome(record)
+        }
+        // If the task was still RUNNING when killed and has an unverified/uncertain dispatch
+        // (or no record of a finished step), keep/reconcile it safely rather than re-running.
+        if (liveScreen != null && ctx.hasUncertainExecution()) {
+            ctx = ctx.reconcileUncertainExecutions(liveScreen)
+        }
+        return ctx
+    }
+
+    fun toJson(): String = ADAPTER.toJson(this)
+
+    companion object {
+        private val MOSHI: Moshi = Moshi.Builder()
+            .addLast(KotlinJsonAdapterFactory())
+            .build()
+        private val ADAPTER = MOSHI.adapter(TaskRecoverySnapshot::class.java)
+
+        fun fromJson(raw: String?): TaskRecoverySnapshot? {
+            if (raw.isNullOrBlank()) return null
+            return runCatching { ADAPTER.fromJson(raw) }.getOrNull()
+        }
+    }
+}
+
 /**
  * PART 6 — what a persisted "running" marker may and may not be used for.
  *

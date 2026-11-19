@@ -35,6 +35,14 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
         // instruction is left does this run get to report an outcome.
         var pendingAdded = drainInstructionsInto(pipe)
         while (pendingAdded > 0 && _uiState.value.isRunning) {
+            // New instructions invalidate any earlier terminal state from before they arrived.
+            finalOutcome = null
+            terminalReason = ""
+            completedByIntent = false
+            intentVerdict = null
+            fastLaunchProof = null
+            stepResult = null
+            screenBefore = accessibility?.captureCurrentScreenState() ?: screenBefore
             setPhase(AgentPhase.PLANNING, ThinkSource.RULES, "Continuing with your new instruction")
             _uiState.update { it.copy(isRunning = true) }
             // The step loop's own cleanup already ran when it ended. This continuation is still the
@@ -138,15 +146,22 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
 
         // FINAL GATE (BUG-01/06): SUCCESS may not survive an unmet or unprobed criterion — even
         // when a pipeline step or a model Finish claimed it. This is the single place every run
-        // passes through, so no future code path can quietly opt out of device evidence.
-        if (finalOutcome == Outcome.SUCCESS) {
-            val unsupported = criteriaEvaluations.filter {
-                it.state != com.aniob.core.domain.CriterionState.PASSED && it.description.startsWith("Device state:")
+        // passes through, so no future code path can quietly opt out of real completion checks.
+        if (finalOutcome == Outcome.SUCCESS && !completedByIntent) {
+            val failedCriteria = criteriaEvaluations.filter {
+                it.state == com.aniob.core.domain.CriterionState.FAILED
             }
-            if (unsupported.isNotEmpty()) {
+            val inconclusiveCriteria = criteriaEvaluations.filter {
+                it.state == com.aniob.core.domain.CriterionState.INCONCLUSIVE
+            }
+            if (failedCriteria.isNotEmpty()) {
+                finalOutcome = Outcome.FAILED
+                terminalReason = "Task not completed — unmet criteria: " +
+                    failedCriteria.joinToString("; ") { "${it.description} (${it.detail})" }
+            } else if (inconclusiveCriteria.isNotEmpty()) {
                 finalOutcome = Outcome.UNVERIFIED
-                terminalReason = "Completion not supported by device evidence: " +
-                    unsupported.joinToString("; ") { "${it.description} — ${it.detail}" }
+                terminalReason = "Completion not supported by observable evidence: " +
+                    inconclusiveCriteria.joinToString("; ") { "${it.description} — ${it.detail}" }
             }
         }
         if (finalOutcome == Outcome.SUCCESS &&
@@ -283,6 +298,58 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
         }
 
         fun publishCompletion() {
+            val closedResult = closedOutcome ?: Outcome.FAILED
+            val isDelegated = terminalReason.trim().startsWith("USER_ACTION:", ignoreCase = true)
+            val sealed = AniobOutcomeBridge.seal(
+                outcome = closedResult,
+                reason = terminalReason.ifBlank { resultSummary },
+                evaluations = criteriaEvaluations
+            )
+            val taskVerification = when (sealed.outcome) {
+                com.aniob.core.outcome.RunOutcome.VERIFIED -> TaskVerificationStatus.VERIFIED
+                com.aniob.core.outcome.RunOutcome.FAILED -> TaskVerificationStatus.FAILED
+                else -> TaskVerificationStatus.UNVERIFIED
+            }
+            val finalTaskStatus = when {
+                isDelegated -> TaskStatus.WAITING_FOR_USER
+                closedResult == Outcome.SUCCESS && sealed.outcome == com.aniob.core.outcome.RunOutcome.VERIFIED -> TaskStatus.SUCCESS
+                closedResult == Outcome.UNVERIFIED -> TaskStatus.UNVERIFIED
+                closedResult == Outcome.STOPPED || closedResult == Outcome.INTERRUPTED -> TaskStatus.ABORTED
+                else -> TaskStatus.FAILED
+            }
+            pipe.task = pipe.task.copy(
+                status = finalTaskStatus,
+                verificationStatus = taskVerification,
+                lastExecutionResult = terminalReason.ifBlank { resultSummary },
+                finishedAt = System.currentTimeMillis()
+            )
+            // If the run ended unverified/stopped/interrupted and the last trajectory action has
+            // no correlated VERIFIED execution record yet, record it as UNCERTAIN so a
+            // "Proceed" / "Continue" follow-up reconciles it against the live screen first.
+            if (finalTaskStatus != TaskStatus.SUCCESS) {
+                val lastTrajectoryAction = pipe.taskContext.trajectory.lastOrNull()
+                val lastRecorded = pipe.taskContext.latestExecutionResult()
+                if (lastTrajectoryAction != null &&
+                    (lastRecorded == null || lastRecorded.actionSummary != lastTrajectoryAction.describeAction())
+                ) {
+                    pipe.taskContext = pipe.taskContext.recordCorrelatedOutcome(
+                        ActionExecutionRecord(
+                            actionId = pipe.taskContext.allocateActionId(currentStep, 0),
+                            stepIndex = currentStep,
+                            actionSummary = lastTrajectoryAction.describeAction(),
+                            status = ExecutionOutcomeStatus.UNCERTAIN,
+                            detail = terminalReason.ifBlank { "Task ended before verification (${finalTaskStatus.name})" },
+                            screenPackage = finalScreen.packageName,
+                            screenHash = finalScreen.treeHash
+                        )
+                    )
+                }
+            }
+            // Keep incomplete/delegated/paused/stopped runs resumable in-memory in the same process
+            // so "Proceed" or "Continue" resumes the same task without losing its context.
+            // (Process-death recovery is handled separately via TaskRecoverySnapshot.)
+            lastResumablePipeline = if (finalTaskStatus == TaskStatus.SUCCESS) null else pipe
+
             val summaryCard = buildSummary(
                 prompt = task.rawPrompt,
                 outcome = closedOutcome,
@@ -294,14 +361,7 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
             )
             postSummaryCard(summaryCard)
             // Step 1 invariant: SUCCESS survives only with observer-made evidence; otherwise UNVERIFIED.
-            recordSealedOutcome(
-                task.id,
-                AniobOutcomeBridge.seal(
-                    outcome = closedOutcome ?: Outcome.FAILED,
-                    reason = terminalReason.ifBlank { resultSummary },
-                    evaluations = criteriaEvaluations
-                )
-            )
+            recordSealedOutcome(task.id, sealed)
             setPhase(AgentPhase.IDLE)
             clearRunningMarker()
 
@@ -333,6 +393,7 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
             if (researchMode.immediateCompletion) app.researchTelemetry.prepareBackgroundClosure(task.id)
             updateToIdle {
                 it.copy(
+                    activeTask = pipe.task,
                     statusMessage = resultSummary,
                     lastProviderUsed = primaryProvider,
                     chatMessages = it.chatMessages + assistantMessage,

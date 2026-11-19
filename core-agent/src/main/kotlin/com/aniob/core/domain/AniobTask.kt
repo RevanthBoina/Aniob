@@ -9,6 +9,8 @@ data class AniobTask(
     val clarifiedGoal: String = rawPrompt,
     val grillAnswers: Map<String, String> = emptyMap(),
     val status: TaskStatus = TaskStatus.PENDING,
+    val verificationStatus: TaskVerificationStatus = TaskVerificationStatus.PENDING,
+    val lastExecutionResult: String? = null,
     val steps: List<AniobStepRecord> = emptyList(),
     val startedAt: Long = System.currentTimeMillis(),
     val finishedAt: Long? = null,
@@ -24,9 +26,18 @@ enum class TaskStatus {
     PENDING,
     GRILLING,
     RUNNING,
+    WAITING_FOR_USER,
     SUCCESS,
+    UNVERIFIED,
     FAILED,
     ABORTED
+}
+
+enum class TaskVerificationStatus {
+    PENDING,
+    UNVERIFIED,
+    VERIFIED,
+    FAILED
 }
 
 data class AniobStepRecord(
@@ -36,7 +47,7 @@ data class AniobStepRecord(
     val provider: String,
     val latencyMs: Long,
     val tokensUsed: Int = 0,
-    val verifiedSuccess: Boolean = true,
+    val verifiedSuccess: Boolean = false,
     val failureReason: String? = null,
     val reflectorInvoked: Boolean = false,
     val textEvidence: String? = null,

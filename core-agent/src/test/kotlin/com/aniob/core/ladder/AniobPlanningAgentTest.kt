@@ -1,5 +1,8 @@
 package com.aniob.core.ladder
 
+import com.aniob.core.domain.ActionExecutionRecord
+import com.aniob.core.domain.ExecutionOutcomeStatus
+import com.aniob.core.domain.TaskContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -10,76 +13,81 @@ class AniobPlanningAgentTest {
     private val agent = AniobPlanningAgent()
 
     @Test
-    fun `first update starts pending with user instruction and empty completed`() {
-        val progress = agent.updateProgress(
+    fun `initial recordExecution starts with empty completed and failed and real pending goal`() {
+        val progress = agent.recordExecution(
             userInstruction = "Open settings",
-            previousOperation = null,
-            previousProgress = null,
-            focusContent = null
+            actionDescription = null,
+            verifiedSuccess = false,
+            detail = null,
+            previousProgress = null
         )
 
         assertTrue(progress.completed.isEmpty())
+        assertTrue(progress.failed.isEmpty())
         assertEquals(listOf("Open settings"), progress.pending)
-        assertEquals(
-            "Task: Open settings | Completed 0:  | Pending: Open settings",
-            progress.summary
-        )
+        assertFalse(progress.pending.any { it.startsWith("Continue:") })
     }
 
     @Test
-    fun `subsequent update appends previous operation and continues`() {
-        val first = agent.updateProgress("Open settings", null, null, null)
+    fun `verified execution adds to completed without artificial Continue pending entry`() {
+        val first = agent.recordExecution("Open settings", null, false, null, null)
 
-        val second = agent.updateProgress(
+        val second = agent.recordExecution(
             userInstruction = "Open settings",
-            previousOperation = "Step 0 executed",
+            actionDescription = "open_app(com.android.settings)",
+            verifiedSuccess = true,
+            detail = "Settings foregrounded",
             previousProgress = first,
-            focusContent = "settings screen"
+            additionalInstructions = listOf("turn on dark theme")
         )
 
-        assertEquals(listOf("Step 0 executed"), second.completed)
-        assertEquals(
-            listOf("Continue: Open settings", "Use focus: settings screen"),
-            second.pending
-        )
-        assertTrue(second.summary.contains("Completed 1: Step 0 executed"))
-        assertTrue(second.summary.contains("Pending: Continue: Open settings, Use focus: settings screen"))
-        assertTrue(second.summary.startsWith("Task: Open settings |"))
+        assertEquals(listOf("open_app(com.android.settings) (Settings foregrounded)"), second.completed)
+        assertTrue(second.failed.isEmpty())
+        assertEquals(listOf("Open settings", "turn on dark theme"), second.pending)
+        assertFalse(second.pending.any { it.startsWith("Continue:") })
+        assertTrue(second.summary.contains("Verified(1):"))
     }
 
     @Test
-    fun `completed stops growing once it reaches ten entries`() {
-        var progress: TaskProgress? = null
-        for (i in 0 until 12) {
-            progress = agent.updateProgress(
-                userInstruction = "Task",
-                previousOperation = "Op $i",
-                previousProgress = progress,
-                focusContent = null
+    fun `unverified or failed execution is recorded in failed and never added to completed`() {
+        val progress = agent.recordExecution(
+            userInstruction = "Send message",
+            actionDescription = "tap(Send)",
+            verifiedSuccess = false,
+            detail = "Target node not found",
+            previousProgress = null
+        )
+
+        assertTrue("Unverified/failed actions must never be marked completed", progress.completed.isEmpty())
+        assertEquals(listOf("tap(Send) (Target node not found)"), progress.failed)
+        assertTrue(progress.summary.contains("Failed(1):"))
+    }
+
+    @Test
+    fun `summarizeExecution derives completed, failed, and uncertain directly from TaskContext executionResults`() {
+        val ctx = TaskContext(instruction = "Enable Wi-Fi")
+            .withExecutionResult(
+                ActionExecutionRecord("act_s0_m0_0", 0, "open_app(Settings)", ExecutionOutcomeStatus.VERIFIED, "Opened Settings")
             )
-        }
+            .withExecutionResult(
+                ActionExecutionRecord("act_s1_m0_1", 1, "tap(Wi-Fi)", ExecutionOutcomeStatus.FAILED, "Control missing")
+            )
+            .withExecutionResult(
+                ActionExecutionRecord("act_s2_m0_2", 2, "tap(Toggle)", ExecutionOutcomeStatus.UNVERIFIED, "Verification skipped")
+            )
 
-        // Guard is `size < 10`: ops 0..9 are added, ops 10..11 are refused → hard cap of 10.
-        assertEquals("Completed list must stay at 10", 10, progress!!.completed.size)
-        assertTrue(progress!!.completed.contains("Op 9"))
-        assertFalse(progress!!.completed.contains("Op 10"))
-        // Summary shows only the newest 3 for the completed section
-        assertTrue(progress!!.summary.contains("Completed 10: Op 7, Op 8, Op 9"))
-        assertFalse(progress!!.summary.contains("Op 11"))
+        val progress = agent.summarizeExecution(ctx)
+
+        assertEquals(listOf("open_app(Settings): Opened Settings"), progress.completed)
+        assertEquals(listOf("tap(Wi-Fi): Control missing"), progress.failed)
+        assertEquals(listOf("tap(Toggle): Verification skipped"), progress.uncertain)
+        assertEquals(listOf("Enable Wi-Fi"), progress.pending)
     }
 
     @Test
-    fun `focus content omitted when null`() {
-        val first = agent.updateProgress("Task", "Step 0 executed", null, null)
-        val second = agent.updateProgress("Task", null, first, null)
-
-        assertEquals(listOf("Continue: Task"), second.pending)
-        assertFalse(second.pending.any { it.startsWith("Use focus") })
-    }
-
-    @Test
-    fun `blank previous operation is not added to completed`() {
-        val progress = agent.updateProgress("Task", "   ", null, null)
+    fun `blank action description is ignored`() {
+        val progress = agent.recordExecution("Task", "   ", true, "ok", null)
         assertTrue(progress.completed.isEmpty())
+        assertTrue(progress.failed.isEmpty())
     }
 }

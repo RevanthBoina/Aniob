@@ -278,7 +278,8 @@ class AniobViewModelExecutionWiringTest {
         assertEquals("same task id", "task_91", resumed!!.task.id)
         assertEquals("same step: nothing is replayed from step 0", 2, resumed.currentStep)
         assertEquals("the original goal is unchanged", "Read my two newest emails", resumed.taskContext.instruction)
-        assertEquals(listOf("observed inbox"), resumed.taskContext.condensedHistory)
+        assertTrue("prior condensed history is preserved", resumed.taskContext.condensedHistory.contains("observed inbox"))
+        assertTrue("answered clarification is remembered", resumed.taskContext.condensedHistory.any { it.contains("work@example.com") })
         assertEquals("work@example.com", resumed.taskContext.grillAnswers["app_read.account"])
         assertFalse("the run is no longer parked", resumed.parked)
         assertTrue("the task is running again", vm.uiState.value.isRunning)
@@ -301,5 +302,203 @@ class AniobViewModelExecutionWiringTest {
         vm.taskInputs!!.takeInstructions()
         assertTrue("once processed, closing is allowed again", vm.mayCloseTask())
         vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun proceedOrContinueResumesIncompleteTaskInsteadOfStartingNewContext() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(
+            id = "task_93",
+            rawPrompt = "Install the APK and enable permissions",
+            status = TaskStatus.WAITING_FOR_USER
+        )
+        val pipe = parkedRun(task, step = 3)
+        pipe.parked = false
+        pipe.taskContext = pipe.taskContext
+            .recordCorrelatedOutcome(
+                com.aniob.core.domain.ActionExecutionRecord(
+                    actionId = "act_s1_m0_0",
+                    stepIndex = 1,
+                    actionSummary = "open_app(com.android.packageinstaller)",
+                    status = com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED,
+                    detail = "Opened installer"
+                )
+            )
+            .recordCorrelatedOutcome(
+                com.aniob.core.domain.ActionExecutionRecord(
+                    actionId = "act_s2_m0_1",
+                    stepIndex = 2,
+                    actionSummary = "tap(Install)",
+                    status = com.aniob.core.domain.ExecutionOutcomeStatus.UNCERTAIN,
+                    detail = "USER_ACTION: tap Install in the system dialog"
+                )
+            )
+        vm.lastResumablePipeline = pipe
+
+        assertTrue(vm.shouldContinueResumableTask("Proceed"))
+        assertTrue(vm.shouldContinueResumableTask("Continue"))
+        assertFalse(vm.shouldContinueResumableTask("What is the weather?"))
+
+        val resumed = vm.prepareResumableContinuation("Proceed")
+        assertNotNull(resumed)
+        assertEquals("task_93", resumed!!.task.id)
+        assertEquals("Install the APK and enable permissions", resumed.taskContext.instruction)
+        assertEquals(3, resumed.currentStep)
+        assertEquals(2, resumed.taskContext.executionResults.size)
+        assertEquals(1, resumed.taskContext.verifiedExecutionRecords().size)
+        assertTrue(resumed.taskContext.additionalInstructions.isEmpty())
+        assertTrue(vm.uiState.value.isRunning)
+        assertEquals("task_93", vm.uiState.value.activeTask?.id)
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun proceedAfterStepZeroVerifiedActionAdvancesStepSoStepZeroShortcutNeverReplays() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(
+            id = "task_94",
+            rawPrompt = "Open Settings and enable dark theme",
+            status = TaskStatus.ABORTED
+        )
+        val pipe = parkedRun(task, step = 0)
+        pipe.parked = false
+        pipe.taskContext = pipe.taskContext.recordCorrelatedOutcome(
+            com.aniob.core.domain.ActionExecutionRecord(
+                actionId = "act_s0_m0_0",
+                stepIndex = 0,
+                actionSummary = "open_app(com.android.settings)",
+                status = com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED,
+                detail = "Foreground app confirmed: com.android.settings"
+            )
+        )
+        vm.lastResumablePipeline = pipe
+
+        val resumed = vm.prepareResumableContinuation("Continue")
+        assertNotNull(resumed)
+        assertEquals(1, resumed!!.currentStep)
+        assertEquals(1, resumed.taskContext.verifiedExecutionRecords().size)
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
+    fun classifyStepOutcomeNeverTreatsMissingOrSkippedVerificationAsVerified() {
+        val dummyCtx = TaskContext(instruction = "Tap save")
+        val tapAction = com.aniob.core.domain.AniobAction.Tap(
+            target = com.aniob.core.domain.SemanticTarget.Text("Save")
+        )
+
+        val missingVerify = com.aniob.core.execution.StepResult(
+            action = tapAction,
+            dispatch = com.aniob.core.execution.DispatchCommand.NoOp("done"),
+            verification = null,
+            nextCtx = dummyCtx,
+            terminalState = com.aniob.core.execution.StepResult.TerminalState.CONTINUE
+        )
+        assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.UNVERIFIED, classifyStepOutcome(missingVerify))
+
+        val skippedFast = com.aniob.core.execution.StepResult(
+            action = tapAction,
+            dispatch = com.aniob.core.execution.DispatchCommand.NoOp("done"),
+            verification = com.aniob.core.verifier.DeterministicVerifier.VerificationResult(
+                isExpected = true,
+                durationMs = 10L,
+                reason = "skipped"
+            ),
+            nextCtx = dummyCtx,
+            terminalState = com.aniob.core.execution.StepResult.TerminalState.CONTINUE,
+            verificationSkippedFast = true
+        )
+        assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.UNVERIFIED, classifyStepOutcome(skippedFast))
+
+        val verified = com.aniob.core.execution.StepResult(
+            action = tapAction,
+            dispatch = com.aniob.core.execution.DispatchCommand.NoOp("done"),
+            verification = com.aniob.core.verifier.DeterministicVerifier.VerificationResult(
+                isExpected = true,
+                durationMs = 15L,
+                reason = "Screen changed"
+            ),
+            nextCtx = dummyCtx,
+            terminalState = com.aniob.core.execution.StepResult.TerminalState.CONTINUE,
+            verificationSkippedFast = false
+        )
+        assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED, classifyStepOutcome(verified))
+    }
+
+    @Test
+    fun deviceControlEnforcesCallPhoneContactsAndAllFilesAccessIndependently() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        // In Robolectric default shadow state, CALL_PHONE, READ_CONTACTS, and all-files access are off.
+        val callResult = com.aniob.app.device.AniobDeviceControl.execute(
+            context = app,
+            command = com.aniob.core.domain.DeviceCommand.CALL,
+            args = mapOf("contact" to "Mom"),
+            service = null
+        )
+        assertFalse(callResult.ok)
+        assertNotNull(callResult.blockedBy)
+
+        val msgResult = com.aniob.app.device.AniobDeviceControl.execute(
+            context = app,
+            command = com.aniob.core.domain.DeviceCommand.MESSAGE_WHATSAPP,
+            args = mapOf("to" to "Alex", "text" to "hi"),
+            service = null
+        )
+        assertFalse(msgResult.ok)
+        assertNotNull(msgResult.blockedBy)
+
+        val fileResult = com.aniob.app.device.AniobDeviceControl.execute(
+            context = app,
+            command = com.aniob.core.domain.DeviceCommand.FILE_FIND,
+            args = mapOf("query" to "invoice"),
+            service = null
+        )
+        assertFalse(fileResult.ok)
+        assertNotNull(fileResult.blockedBy)
+    }
+
+    @Test
+    fun persistRunningMarkerStoresRecoverySnapshotSeparatelyFromInMemoryContinuation() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+
+        val task = AniobTask(id = "task_pd_1", rawPrompt = "Submit report", status = TaskStatus.RUNNING)
+        val ctx = TaskContext(instruction = "Submit report", taskId = "task_pd_1")
+            .withInstructions(listOf("Attach Q3 PDF"))
+            .recordCorrelatedOutcome(
+                com.aniob.core.domain.ActionExecutionRecord(
+                    actionId = "act_s0_m0_0",
+                    stepIndex = 0,
+                    actionSummary = "tap(Submit)",
+                    status = com.aniob.core.domain.ExecutionOutcomeStatus.UNCERTAIN,
+                    detail = "In flight when killed"
+                )
+            )
+
+        vm.persistRunningMarker(
+            task = task,
+            stepIndex = 1,
+            lastKnownEffect = "tap(Submit)",
+            verifiedSoFar = emptyList(),
+            taskContext = ctx,
+            pendingInstructions = listOf("Attach Q3 PDF")
+        )
+
+        val loaded = vm.loadPersistedRecoverySnapshot()
+        assertNotNull(loaded)
+        assertEquals("task_pd_1", loaded!!.taskId)
+        assertEquals("Submit report", loaded.originalInstruction)
+        assertEquals("RUNNING", loaded.lastKnownTaskStatus)
+        assertEquals(listOf("Attach Q3 PDF"), loaded.pendingInstructions)
+        assertEquals("act_s0_m0_0", loaded.executionResults.single().actionId)
+        assertEquals(
+            com.aniob.core.domain.ExecutionOutcomeStatus.UNCERTAIN,
+            loaded.executionResults.single().status
+        )
+
+        vm.clearRunningMarker()
+        assertNull(vm.loadPersistedRecoverySnapshot())
     }
 }

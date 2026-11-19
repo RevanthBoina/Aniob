@@ -44,10 +44,12 @@ internal suspend fun AniobViewModel.pipelineAct(
         var plannedBurst = proposed.plannedBurst
         // Recorded BEFORE dispatch: if the process dies now, that dispatch is the uncertain effect.
         persistRunningMarker(
-            task,
-            currentStep + 1,
-            proposal.action.describeAction(),
-            verifiedActions.map { it.describeAction() }
+            task = task,
+            stepIndex = currentStep + 1,
+            lastKnownEffect = proposal.action.describeAction(),
+            verifiedSoFar = verifiedActions.map { it.describeAction() },
+            taskContext = taskContext,
+            pendingInstructions = taskInputs?.pendingInstructions()?.map { it.text }.orEmpty()
         )
 
         val captureLambda: suspend () -> AniobScreenState = {
@@ -337,6 +339,64 @@ internal suspend fun AniobViewModel.pipelineAct(
                 taskContext = run.ctx
                 currentScreen = run.screen
                 lastPlanResult = run.lastResult
+                val burstAllVerified = run.stop == com.aniob.core.execution.ActionBurstRunner.Stop.NONE &&
+                    run.memberResults.size == plan.actions.size &&
+                    run.memberResults.isNotEmpty() &&
+                    run.memberResults.all { classifyStepOutcome(it) == ExecutionOutcomeStatus.VERIFIED }
+                run.memberResults.forEachIndexed { memberIndex, memberStep ->
+                    val memberScreen = memberStep.nextCtx.lastScreenState ?: currentScreen
+                    val memberStatus = classifyStepOutcome(memberStep)
+                    val memberActionId = taskContext.allocateActionId(currentStep, memberIndex)
+                    val memberEvidence = memberStep.verification?.textEvidence
+                        ?: memberStep.verification?.reason?.takeIf { memberStatus == ExecutionOutcomeStatus.VERIFIED }
+                    val memberDetail = when {
+                        memberStep.action is AniobAction.Fail ->
+                            (memberStep.action as AniobAction.Fail).reason
+                        !memberStep.verification?.reason.isNullOrBlank() ->
+                            memberStep.verification!!.reason
+                        memberStatus == ExecutionOutcomeStatus.UNVERIFIED ->
+                            "Verification missing or skipped on pkg=${memberScreen.packageName}"
+                        memberStatus == ExecutionOutcomeStatus.VERIFIED ->
+                            (memberStep.action as? AniobAction.Finish)?.summary ?: "Verified on pkg=${memberScreen.packageName}"
+                        else -> "pkg=${memberScreen.packageName}"
+                    }
+                    taskContext = taskContext.recordCorrelatedOutcome(
+                        ActionExecutionRecord(
+                            actionId = memberActionId,
+                            stepIndex = currentStep,
+                            actionSummary = memberStep.action.describeAction(),
+                            status = memberStatus,
+                            detail = memberDetail,
+                            screenPackage = memberScreen.packageName,
+                            screenHash = memberScreen.treeHash,
+                            verificationEvidence = memberEvidence,
+                            preScreenHash = currentScreen.treeHash,
+                            expectedPackage = (memberStep.action as? AniobAction.OpenApp)?.packageName.orEmpty(),
+                            expectedText = (memberStep.action as? AniobAction.InputText)?.text.orEmpty()
+                        )
+                    )
+                }
+                if (run.stop != com.aniob.core.execution.ActionBurstRunner.Stop.NONE ||
+                    run.memberResults.size < plan.actions.size
+                ) {
+                    val dropped = plan.actions.drop(run.memberResults.size)
+                    val stopReason = run.detail.ifBlank {
+                        "burst stopped early (${run.stop.name}) after ${run.memberResults.size}/${plan.actions.size} action(s)"
+                    }
+                    dropped.forEachIndexed { offset, skippedAction ->
+                        taskContext = taskContext.recordCorrelatedOutcome(
+                            ActionExecutionRecord(
+                                actionId = taskContext.allocateActionId(currentStep, run.memberResults.size + offset),
+                                stepIndex = currentStep,
+                                actionSummary = skippedAction.describeAction(),
+                                status = ExecutionOutcomeStatus.NOT_EXECUTED,
+                                detail = "Not executed ($stopReason; safe to plan again)",
+                                screenPackage = currentScreen.packageName,
+                                screenHash = currentScreen.treeHash
+                            )
+                        )
+                    }
+                }
                 val missedAction = run.missedAction
                 val missedNode = run.missedNode
                 val hasGroundingMiss = missedAction != null
@@ -379,7 +439,7 @@ internal suspend fun AniobViewModel.pipelineAct(
                         burstAbort = run.detail
                     }
                 }
-                if (run.completed && run.lastResult?.terminalState == StepResult.TerminalState.CONTINUE) {
+                if (run.completed && burstAllVerified && run.lastResult?.terminalState == StepResult.TerminalState.CONTINUE) {
                     // Every member ran and none of them was a Finish: the plan says the goal
                     // is met, so carry a provisional finish into verification rather than
                     // asking the model for another action on a screen it already finished.
@@ -501,6 +561,37 @@ internal suspend fun AniobViewModel.pipelineAct(
             )
         }
         taskContext = res.nextCtx
+        if (!planConsumedStep) {
+            val resultScreen = res.nextCtx.lastScreenState ?: currentScreen
+            val stepStatus = classifyStepOutcome(res)
+            val stepActionId = taskContext.allocateActionId(currentStep, 0)
+            val stepEvidence = res.verification?.textEvidence
+                ?: res.verification?.reason?.takeIf { stepStatus == ExecutionOutcomeStatus.VERIFIED }
+            val actualDetail = when {
+                res.action is AniobAction.Fail -> (res.action as AniobAction.Fail).reason
+                !res.verification?.reason.isNullOrBlank() -> res.verification!!.reason
+                stepStatus == ExecutionOutcomeStatus.UNVERIFIED ->
+                    "Verification missing or skipped on pkg=${resultScreen.packageName}"
+                stepStatus == ExecutionOutcomeStatus.VERIFIED ->
+                    (res.action as? AniobAction.Finish)?.summary ?: "Verified on pkg=${resultScreen.packageName}"
+                else -> "pkg=${resultScreen.packageName}"
+            }
+            taskContext = taskContext.recordCorrelatedOutcome(
+                ActionExecutionRecord(
+                    actionId = stepActionId,
+                    stepIndex = currentStep,
+                    actionSummary = res.action.describeAction(),
+                    status = stepStatus,
+                    detail = actualDetail,
+                    screenPackage = resultScreen.packageName,
+                    screenHash = resultScreen.treeHash,
+                    verificationEvidence = stepEvidence,
+                    preScreenHash = currentScreen.treeHash,
+                    expectedPackage = (res.action as? AniobAction.OpenApp)?.packageName.orEmpty(),
+                    expectedText = (res.action as? AniobAction.InputText)?.text.orEmpty()
+                )
+            )
+        }
         if (!res.verificationSkippedFast) observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
 
         if (!res.verificationSkippedFast && primaryProvider == "LOCAL_SLM") {
@@ -576,5 +667,27 @@ internal suspend fun AniobViewModel.pipelineAct(
         currentStep++
 
         PipelineFlow.Next(Unit)
+    }
+}
+
+/**
+ * Maps one [StepResult] to an honest [ExecutionOutcomeStatus].
+ * Missing or skipped verification is never treated as [ExecutionOutcomeStatus.VERIFIED].
+ */
+internal fun classifyStepOutcome(step: StepResult): ExecutionOutcomeStatus {
+    val verification = step.verification
+    return when {
+        step.terminalState == StepResult.TerminalState.FAIL -> ExecutionOutcomeStatus.FAILED
+        step.action is AniobAction.Fail -> ExecutionOutcomeStatus.FAILED
+        step.action is AniobAction.Finish ->
+            if (step.terminalState == StepResult.TerminalState.SUCCESS) {
+                ExecutionOutcomeStatus.VERIFIED
+            } else {
+                ExecutionOutcomeStatus.FAILED
+            }
+        step.verificationSkippedFast -> ExecutionOutcomeStatus.UNVERIFIED
+        verification == null -> ExecutionOutcomeStatus.UNVERIFIED
+        verification.isSuccessful -> ExecutionOutcomeStatus.VERIFIED
+        else -> ExecutionOutcomeStatus.FAILED
     }
 }

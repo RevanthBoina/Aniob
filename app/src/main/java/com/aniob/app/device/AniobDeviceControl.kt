@@ -79,9 +79,26 @@ object AniobDeviceControl {
         // DND handles its own missing-access case by opening the right settings page.
         if (command != DeviceCommand.DND_ON && command != DeviceCommand.DND_OFF) {
             val state = AniobCapabilityProbe.snapshot(app)
-            AniobCapabilityManifest.blockedReason(command, state)?.let { reason ->
+            AniobCapabilityManifest.blockedReason(command, state, args)?.let { reason ->
                 if (command.needsAccessibility) openSettings(app, Settings.ACTION_ACCESSIBILITY_SETTINGS, "a11y")
                 if (command.needsNotificationAccess) openSettings(app, Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS, "nla")
+                if ((command == DeviceCommand.CALL && !state.callPhone) ||
+                    (!state.contacts && (command == DeviceCommand.CALL ||
+                        command == DeviceCommand.MESSAGE_WHATSAPP ||
+                        command == DeviceCommand.MESSAGE_TELEGRAM ||
+                        command == DeviceCommand.MESSAGE_SMS))
+                ) {
+                    openSettings(app, Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "perm_${command.wire}")
+                }
+                if ((command == DeviceCommand.FILE_FIND ||
+                        command == DeviceCommand.FILE_OPEN ||
+                        command == DeviceCommand.FILE_READ) && !state.allFilesAccess
+                ) {
+                    openSettings(app, Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION, "allfiles")
+                }
+                if (command == DeviceCommand.LOCATION_SHARE && !state.location) {
+                    openSettings(app, Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "location")
+                }
                 return blocked(reason)
             }
         }

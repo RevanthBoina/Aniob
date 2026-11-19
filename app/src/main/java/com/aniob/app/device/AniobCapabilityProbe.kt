@@ -22,13 +22,15 @@ object AniobCapabilityProbe {
         val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         return AniobCapabilityManifest.DeviceState(
             accessibility = AniobAccessibilityService.isServiceConnected,
-            notificationAccess = NotificationManagerCompat.getEnabledListenerPackages(app).contains(app.packageName),
+            notificationAccess = runCatching {
+                NotificationManagerCompat.getEnabledListenerPackages(app).contains(app.packageName)
+            }.getOrDefault(false),
             callPhone = granted(app, Manifest.permission.CALL_PHONE),
             contacts = granted(app, Manifest.permission.READ_CONTACTS),
             location = granted(app, Manifest.permission.ACCESS_FINE_LOCATION) ||
                 granted(app, Manifest.permission.ACCESS_COARSE_LOCATION),
-            allFilesAccess = Environment.isExternalStorageManager(),
-            dndAccess = nm?.isNotificationPolicyAccessGranted == true
+            allFilesAccess = runCatching { Environment.isExternalStorageManager() }.getOrDefault(false),
+            dndAccess = runCatching { nm?.isNotificationPolicyAccessGranted == true }.getOrDefault(false)
         )
     }
 

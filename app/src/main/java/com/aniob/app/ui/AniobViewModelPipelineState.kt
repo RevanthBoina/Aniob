@@ -7,7 +7,6 @@ import com.aniob.core.domain.*
 import com.aniob.core.execution.StepPipeline
 import com.aniob.core.execution.StepResult
 import com.aniob.core.ladder.ResolvedIntentShortcut
-import com.aniob.core.ladder.TaskProgress
 import com.aniob.core.run.RunLane
 import kotlinx.coroutines.launch
 import com.aniob.app.ui.AniobViewModel.RememberTransition
@@ -32,7 +31,7 @@ internal sealed class PipelineFlow<out T> {
 internal class PipelineRun(
     /** The live task record. Answers given mid-run are merged in (`copy`), never re-created. */
     var task: AniobTask,
-    val taskGeneration: Long,
+    var taskGeneration: Long,
     val lane: RunLane,
     val laneShortcut: ResolvedIntentShortcut?,
     val researchMode: FeatureSelection,
@@ -40,7 +39,7 @@ internal class PipelineRun(
     val startTime: Long,
     val hydration: kotlinx.coroutines.Deferred<Any?>?,
     val accessibility: AniobAccessibilityService?,
-    val maxSteps: Int,
+    var maxSteps: Int,
     var taskContext: TaskContext,
     var screenBefore: AniobScreenState?,
     var fastReflexOpen: Boolean
@@ -52,10 +51,6 @@ internal class PipelineRun(
     var screenReads = 0
     var actionsDispatched = 0
     var escalations = 0
-
-    // Prefrontal-cortex condensation: TaskProgress summary (not full history) is
-    // threaded through the ladder so the LLM sees a pure-text progress summary.
-    var taskProgress: TaskProgress? = null
 
     // Set once a fast-lane launch is confirmed in the foreground; the run closes on it.
     var fastLaunchProof: AniobScreenState? = null

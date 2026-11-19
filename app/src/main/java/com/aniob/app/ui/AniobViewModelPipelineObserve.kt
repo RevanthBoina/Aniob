@@ -82,11 +82,9 @@ internal suspend fun AniobViewModel.pipelineObserve(pipe: PipelineRun): Pipeline
             screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
             val fresh = accessibility?.captureCurrentScreenState() ?: AniobScreenState(
                 packageName = "com.aniob.app",
-                treeHash = "mock_hash_${currentStep}",
-                nodes = listOf(
-                    AniobNode(id = 1, className = "TextView", text = "Settings", isClickable = true, bounds = AniobRect(50, 100, 300, 180)),
-                    AniobNode(id = 2, className = "Button", text = "Search", isClickable = true, bounds = AniobRect(50, 200, 300, 280))
-                )
+                treeHash = "unavailable_${currentStep}",
+                observationKind = "accessibility_unavailable",
+                nodes = emptyList()
             )
             if (wasPaused && screenBefore != null && fresh.treeHash != screenBefore.treeHash) {
                 onTakeoverCompleted()
@@ -147,6 +145,9 @@ internal suspend fun AniobViewModel.pipelineObserve(pipe: PipelineRun): Pipeline
             }
         }
         if (!reflexStub) appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
+        if (!reflexStub && taskContext.hasUncertainExecution()) {
+            taskContext = taskContext.reconcileUncertainExecutions(currentScreen)
+        }
 
         // PART 2/7: an app-data read is only "done" when the data was actually on screen. Every
         // observation of this run feeds the task's evidence; only text captured from the target app
@@ -214,9 +215,7 @@ internal suspend fun AniobViewModel.pipelineObserve(pipe: PipelineRun): Pipeline
                 installedModelId = effectiveModelId,
                 lastLocalFailCount = localFailCount,
                 isModelFileMissing = isModelFileMissing,
-                previousProgress = taskProgress,
                 userRoutingMode = userRouting,
-                lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null,
                 taskStickyTarget = taskStickyTarget
             )
         }
@@ -228,8 +227,13 @@ internal suspend fun AniobViewModel.pipelineObserve(pipe: PipelineRun): Pipeline
             awaitAppBackgrounded(accessibility)
             pipe.screenBefore = accessibility?.captureCurrentScreenState()
             if (pipe.screenBefore != null) return PipelineFlow.Continue
-            // No accessibility service at all: the standard path's own placeholder applies.
-            pipe.screenBefore = AniobScreenState(packageName = "com.aniob.app", treeHash = "mock_hash_$currentStep")
+            // No accessibility service at all: record honest unavailable observation rather than mock nodes.
+            pipe.screenBefore = AniobScreenState(
+                packageName = "com.aniob.app",
+                treeHash = "unavailable_${currentStep}",
+                observationKind = "accessibility_unavailable",
+                nodes = emptyList()
+            )
             return PipelineFlow.Continue
         }
         // A replay that left the screen exactly as it found it must not be replayed again
@@ -246,7 +250,10 @@ internal suspend fun AniobViewModel.pipelineObserve(pipe: PipelineRun): Pipeline
                 researchMode.rememberReplay
         }
         if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
-            taskProgress = ladderResult.progress ?: taskProgress
+            val ctxDoc = ladderResult.retrievedContext?.takeIf { it.isNotBlank() }
+            if (ctxDoc != null && ctxDoc !in taskContext.retrievedDocs) {
+                taskContext = taskContext.copy(retrievedDocs = taskContext.retrievedDocs + ctxDoc)
+            }
         }
 
         PipelineFlow.Next(ObservedStep(currentScreen, powerState, userRouting, ladderResult))

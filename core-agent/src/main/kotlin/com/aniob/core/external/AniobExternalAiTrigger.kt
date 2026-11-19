@@ -6,14 +6,60 @@ import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.tools.DevicePowerState
 import kotlinx.coroutines.CancellationException
 
-/** One turn of a conversation, oldest first. [role] is "user" or "assistant". */
-data class ChatTurn(val role: String, val content: String) {
+/** One turn of a conversation, oldest first. [role] is "user", "assistant", "tool", or "observation". */
+data class ChatTurn(
+    val role: String,
+    val content: String,
+    val actionId: String? = null
+) {
     companion object {
         const val USER = "user"
         const val ASSISTANT = "assistant"
+        const val TOOL = "tool"
+        const val OBSERVATION = "observation"
 
-        /** How many turns (including the new user turn) a provider sends per request. */
+        /** How many turns (including the new user/observation turn) a provider sends per request. */
         const val MAX_TURNS = 12
+
+        /**
+         * Trims [turns] to at most [maxTurns] from the newest end without splitting an
+         * `(ASSISTANT, TOOL)` pair that shares a non-null [actionId], and never leaves an
+         * orphaned [TOOL] result at the head without its corresponding [ASSISTANT] action.
+         */
+        fun trimPreservingActionPairs(turns: List<ChatTurn>, maxTurns: Int): List<ChatTurn> {
+            if (maxTurns <= 0 || turns.isEmpty()) return emptyList()
+            // Group into atomic units: consecutive [ASSISTANT(actionId=X), TOOL(actionId=X)] share one unit.
+            val units = mutableListOf<List<ChatTurn>>()
+            var i = 0
+            while (i < turns.size) {
+                val cur = turns[i]
+                val next = turns.getOrNull(i + 1)
+                if (cur.role == ASSISTANT && !cur.actionId.isNullOrBlank() &&
+                    next != null && next.role == TOOL && next.actionId == cur.actionId
+                ) {
+                    units.add(listOf(cur, next))
+                    i += 2
+                } else {
+                    units.add(listOf(cur))
+                    i += 1
+                }
+            }
+            val selected = ArrayDeque<List<ChatTurn>>()
+            var total = 0
+            for (idx in units.indices.reversed()) {
+                val unit = units[idx]
+                if (total + unit.size > maxTurns) break
+                selected.addFirst(unit)
+                total += unit.size
+            }
+            val flattened = selected.flatten()
+            // Never start with an orphaned TOOL turn whose ASSISTANT action was trimmed away.
+            val dropLeadingOrphanTool = flattened.dropWhile { turn ->
+                turn.role == TOOL && !turn.actionId.isNullOrBlank() &&
+                    flattened.none { it.role == ASSISTANT && it.actionId == turn.actionId }
+            }
+            return dropLeadingOrphanTool
+        }
 
         /**
          * Renders [turns] as one prompt for a provider that only accepts a single string.
@@ -21,13 +67,63 @@ data class ChatTurn(val role: String, val content: String) {
          * request sent before conversation memory existed.
          */
         fun flatten(turns: List<ChatTurn>): String {
-            val window = turns.takeLast(MAX_TURNS)
+            val window = when {
+                turns.size <= MAX_TURNS -> turns
+                turns.last().role == OBSERVATION && turns.first().role == USER && MAX_TURNS >= 3 -> {
+                    val middle = trimPreservingActionPairs(turns.subList(1, turns.size - 1), MAX_TURNS - 2)
+                    listOf(turns.first()) + middle + turns.last()
+                }
+                else -> trimPreservingActionPairs(turns, MAX_TURNS)
+            }
             if (window.size <= 1) return window.firstOrNull()?.content.orEmpty()
             val earlier = window.dropLast(1).joinToString("\n") { turn ->
-                val speaker = if (turn.role == ASSISTANT) "Assistant" else "User"
-                "$speaker: ${turn.content}"
+                when (turn.role) {
+                    ASSISTANT -> if (turn.actionId != null) {
+                        "Assistant [action_id=${turn.actionId}]: ${turn.content}"
+                    } else {
+                        "Assistant: ${turn.content}"
+                    }
+                    TOOL -> if (turn.actionId != null) {
+                        "ExecutionResult [action_id=${turn.actionId}]: ${turn.content}"
+                    } else {
+                        "ExecutionResult: ${turn.content}"
+                    }
+                    OBSERVATION -> "ScreenObservation: ${turn.content}"
+                    else -> "User: ${turn.content}"
+                }
             }
-            return "Conversation so far:\n$earlier\n\nUser: ${window.last().content}"
+            val last = window.last()
+            val tail = when {
+                last.role == OBSERVATION -> "ScreenObservation:\n${last.content}"
+                last.role == TOOL -> if (last.actionId != null) {
+                    "ExecutionResult [action_id=${last.actionId}]: ${last.content}"
+                } else {
+                    "ExecutionResult: ${last.content}"
+                }
+                last.role == ASSISTANT && last.actionId != null ->
+                    "Assistant [action_id=${last.actionId}]: ${last.content}"
+                else -> "User: ${last.content}"
+            }
+            return "Conversation so far:\n$earlier\n\n$tail"
+        }
+
+        /** Formats an observed post-execution result correlated by [actionId] for continuous agent loops. */
+        fun formatExecutionResult(
+            actionId: String,
+            stepIndex: Int,
+            actionSummary: String,
+            status: String,
+            detail: String,
+            evidence: String? = null
+        ): String = buildString {
+            append("step=").append(stepIndex)
+            append(" | action_id=").append(actionId)
+            append(" | status=").append(status)
+            append(" | action=").append(actionSummary)
+            append(" | detail=").append(detail)
+            if (!evidence.isNullOrBlank()) {
+                append(" | evidence=").append(evidence)
+            }
         }
     }
 }

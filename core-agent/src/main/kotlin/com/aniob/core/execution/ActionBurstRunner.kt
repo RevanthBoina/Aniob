@@ -154,7 +154,9 @@ class ActionBurstRunner(
         /** Grounded semantic target lost before dispatch, when this was a true target miss. */
         val missedAction: AniobAction? = null,
         /** Stable identity of the target on the screen the plan was based on. */
-        val missedNode: AniobNode? = null
+        val missedNode: AniobNode? = null,
+        /** Individual [StepResult] produced for every member that ran, in order. */
+        val memberResults: List<StepResult> = emptyList()
     ) {
         /** True when the next step must be planned from a new observation. */
         val shouldReplan: Boolean
@@ -178,18 +180,19 @@ class ActionBurstRunner(
         shouldContinue: () -> Boolean = { true }
     ): Outcome {
         val ran = ArrayList<AniobAction>(plan.actions.size)
+        val memberResults = ArrayList<StepResult>(plan.actions.size)
         var currentCtx = ctx
         var currentScreen = origin
         var lastResult: StepResult? = null
         var dispatchedSinceCapture = 0
 
         if (plan.actions.isEmpty()) {
-            return Outcome(ran, null, currentCtx, currentScreen, Stop.NONE, completed = plan.isComplete)
+            return Outcome(ran, null, currentCtx, currentScreen, Stop.NONE, completed = plan.isComplete, memberResults = memberResults)
         }
 
         for ((index, member) in plan.actions.withIndex()) {
             if (!shouldContinue()) {
-                return Outcome(ran, lastResult, currentCtx, currentScreen, Stop.ABORTED, "the run stopped")
+                return Outcome(ran, lastResult, currentCtx, currentScreen, Stop.ABORTED, "the run stopped", memberResults = memberResults)
             }
 
             // Re-read before the first element action too: the observation may have gone stale
@@ -210,7 +213,8 @@ class ActionBurstRunner(
                 if (fresh == null) {
                     return Outcome(
                         ran, lastResult, currentCtx, currentScreen, Stop.NO_CAPTURE,
-                        "could not read the screen before action ${index + 1}; not dispatching blind"
+                        "could not read the screen before action ${index + 1}; not dispatching blind",
+                        memberResults = memberResults
                     )
                 }
                 val verdict = validateFreshTarget(member, origin, fresh)
@@ -227,7 +231,8 @@ class ActionBurstRunner(
                         },
                         missedNode = if (stop == Stop.TARGET_GONE && member.semanticTarget() != null) {
                             targetOnOrigin(member, origin)
-                        } else null
+                        } else null,
+                        memberResults = memberResults
                     )
                 }
                 matchedTarget = verdict.matchedNode
@@ -250,13 +255,14 @@ class ActionBurstRunner(
             val result = executeMember(dispatchMember, currentCtx, liveScreen, target)
             lastResult = result
             ran.add(result.action)
+            memberResults.add(result)
             currentCtx = result.nextCtx
             currentScreen = result.nextCtx.lastScreenState ?: liveScreen
             dispatchedSinceCapture++
 
             when (result.terminalState) {
                 StepResult.TerminalState.SUCCESS ->
-                    return Outcome(ran, result, currentCtx, currentScreen, Stop.NONE, completed = true)
+                    return Outcome(ran, result, currentCtx, currentScreen, Stop.NONE, completed = true, memberResults = memberResults)
                 StepResult.TerminalState.FAIL ->
                     // A safety block is final; anything else may simply be a plan that no longer
                     // fits the screen, which the next observation resolves.
@@ -268,13 +274,14 @@ class ActionBurstRunner(
                             it.semanticTarget() != null &&
                                 (result.dispatch as? DispatchCommand.NoOp)?.reason?.startsWith("grounding_miss:") == true
                         },
-                        missedNode = result.resolvedNode
+                        missedNode = result.resolvedNode,
+                        memberResults = memberResults
                     )
                 StepResult.TerminalState.CONTINUE -> Unit
             }
         }
 
-        return Outcome(ran, lastResult, currentCtx, currentScreen, Stop.NONE, completed = plan.isComplete)
+        return Outcome(ran, lastResult, currentCtx, currentScreen, Stop.NONE, completed = plan.isComplete, memberResults = memberResults)
     }
 
     companion object {
