@@ -671,17 +671,20 @@ internal suspend fun AniobViewModel.pipelineAct(
  * Maps one [StepResult] to an honest [ExecutionOutcomeStatus].
  * Missing or skipped verification is never treated as [ExecutionOutcomeStatus.VERIFIED].
  */
-internal fun classifyStepOutcome(step: StepResult): ExecutionOutcomeStatus = when {
-    step.terminalState == StepResult.TerminalState.FAIL -> ExecutionOutcomeStatus.FAILED
-    step.action is AniobAction.Fail -> ExecutionOutcomeStatus.FAILED
-    step.action is AniobAction.Finish ->
-        if (step.terminalState == StepResult.TerminalState.SUCCESS) {
-            ExecutionOutcomeStatus.VERIFIED
-        } else {
-            ExecutionOutcomeStatus.FAILED
-        }
-    step.verificationSkippedFast -> ExecutionOutcomeStatus.UNVERIFIED
-    step.verification == null -> ExecutionOutcomeStatus.UNVERIFIED
-    step.verification.isSuccessful -> ExecutionOutcomeStatus.VERIFIED
-    else -> ExecutionOutcomeStatus.FAILED
+internal fun classifyStepOutcome(step: StepResult): ExecutionOutcomeStatus {
+    val verification = step.verification
+    return when {
+        step.terminalState == StepResult.TerminalState.FAIL -> ExecutionOutcomeStatus.FAILED
+        step.action is AniobAction.Fail -> ExecutionOutcomeStatus.FAILED
+        step.action is AniobAction.Finish ->
+            if (step.terminalState == StepResult.TerminalState.SUCCESS) {
+                ExecutionOutcomeStatus.VERIFIED
+            } else {
+                ExecutionOutcomeStatus.FAILED
+            }
+        step.verificationSkippedFast -> ExecutionOutcomeStatus.UNVERIFIED
+        verification == null -> ExecutionOutcomeStatus.UNVERIFIED
+        verification.isSuccessful -> ExecutionOutcomeStatus.VERIFIED
+        else -> ExecutionOutcomeStatus.FAILED
+    }
 }

@@ -220,20 +220,22 @@ class ContinuousExecutionEndToEndTest {
 
         assertTrue(capturedPrompts[1].contains("music volume is 40%"))
         assertTrue(capturedPrompts[1].contains("ExecutionResult [action_id=$id0]:"))
-        assertTrue(capturedPrompts[1].contains("LAST_RESULT: [action_id=$id0 | status=VERIFIED]"))
+        assertTrue(capturedPrompts[1].contains("LAST RESULT / INCIDENT: [action_id=$id0 | status=VERIFIED]"))
     }
 
     @Test
     fun `burst runner preserves individual member results and never treats unverified or failed burst as success`() = runBlocking {
         val origin = screen("com.example.app", "h0", node(1, "Next"), node(2, "Confirm"))
-        val afterFirst = screen("com.example.app", "h1", node(2, "Confirm"))
+        // Action 1 updates the focused field without navigating away (same structural screen h0,
+        // node 1 changes label to "Next*"), so ActionBurstRunner executes member 2, which fails.
+        val afterFirst = screen("com.example.app", "h0", node(1, "Next*"), node(2, "Confirm"))
         val pipeline = StepPipeline()
         var currentLive = origin
 
         val runner = ActionBurstRunner(
             capture = { currentLive },
             executeMember = { action, ctx, live, target ->
-                val step = pipeline.executeStep(
+                pipeline.executeStep(
                     ctx = ctx,
                     planningScreen = live,
                     proposal = StepPipeline.Proposal.Model(action, "OMNIROUTE_CLOUD"),
@@ -249,7 +251,6 @@ class ContinuousExecutionEndToEndTest {
                     },
                     targetNode = target
                 )
-                step
             }
         )
 

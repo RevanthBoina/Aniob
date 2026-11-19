@@ -401,7 +401,7 @@ internal fun AniobViewModel.prepareResumableContinuation(prompt: String): Pipeli
         listOf(followUpInput)
     )
     if (pipe.taskContext.hasUncertainExecution()) {
-        val currentLive = accessibility?.captureCurrentScreenState()
+        val currentLive = AniobAccessibilityService.instance?.captureCurrentScreenState() ?: pipe.screenBefore
         if (currentLive != null) {
             pipe.taskContext = pipe.taskContext.reconcileUncertainExecutions(currentLive)
         }

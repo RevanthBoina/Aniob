@@ -46,18 +46,15 @@ data class ChatTurn(
                 }
             }
             val last = window.last()
-            val tail = when (last.role) {
-                OBSERVATION -> "ScreenObservation:\n${last.content}"
-                TOOL -> if (last.actionId != null) {
+            val tail = when {
+                last.role == OBSERVATION -> "ScreenObservation:\n${last.content}"
+                last.role == TOOL -> if (last.actionId != null) {
                     "ExecutionResult [action_id=${last.actionId}]: ${last.content}"
                 } else {
                     "ExecutionResult: ${last.content}"
                 }
-                ASSISTANT -> if (last.actionId != null) {
+                last.role == ASSISTANT && last.actionId != null ->
                     "Assistant [action_id=${last.actionId}]: ${last.content}"
-                } else {
-                    "Assistant: ${last.content}"
-                }
                 else -> "User: ${last.content}"
             }
             return "Conversation so far:\n$earlier\n\n$tail"
