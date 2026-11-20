@@ -2,8 +2,6 @@ package com.aniob.core.bench
 
 import com.aniob.core.bench.AniobBenchmarkManifest.Track
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,7 +35,6 @@ class AniobBenchmarkManifestTest {
             assertTrue("Model tasks must have observable completion criteria", it.observableCriteria.hasObservableCheck)
             assertTrue("Model tasks must have safe timeout", it.timeoutSeconds in 15..60)
             assertTrue("Model tasks must have bounded steps", it.maxSteps in 3..10)
-            assertNotNull(it.safeResetAction)
         }
     }
 
@@ -46,7 +43,7 @@ class AniobBenchmarkManifestTest {
         val modelTasks = AniobBenchmarkManifest.getModelGenerationTasks()
         modelTasks.forEach { task ->
             // Model generation tasks require multi-step navigation, tapping or searching
-            assertTrue(task.allowedActionTypes.contains("Tap") || task.allowedActionTypes.contains("InputText"))
+            assertTrue(task.allowedActionTypes.contains("tap") || task.allowedActionTypes.contains("input_text"))
         }
     }
 }

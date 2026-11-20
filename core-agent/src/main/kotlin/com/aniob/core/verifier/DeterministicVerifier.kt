@@ -9,6 +9,8 @@ import com.aniob.core.execution.AniobActionExecutor
 object DeterministicVerifier {
 
     enum class Status { VERIFIED, UNCONFIRMED, FAILED }
+    enum class EvidenceCategory { NONE, INPUT_FOCUS, IME_VISIBLE, ACCESSIBILITY_EVENT, TARGET_STATE,
+        SCREEN_TRANSITION, FOREGROUND_PACKAGE, INPUT_TEXT, TASK_CRITERIA, OTHER }
     enum class FailureKind { TARGET_MISSING, TARGET_UNAVAILABLE, DISPATCH_REJECTED, NO_PROGRESS }
 
     data class VerificationResult(
@@ -21,7 +23,8 @@ object DeterministicVerifier {
         val textEvidence: String? = null,
         val evaluations: List<com.aniob.core.domain.CriterionEvaluation> = emptyList(),
         val status: Status = if (isExpected) Status.VERIFIED else Status.FAILED,
-        val failureKind: FailureKind? = null
+        val failureKind: FailureKind? = null,
+        val evidenceCategory: EvidenceCategory = EvidenceCategory.NONE
     )
 
     /**
@@ -148,7 +151,15 @@ object DeterministicVerifier {
             is AniobAction.InputText -> if (result.first) action.text else null
             else -> null
         }
-        return VerificationResult(isExpected = result.first, durationMs = duration, reason = result.second, textEvidence = textEvidence)
+        val category = if (!result.first) EvidenceCategory.NONE else when (action) {
+            is AniobAction.OpenApp -> EvidenceCategory.FOREGROUND_PACKAGE
+            is AniobAction.InputText -> EvidenceCategory.INPUT_TEXT
+            is AniobAction.LongPress, is AniobAction.Swipe, is AniobAction.SystemKey,
+            is AniobAction.PressKey, is AniobAction.Wait -> EvidenceCategory.SCREEN_TRANSITION
+            else -> EvidenceCategory.OTHER
+        }
+        return VerificationResult(isExpected = result.first, durationMs = duration, reason = result.second,
+            textEvidence = textEvidence, evidenceCategory = category)
     }
 
     private fun verifyTap(
@@ -158,9 +169,10 @@ object DeterministicVerifier {
         dispatched: Boolean,
         start: Long
     ): VerificationResult {
-        fun result(status: Status, reason: String, failure: FailureKind? = null, evidence: String? = null) =
+        fun result(status: Status, reason: String, failure: FailureKind? = null, evidence: String? = null,
+            category: EvidenceCategory = EvidenceCategory.NONE) =
             VerificationResult(status == Status.VERIFIED, System.currentTimeMillis() - start, reason,
-                textEvidence = evidence, status = status, failureKind = failure)
+                textEvidence = evidence, status = status, failureKind = failure, evidenceCategory = category)
 
         if (before == null || target == null || target !in before.nodes) return result(Status.FAILED,
             "Tap target not found on the pre-dispatch screen", FailureKind.TARGET_MISSING)
@@ -171,10 +183,10 @@ object DeterministicVerifier {
 
         val current = TapEvidence.findTarget(after.nodes, target)
         val interaction = TapEvidence.interaction(before, after, target, current)
-        if (interaction != null) return result(Status.VERIFIED, "Tap confirmed: $interaction.")
+        if (interaction != null) return result(Status.VERIFIED, "Tap confirmed: ${interaction.detail}.", category = interaction.category)
         if (TapEvidence.screenTransition(before, after)) return result(Status.VERIFIED,
             "Tap confirmed: screen transitioned.", evidence = if (before.packageName != after.packageName)
-                "${before.packageName} -> ${after.packageName}" else null)
+                "${before.packageName} -> ${after.packageName}" else null, category = EvidenceCategory.SCREEN_TRANSITION)
 
         // A partial observation can omit a dispatched control; absence after dispatch is not a
         // grounding miss and does not prove the gesture failed (or that it should be replayed).
@@ -214,7 +226,8 @@ object DeterministicVerifier {
                 durationMs = duration,
                 reason = "Finish evidence satisfied: all criteria met",
                 textEvidence = passedEvidence,
-                evaluations = evaluations
+                evaluations = evaluations,
+                evidenceCategory = EvidenceCategory.TASK_CRITERIA
             )
         } else {
             VerificationResult(

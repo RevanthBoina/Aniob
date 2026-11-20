@@ -8,9 +8,11 @@ import com.aniob.core.domain.UiInteractionEvent
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.matches
 import com.aniob.core.perception.BurstTargetGuard
+import com.aniob.core.verifier.DeterministicVerifier.EvidenceCategory
 
 /** Interaction evidence only: never folds focus, IME or events into a screen hash. */
 object TapEvidence {
+    data class Signal(val category: EvidenceCategory, val detail: String)
     fun isActionable(node: AniobNode, screen: AniobScreenState): Boolean =
         node.isEnabled && node.isVisibleToUser && !node.bounds.isEmpty &&
             (node.isClickable || node.isEditable || node.isCheckable || node.isChecked ||
@@ -60,24 +62,24 @@ object TapEvidence {
         target: AniobNode,
         current: AniobNode?,
         includeAcknowledgements: Boolean = true
-    ): String? {
+    ): Signal? {
         if (before.packageName.isBlank() || before.packageName != after.packageName) return null
-        if (current?.isFocused == true && !target.isFocused) return "target gained input focus"
+        if (current?.isFocused == true && !target.isFocused) return Signal(EvidenceCategory.INPUT_FOCUS, "target gained input focus")
         if (current != null && (target.isChecked != current.isChecked || target.isSelected != current.isSelected)) {
-            return "target checked or selected state changed"
+            return Signal(EvidenceCategory.TARGET_STATE, "target checked or selected state changed")
         }
         val beforeFields = fields(before, target)
         val afterFields = fields(after, current ?: target)
         if (afterFields.any { field ->
                 field.isFocused && findTarget(beforeFields, field)?.isFocused != true
-            }) return "editable control in the target gained input focus"
+            }) return Signal(EvidenceCategory.INPUT_FOCUS, "editable control in the target gained input focus")
 
         val inputReady = afterFields.any { it.isFocused } || (current?.isEditable == true && current.isFocused)
         if (after.hasImeWindow && (inputReady || (!before.hasImeWindow &&
                 (target.isEditable || beforeFields.isNotEmpty() || afterFields.isNotEmpty()) &&
                 after.nodes.none { it.isEditable && it.isFocused }))) {
-            if (!before.hasImeWindow) return "keyboard appeared for the input control"
-            if (includeAcknowledgements && inputReady) return "input control is focused with the keyboard visible"
+            if (!before.hasImeWindow) return Signal(EvidenceCategory.IME_VISIBLE, "keyboard appeared for the input control")
+            if (includeAcknowledgements && inputReady) return Signal(EvidenceCategory.IME_VISIBLE, "input control is focused with the keyboard visible")
         }
 
         if (!includeAcknowledgements) return null
@@ -91,8 +93,8 @@ object TapEvidence {
                 }
         }
         return when (matched?.kind) {
-            UiInteractionEvent.Kind.CLICKED -> "matching accessibility click event"
-            UiInteractionEvent.Kind.FOCUSED -> "matching accessibility input-focus event"
+            UiInteractionEvent.Kind.CLICKED -> Signal(EvidenceCategory.ACCESSIBILITY_EVENT, "matching accessibility click event")
+            UiInteractionEvent.Kind.FOCUSED -> Signal(EvidenceCategory.ACCESSIBILITY_EVENT, "matching accessibility input-focus event")
             null -> null
         }
     }

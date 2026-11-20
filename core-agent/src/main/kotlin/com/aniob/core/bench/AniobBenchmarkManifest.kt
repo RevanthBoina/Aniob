@@ -1,10 +1,8 @@
 package com.aniob.core.bench
 
-import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
-import com.aniob.core.domain.KeyType
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SuccessCriteria
 
@@ -14,6 +12,9 @@ import com.aniob.core.domain.SuccessCriteria
  * Separates:
  * A. Deterministic shortcut tests (Level 0 Intent / Level 1 FastPath).
  * B. Tasks that actually invoke local model generation (Level 2 SLM).
+ *
+ * Initial screens are illustrative snapshots, never a reset proof. Controlled cases supply a
+ * separately measured BenchmarkStart and an independent oracle for the intended effect.
  *
  * Invariant: Shortcut-only successes are strictly NOT counted as model capability.
  */
@@ -33,8 +34,7 @@ object AniobBenchmarkManifest {
         val requiresConfirmation: Boolean = false,
         val observableCriteria: SuccessCriteria,
         val timeoutSeconds: Int = 30,
-        val maxSteps: Int = 6,
-        val safeResetAction: AniobAction = AniobAction.PressKey(KeyType.HOME)
+        val maxSteps: Int = 6
     )
 
     // Helper node generator
@@ -61,14 +61,13 @@ object AniobBenchmarkManifest {
                 treeHash = "home_screen_hash",
                 nodes = listOf(n(1, "Aniob Home"), n(2, "Chat"), n(3, "Tracker"))
             ),
-            allowedActionTypes = setOf("OpenApp", "Finish"),
+            allowedActionTypes = setOf("open_app", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustShowPackage = listOf("com.android.settings")
             ),
             timeoutSeconds = 15,
-            maxSteps = 2,
-            safeResetAction = AniobAction.PressKey(KeyType.HOME)
+            maxSteps = 2
         ),
 
         BenchmarkTask(
@@ -81,14 +80,13 @@ object AniobBenchmarkManifest {
                 treeHash = "home_screen_hash",
                 nodes = listOf(n(1, "Aniob Home"), n(2, "Chat"))
             ),
-            allowedActionTypes = setOf("OpenApp", "Finish"),
+            allowedActionTypes = setOf("open_app", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustShowPackage = listOf("com.google.android.deskclock")
             ),
             timeoutSeconds = 15,
-            maxSteps = 2,
-            safeResetAction = AniobAction.PressKey(KeyType.HOME)
+            maxSteps = 2
         ),
 
         BenchmarkTask(
@@ -101,14 +99,13 @@ object AniobBenchmarkManifest {
                 treeHash = "home_screen_hash",
                 nodes = listOf(n(1, "Aniob Home"), n(2, "Chat"))
             ),
-            allowedActionTypes = setOf("OpenApp", "Finish"),
+            allowedActionTypes = setOf("open_app", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustShowPackage = listOf("com.google.android.calculator")
             ),
             timeoutSeconds = 15,
-            maxSteps = 2,
-            safeResetAction = AniobAction.PressKey(KeyType.HOME)
+            maxSteps = 2
         ),
 
         // TRACK B: Tasks that actually invoke local model generation
@@ -132,14 +129,13 @@ object AniobBenchmarkManifest {
                     n(9, "Display", clickable = true)
                 )
             ),
-            allowedActionTypes = setOf("Tap", "Swipe", "Finish"),
+            allowedActionTypes = setOf("tap", "swipe", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustContainText = listOf("Battery")
             ),
             timeoutSeconds = 30,
-            maxSteps = 5,
-            safeResetAction = AniobAction.PressKey(KeyType.BACK)
+            maxSteps = 5
         ),
 
         BenchmarkTask(
@@ -160,14 +156,13 @@ object AniobBenchmarkManifest {
                     n(7, "Wallpaper", clickable = true)
                 )
             ),
-            allowedActionTypes = setOf("Tap", "Swipe", "Finish"),
+            allowedActionTypes = setOf("tap", "swipe", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustContainText = listOf("Display", "Brightness")
             ),
             timeoutSeconds = 30,
-            maxSteps = 5,
-            safeResetAction = AniobAction.PressKey(KeyType.BACK)
+            maxSteps = 5
         ),
 
         BenchmarkTask(
@@ -187,14 +182,13 @@ object AniobBenchmarkManifest {
                     n(6, "Display", clickable = true)
                 )
             ),
-            allowedActionTypes = setOf("Tap", "Swipe", "Finish"),
+            allowedActionTypes = setOf("tap", "swipe", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustContainText = listOf("About phone")
             ),
             timeoutSeconds = 40,
-            maxSteps = 6,
-            safeResetAction = AniobAction.PressKey(KeyType.BACK)
+            maxSteps = 6
         ),
 
         BenchmarkTask(
@@ -213,14 +207,13 @@ object AniobBenchmarkManifest {
                     n(5, "Battery", clickable = true)
                 )
             ),
-            allowedActionTypes = setOf("Tap", "Swipe", "Finish"),
+            allowedActionTypes = setOf("tap", "swipe", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustContainText = listOf("Apps", "All apps")
             ),
             timeoutSeconds = 40,
-            maxSteps = 6,
-            safeResetAction = AniobAction.PressKey(KeyType.BACK)
+            maxSteps = 6
         ),
 
         BenchmarkTask(
@@ -238,14 +231,13 @@ object AniobBenchmarkManifest {
                     n(4, "Stopwatch", "com.google.android.deskclock:id/tab_stopwatch", clickable = true)
                 )
             ),
-            allowedActionTypes = setOf("Tap", "Finish"),
+            allowedActionTypes = setOf("tap", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustContainText = listOf("Alarm")
             ),
             timeoutSeconds = 25,
-            maxSteps = 4,
-            safeResetAction = AniobAction.PressKey(KeyType.BACK)
+            maxSteps = 4
         ),
 
         BenchmarkTask(
@@ -265,14 +257,13 @@ object AniobBenchmarkManifest {
                     n(6, "Sound & vibration", "com.android.settings:id/sound_pref", clickable = true)
                 )
             ),
-            allowedActionTypes = setOf("Tap", "Swipe", "Finish"),
+            allowedActionTypes = setOf("tap", "swipe", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustContainText = listOf("Sound")
             ),
             timeoutSeconds = 30,
-            maxSteps = 5,
-            safeResetAction = AniobAction.PressKey(KeyType.BACK)
+            maxSteps = 5
         ),
 
         BenchmarkTask(
@@ -290,14 +281,13 @@ object AniobBenchmarkManifest {
                     n(4, "Battery", clickable = true)
                 )
             ),
-            allowedActionTypes = setOf("Tap", "InputText", "Finish"),
+            allowedActionTypes = setOf("tap", "input_text", "finish"),
             requiresConfirmation = false,
             observableCriteria = SuccessCriteria(
                 mustContainText = listOf("Wi-Fi")
             ),
             timeoutSeconds = 45,
-            maxSteps = 6,
-            safeResetAction = AniobAction.PressKey(KeyType.BACK)
+            maxSteps = 6
         )
     )
 
