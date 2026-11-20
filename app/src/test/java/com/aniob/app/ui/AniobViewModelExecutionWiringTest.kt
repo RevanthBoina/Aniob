@@ -8,6 +8,7 @@ import com.aniob.core.domain.TaskContext
 import com.aniob.core.domain.TaskStatus
 import com.aniob.core.run.RunLane
 import com.aniob.core.run.TaskInputKind
+import com.aniob.core.verifier.DeterministicVerifier
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -383,6 +384,19 @@ class AniobViewModelExecutionWiringTest {
     }
 
     @Test
+    fun noEffectOrDispatchRejectionNeverClassifiesAsMissingTarget() {
+        val unconfirmed = DeterministicVerifier.VerificationResult(false, 0, "Tap dispatched with unchanged hash",
+            status = DeterministicVerifier.Status.UNCONFIRMED)
+        assertFalse(isTargetLikelyMissing(unconfirmed))
+        for (reason in listOf("No-effect: unchanged tree hash", "Element failed to produce an observable effect",
+            "InputText failed: text not found in target")) {
+            assertFalse(isTargetLikelyMissing(DeterministicVerifier.VerificationResult(false, 0, reason)))
+        }
+        assertTrue(isTargetLikelyMissing(DeterministicVerifier.VerificationResult(false, 0, "grounding_miss",
+            failureKind = DeterministicVerifier.FailureKind.TARGET_MISSING)))
+    }
+
+    @Test
     fun classifyStepOutcomeNeverTreatsMissingOrSkippedVerificationAsVerified() {
         val dummyCtx = TaskContext(instruction = "Tap save")
         val tapAction = com.aniob.core.domain.AniobAction.Tap(
@@ -397,6 +411,10 @@ class AniobViewModelExecutionWiringTest {
             terminalState = com.aniob.core.execution.StepResult.TerminalState.CONTINUE
         )
         assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.UNVERIFIED, classifyStepOutcome(missingVerify))
+
+        val unconfirmed = missingVerify.copy(verification = DeterministicVerifier.VerificationResult(
+            false, 0, "Tap dispatched", status = DeterministicVerifier.Status.UNCONFIRMED))
+        assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.UNVERIFIED, classifyStepOutcome(unconfirmed))
 
         val skippedFast = com.aniob.core.execution.StepResult(
             action = tapAction,

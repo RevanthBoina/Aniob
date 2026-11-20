@@ -203,8 +203,8 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
         val stateTraceSnapshot = episodeSnapshot.map { it.screenHash }
         val stepCountSnapshot = currentStep + 1
         val routingReasonSnapshot = _uiState.value.lastRoutingReason
-        val skipTaskLearning = stepResult?.nextCtx?.hasFastSkippedSteps == true
-        lastCompletedLearningSnapshot = CompletedLearningSnapshot(task.id,
+        val skipTaskLearning = taskContext.hasUnverifiedActions
+        lastCompletedLearningSnapshot = if (taskContext.unconfirmedTaps.isNotEmpty()) null else CompletedLearningSnapshot(task.id,
             task.clarifiedGoal.ifBlank { task.rawPrompt }, resolvedCriteria, finalScreen,
             episodeSnapshot.map { it.action }, transitionsSnapshot, researchMode, episodeSnapshot)
         // Clear only this episode, synchronously. Background consolidation uses the captured list.

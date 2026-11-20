@@ -134,7 +134,7 @@ fun AniobTrackerScreen(
                 FilterChip(
                     selected = uiState.trackerFilter == "NOT_CHECKED",
                     onClick = { onFilterChanged("NOT_CHECKED") },
-                    label = { Text("Not checked ($notCheckedCount)") },
+                    label = { Text("Not confirmed ($notCheckedCount)") },
                     modifier = Modifier.testTag("filter_not_checked")
                 )
             }
@@ -200,7 +200,7 @@ fun SegmentedProgressBar(steps: List<AniobStepRecord>, isRunning: Boolean) {
             )
         } else {
             steps.forEachIndexed { index, step ->
-                val color = if (step.verificationSkippedFast) {
+                val color = if (step.verificationSkippedFast || step.verificationUnconfirmed) {
                     MaterialTheme.colorScheme.outline
                 } else if (step.verifiedSuccess) {
                     AniobTheme.state.verified.accent
@@ -240,10 +240,11 @@ fun ExpandableStepRow(
     onCopyJson: () -> Unit
 ) {
     var expanded by remember(step.stepIndex, autoExpand) { mutableStateOf(autoExpand) }
+    val neutralOutcome = step.verificationSkippedFast || step.verificationUnconfirmed
 
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (step.verifiedSuccess || step.verificationSkippedFast) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+            containerColor = if (step.verifiedSuccess || neutralOutcome) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
@@ -262,7 +263,7 @@ fun ExpandableStepRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = if (step.verificationSkippedFast) "—" else if (step.verifiedSuccess) "✅" else "❌",
+                        text = if (neutralOutcome) "—" else if (step.verifiedSuccess) "✅" else "❌",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Column {
@@ -286,9 +287,14 @@ fun ExpandableStepRow(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = if (step.verificationSkippedFast) "Verification skipped for speed" else if (step.verifiedSuccess) "Verified" else (step.failureReason ?: "Needs attention"),
+                            text = when {
+                                step.verificationUnconfirmed -> "Tap sent; effect not confirmed"
+                                step.verificationSkippedFast -> "Verification skipped for speed"
+                                step.verifiedSuccess -> "Verified"
+                                else -> step.failureReason ?: "Needs attention"
+                            },
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (step.verificationSkippedFast) MaterialTheme.colorScheme.onSurfaceVariant else if (step.verifiedSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                            color = if (neutralOutcome) MaterialTheme.colorScheme.onSurfaceVariant else if (step.verifiedSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                         )
                     }
                 }

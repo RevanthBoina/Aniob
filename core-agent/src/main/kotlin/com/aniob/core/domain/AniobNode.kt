@@ -29,7 +29,9 @@ data class AniobNode(
      * replaces the verbose Set-of-Mark line in the prompt; the id is re-stamped on read so a
      * re-index never leaves stale markup.
      */
-    val markup: String = ""
+    val markup: String = "",
+    val isFocused: Boolean = false,
+    val isCheckable: Boolean = false
 ) {
     val centerX: Int get() = (bounds.left + bounds.right) / 2
     val centerY: Int get() = (bounds.top + bounds.bottom) / 2
@@ -45,8 +47,9 @@ data class AniobNode(
         val headingPart = if (isHeading) " heading=true" else ""
         val panePart = if (paneTitle.isNotBlank()) " pane='$paneTitle'" else ""
         val tooltipPart = if (tooltip.isNotBlank()) " tooltip='$tooltip'" else ""
+        val focusPart = if (isFocused) " focused=true" else ""
         val sourcePart = if (source != GroundingSource.ACCESSIBILITY) " source=$source" else ""
-        return "[$id] $className$viewIdPart text='$text'$contentDescPart$errorPart$headingPart$panePart$tooltipPart bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable$enabledPart$sourcePart"
+        return "[$id] $className$viewIdPart text='$text'$contentDescPart$errorPart$headingPart$panePart$tooltipPart bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable$enabledPart$focusPart$sourcePart"
     }
 }
 

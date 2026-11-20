@@ -53,7 +53,8 @@ data class AniobStepRecord(
     val textEvidence: String? = null,
     val targetBounds: AniobRect? = null,
     val imageArtifactPath: String? = null,
-    val verificationSkippedFast: Boolean = false
+    val verificationSkippedFast: Boolean = false,
+    val verificationUnconfirmed: Boolean = false
 )
 
 data class AniobPlan(

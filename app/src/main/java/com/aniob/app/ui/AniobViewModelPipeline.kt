@@ -165,7 +165,9 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
             learning = learningPipeline,
             reflectionAgent = reflectionAgent,
             recordStep = { stepRecord ->
-                if (stepRecord.provider == "SKILL") executionRouter.onSkillStepRecorded(stepRecord.verified)
+                val unconfirmed = stepRecord.verificationStatus ==
+                    com.aniob.core.verifier.DeterministicVerifier.Status.UNCONFIRMED
+                if (stepRecord.provider == "SKILL" && !unconfirmed) executionRouter.onSkillStepRecorded(stepRecord.verified)
                 if (stepRecord.dispatched) app.researchTelemetry.recordActionCompleted()
                 if (stepRecord.verificationSkippedFast) app.researchTelemetry.recordFastSkippedStep()
                 val node = stepRecord.resolvedNode
@@ -203,6 +205,7 @@ internal suspend fun AniobViewModel.executeTaskPipeline(
                     tokensUsed = stepRecord.tokensUsed,
                     verifiedSuccess = stepRecord.verified,
                     verificationSkippedFast = stepRecord.verificationSkippedFast,
+                    verificationUnconfirmed = unconfirmed,
                     failureReason = stepRecord.failureReason,
                     textEvidence = stepRecord.textEvidence,
                     targetBounds = stepRecord.targetBounds

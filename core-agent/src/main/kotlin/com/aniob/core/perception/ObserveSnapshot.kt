@@ -31,7 +31,8 @@ data class ObserveSnapshot(
     val paneTitle: String = "",
     val tooltip: String = "",
     val platformIndex: Int = -1,
-    val children: List<ObserveSnapshot> = emptyList()
+    val children: List<ObserveSnapshot> = emptyList(),
+    val isFocused: Boolean = false
 ) {
     /** A node the user can act on. */
     val isInteractive: Boolean

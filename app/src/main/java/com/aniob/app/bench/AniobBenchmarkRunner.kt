@@ -188,7 +188,7 @@ class AniobBenchmarkRunner(
             } else if (action is AniobAction.Finish) {
                 DeterministicVerifier.verifyFinish(task.observableCriteria, screenAfter, currentStep + 1)
             } else {
-                DeterministicVerifier.verify(action, observedScreen, screenAfter)
+                DeterministicVerifier.verify(action, observedScreen, screenAfter, dispatched = dispatchOutcome.dispatched)
             }
             val verifyLatency = System.currentTimeMillis() - verifyStart
 

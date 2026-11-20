@@ -5,6 +5,7 @@ import com.aniob.app.background.AniobForegroundService
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.core.execution.DispatchCommand
 import com.aniob.core.execution.StepResult
+import com.aniob.core.execution.StepPipeline
 import com.aniob.core.grillme.AniobGrillMeResult
 import com.aniob.core.narration.AgentPhase
 import com.aniob.core.verify.FastVerify
@@ -42,15 +43,32 @@ internal fun AniobViewModel.verifyProvisionalFinish(
 ): DeterministicVerifier.VerificationResult =
     DeterministicVerifier.verifyFinish(criteria, finalScreen, steps)
 
-internal suspend fun AniobViewModel.executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction, expectedTreeHash: String? = null, waitForIdle: Boolean = true): Boolean {
-    // Block until the UI is quiescent so we never dispatch into a running animation.
+internal suspend fun AniobViewModel.executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction, expectedTreeHash: String? = null, waitForIdle: Boolean = true): Boolean =
+    dispatchActionSync(accessibility, action, expectedTreeHash, waitForIdle).dispatched
+
+internal suspend fun AniobViewModel.dispatchActionSync(
+    accessibility: AniobAccessibilityService?,
+    action: AniobAction,
+    expectedTreeHash: String? = null,
+    waitForIdle: Boolean = true
+): StepPipeline.DispatchOutcome {
     if (waitForIdle) AniobWaitForIdle.waitForIdle(fast = activeRunMode.fastIdleWait)
-    if (accessibility == null) return false
+    if (accessibility == null) return StepPipeline.DispatchOutcome(false, "Accessibility service unavailable")
     val deferred = CompletableDeferred<Boolean>()
-    accessibility.executeAction(action, expectedTreeHash) { success ->
-        deferred.complete(success)
-    }
-    return withTimeoutOrNull(SWIPE_CALLBACK_TIMEOUT_SECONDS * 1000L) { deferred.await() } ?: false
+    var origin: AniobScreenState? = null
+    var target: AniobNode? = null
+    var rejection: DispatchCommand.NoOp? = null
+    accessibility.executeActionTracked(action, expectedTreeHash,
+        onTapDispatch = { screen, node -> origin = screen; target = node },
+        onTargetRejected = { rejection = it }
+    ) { success -> deferred.complete(success) }
+    val accepted = withTimeoutOrNull(SWIPE_CALLBACK_TIMEOUT_SECONDS * 1000L) { deferred.await() }
+    return StepPipeline.DispatchOutcome(accepted == true,
+        reason = rejection?.reason ?: when (accepted) {
+            null -> "Android dispatch callback timed out"
+            false -> "Android rejected or cancelled dispatch"
+            true -> ""
+        }, tapOrigin = origin, tapTarget = target, targetRejection = rejection)
 }
 
 /**
@@ -64,33 +82,42 @@ internal suspend fun AniobViewModel.executeVerifyAndRecover(
     taskPrompt: String,
     currentScreen: AniobScreenState
 ): VerifiedStep {
-    executeActionSync(accessibility, action)
+    val dispatch = dispatchActionSync(accessibility, action)
+    val origin = dispatch.tapOrigin ?: currentScreen
+    if (!dispatch.dispatched) {
+        val verification = rejectedDispatch(dispatch)
+        if (action.semanticTarget() != null && isTargetLikelyMissing(verification)) {
+            scrollRecoverAndRetry(accessibility, action, taskPrompt, currentScreen)?.let { return it }
+        }
+        return VerifiedStep(currentScreen, action, verification, false)
+    }
     // Same two-tier wait the step pipeline uses: no fixed settle delay here either.
     val fast = FastVerify.await(
-        preAction = currentScreen,
+        preAction = origin,
         expectedTexts = FastVerify.expectedTexts(action, null),
         windowEvents = { accessibility?.windowEventSequence() },
         capturePoll = { accessibility?.captureCurrentScreenState()?.also { app.researchTelemetry.recordTreeRead() } },
         screenshot = { captureVerifyScreenshot() },
-                    finalCaptureAtTimeout = activeRunMode.fastDeltaVerify
+        finalCaptureAtTimeout = activeRunMode.fastDeltaVerify,
+        tap = action as? AniobAction.Tap,
+        tapTarget = dispatch.tapTarget
     )
     val screenAfter = fast.screen ?: accessibility?.captureCurrentScreenState() ?: currentScreen
-    val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
-
-    val recoverable = action.semanticTarget() != null && isTargetLikelyMissing(verification)
-    if (!recoverable) return VerifiedStep(screenAfter, action, verification, false)
-
-    return scrollRecoverAndRetry(accessibility, action, taskPrompt, currentScreen)
-        ?: VerifiedStep(screenAfter, action, verification, false)
+    val verification = DeterministicVerifier.verify(action, origin, screenAfter, resolvedNode = dispatch.tapTarget)
+    return VerifiedStep(screenAfter, action, verification, false)
 }
 
-internal fun AniobViewModel.isTargetLikelyMissing(verification: DeterministicVerifier.VerificationResult): Boolean {
-    if (verification.isSuccessful) return false
-    val reason = verification.reason.lowercase()
-    return reason.contains("no-effect") || reason.contains("no effect") ||
-        reason.contains("not found") || reason.contains("element") ||
-        reason.contains("observable effect") || reason.contains("failed")
-}
+/** Scroll recovery requires a grounding miss, not merely missing post-dispatch evidence. */
+internal fun isTargetLikelyMissing(verification: DeterministicVerifier.VerificationResult): Boolean =
+    verification.status == DeterministicVerifier.Status.FAILED &&
+        verification.failureKind == DeterministicVerifier.FailureKind.TARGET_MISSING
+
+private fun rejectedDispatch(dispatch: StepPipeline.DispatchOutcome): DeterministicVerifier.VerificationResult =
+    DeterministicVerifier.VerificationResult(false, 0L, dispatch.reason, failureKind = when {
+        dispatch.targetRejection == null -> DeterministicVerifier.FailureKind.DISPATCH_REJECTED
+        dispatch.reason.startsWith("grounding_miss:") -> DeterministicVerifier.FailureKind.TARGET_MISSING
+        else -> DeterministicVerifier.FailureKind.TARGET_UNAVAILABLE
+    })
 
 internal fun AniobViewModel.targetMissKey(action: AniobAction, node: AniobNode? = null): String? {
     val target = action.semanticTarget() ?: return null
@@ -224,17 +251,21 @@ internal suspend fun AniobViewModel.scrollRecoverAndRetry(
         "AniobViewModel",
         "Scroll-until-found revealed node ${revealedNode.id} after ${scrollResult.swipes} swipes"
     )
-    executeActionSync(accessibility, retryAction)
+    val dispatch = dispatchActionSync(service, retryAction)
+    if (!dispatch.dispatched) return VerifiedStep(revealedScreen, retryAction, rejectedDispatch(dispatch), true)
+    val origin = dispatch.tapOrigin ?: revealedScreen
     val retryWait = FastVerify.await(
-        preAction = revealedScreen,
+        preAction = origin,
         expectedTexts = FastVerify.expectedTexts(retryAction, null),
         windowEvents = { service.windowEventSequence() },
         capturePoll = { service.captureCurrentScreenState().also { app.researchTelemetry.recordTreeRead() } },
         screenshot = { captureVerifyScreenshot() },
-                    finalCaptureAtTimeout = activeRunMode.fastDeltaVerify
+        finalCaptureAtTimeout = activeRunMode.fastDeltaVerify,
+        tap = retryAction as? AniobAction.Tap,
+        tapTarget = dispatch.tapTarget
     )
     val screenAfter = retryWait.screen ?: service.captureCurrentScreenState()
-    val verification = DeterministicVerifier.verify(retryAction, revealedScreen, screenAfter)
+    val verification = DeterministicVerifier.verify(retryAction, origin, screenAfter, resolvedNode = dispatch.tapTarget)
     return VerifiedStep(screenAfter, retryAction, verification, true)
 }
 
