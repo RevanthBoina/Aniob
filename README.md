@@ -70,6 +70,10 @@ The root Gradle build supplies plugin configuration and [`gradle/libs.versions.t
 
 **Typical task flow:** `AniobChatScreen` submits text to `AniobViewModel.submitTask`. The core `WorkflowRouter` handles supported direct workflows or delegates to the existing automation path. `AniobExecutionRouter` selects among available direct intents, fast paths, skills, and local/cloud model providers; `StepPipeline` coordinates each proposed action with the app's safety, capability, and approval checks. The Android adapters dispatch supported actions, verification feeds the outcome back to the UI, and app state/history are updated. `docs/APP_DISCOVERY_AND_LAUNCH.md` describes the app-launch path in more detail.
 
+## Research benchmarking
+
+The [controlled benchmark protocol](docs/RESEARCH_BENCHMARK.md) describes experience ablations, verified resets, independent scoring, and machine-readable exports. Its fixture tests validate the harness; they are not device performance results.
+
 ## Roadmap and known issues
 
 | Status | Work |
