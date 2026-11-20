@@ -24,7 +24,7 @@ object BenchmarkStatistics {
 
     fun summarize(results: List<BenchmarkTrialResult>, seed: Int): List<Summary> {
         require(results.distinctBy { it.trial.runId }.size == results.size) { "Duplicate benchmark run IDs" }
-        return results.groupBy { Cell(it.trial.case.task.track, it.trial.case.condition, it.trial.configuration) }
+        return results.filter { it.trial.case.retrieval == null }.groupBy { Cell(it.trial.case.task.track, it.trial.case.condition, it.trial.configuration) }
             .toSortedMap(compareBy({ it.track.ordinal }, { it.condition.ordinal }, { it.configuration.ordinal }))
             .map { (cell, all) -> summarizeCell(cell, all, seed) }
     }
@@ -35,7 +35,7 @@ object BenchmarkStatistics {
         val actions = groupedActions.filterNot { it.second.taskControl }
         val dispatches = actions.filter { it.second.dispatchAttempted }
         val audited = dispatches.filter { it.second.audit?.effect?.verdict in setOf(AuditVerdict.MET, AuditVerdict.NOT_MET) }
-        val succeeded = valid.filter { it.status == BenchmarkTaskStatus.VERIFIED }
+        val succeeded = valid.filter { it.adjudicatedSuccess() == 1.0 }
         val skillTrials = valid.filter { it.trial.configuration in setOf(BenchmarkConfiguration.LEARNED_SKILLS, BenchmarkConfiguration.VALIDATED_SKILLS) }
         val staleSkills = skillTrials.filter { it.trial.case.experience?.intentionallyStale == true }
         val phases = valid.flatMap(::recovery)
@@ -61,13 +61,23 @@ object BenchmarkStatistics {
                 value?.let { trial.taskId() to it }
             }
         }
-        return Summary(cell, all.size, valid.size, valid.count { it.finalAudit?.verdict in setOf(AuditVerdict.MET, AuditVerdict.NOT_MET) },
+        return Summary(cell, all.size, valid.size, valid.count { it.hasFinalLabel() },
             BenchmarkActionStatus.entries.associateWith { status -> actions.count { it.second.status == status } },
             phases.size, phases.count { it.second == null },
             groupedActions.sumOf { it.second.inputTokens?.toLong() ?: 0L },
             groupedActions.sumOf { it.second.outputTokens?.toLong() ?: 0L },
             linkedMapOf(
-                "independently_verified_task_success_rate" to trialSample(valid) { (it.status == BenchmarkTaskStatus.VERIFIED).number() },
+                "independently_verified_task_success_rate" to trialSample(valid) { it.adjudicatedSuccess() },
+                "final_audit_coverage" to trialSample(valid) { it.hasFinalLabel().number() },
+                "adjudicated_outcome_coverage" to trialSample(valid) { (it.adjudicatedSuccess() != null).number() },
+                "inconclusive_rate" to trialSample(valid) { (it.status == BenchmarkTaskStatus.INCONCLUSIVE).number() },
+                "timeout_rate" to trialSample(valid) { (it.status == BenchmarkTaskStatus.TIMED_OUT).number() },
+                "generation_timeout_rate" to trialSample(valid) { it.actions.any { action -> action.failureKind == "GENERATION_TIMEOUT" }.number() },
+                "unresolved_dispatch_rate" to trialSample(valid) { (it.status == BenchmarkTaskStatus.DISPATCH_UNRESOLVED).number() },
+                "recovery_blocked_rate" to trialSample(all) { (it.status == BenchmarkTaskStatus.RECOVERY_BLOCKED).number() },
+                "interruption_rate" to trialSample(all) { (it.status == BenchmarkTaskStatus.INTERRUPTED).number() },
+                "invalid_reset_rate" to trialSample(all.filter { it.resetVerified || it.status == BenchmarkTaskStatus.INVALID_RESET }) { (it.status == BenchmarkTaskStatus.INVALID_RESET).number() },
+                "conservative_recorded_trial_success_rate" to trialSample(all) { (it.adjudicatedSuccess() == 1.0).number() },
                 "action_verification_rate" to actionSample(actions) { (it.status == BenchmarkActionStatus.VERIFIED).number() },
                 "unconfirmed_action_rate" to actionSample(actions) { (it.status == BenchmarkActionStatus.UNCONFIRMED).number() },
                 "false_verification_rate" to actionSample(audited.filter { it.second.status == BenchmarkActionStatus.VERIFIED }) { (it.audit!!.effect.verdict == AuditVerdict.NOT_MET).number() },
@@ -91,11 +101,11 @@ object BenchmarkStatistics {
             ))
     }
 
-    /** Within the same task/scenario/repetition/session, with invalid resets left out of a pair. */
+    /** Pairs require independent, in-budget adjudication on both sides. */
     fun pairedSuccess(results: List<BenchmarkTrialResult>, seed: Int,
         baseline: BenchmarkConfiguration = BenchmarkConfiguration.NO_MEMORY): List<Paired> {
         require(results.distinctBy { it.trial.runId }.size == results.size)
-        return results.groupBy { it.trial.case.task.track to it.trial.case.condition }.flatMap { (cell, rows) ->
+        return results.filter { it.trial.case.retrieval == null }.groupBy { it.trial.case.task.track to it.trial.case.condition }.flatMap { (cell, rows) ->
             val blocks = rows.groupBy { it.trial.blockId }
             val configs = rows.map { it.trial.configuration }.distinct().filter { it != baseline }
             configs.sortedBy { it.ordinal }.map { arm ->
@@ -104,15 +114,58 @@ object BenchmarkStatistics {
                     val b = block.singleOrNull { it.trial.configuration == arm } ?: return@mapNotNull null
                     a to b
                 }
-                val differences = matched.filter { (a, b) -> a.resetVerified && b.resetVerified }.map { (a, b) ->
-                    val from = if (a.status == BenchmarkTaskStatus.VERIFIED) 1.0 else 0.0
-                    val to = if (b.status == BenchmarkTaskStatus.VERIFIED) 1.0 else 0.0
+                val differences = matched.mapNotNull { (a, b) ->
+                    val from = a.adjudicatedSuccess() ?: return@mapNotNull null
+                    val to = b.adjudicatedSuccess() ?: return@mapNotNull null
                     a.taskId() to (to - from)
                 }
                 Paired(cell.first, cell.second, baseline, arm, matched.size, differences.count { it.second > 0 },
                     differences.count { it.second < 0 }, differences.count { it.second == 0.0 }, sample(differences, seed))
             }
         }
+    }
+
+    /** Top-1 matcher metrics, before execution validation. Missing retrieval attempts are not abstentions. */
+    fun retrievalMetrics(results: List<BenchmarkTrialResult>, seed: Int): Map<String, Sample> {
+        val trials = results.filter { it.resetVerified && it.trial.case.retrieval != null }
+        val observed = trials.filter { it.retrieval != null }
+        fun trialsSample(rows: List<BenchmarkTrialResult>, value: (BenchmarkTrialResult) -> Boolean?) =
+            sample(rows.mapNotNull { row -> value(row)?.let { row.taskId() to if (it) 1.0 else 0.0 } }, seed)
+        fun candidateSample(label: RetrievalLabel, selected: Boolean) = sample(observed.flatMap { row ->
+            row.trial.case.retrieval!!.candidates.filter { it.label == label }.map {
+                val hit = it.artifact.artifactId == row.retrieval!!.selectedArtifactId
+                row.taskId() to if (hit == selected) 1.0 else 0.0
+            }
+        }, seed)
+        fun selectedRelevant(row: BenchmarkTrialResult) = row.trial.case.retrieval!!.candidates.any {
+            it.label == RetrievalLabel.RELEVANT && it.artifact.artifactId == row.retrieval!!.selectedArtifactId
+        }
+        return linkedMapOf(
+            "retrieval_observation_coverage" to trialsSample(trials) { it.retrieval != null },
+            "retrieval_precision_at_1" to trialsSample(observed.filter { it.retrieval!!.selectedArtifactId != null }, ::selectedRelevant),
+            "retrieval_recall_at_1" to candidateSample(RetrievalLabel.RELEVANT, true),
+            "correct_skill_selection_rate" to trialsSample(observed.filter { row ->
+                row.trial.case.retrieval!!.candidates.any { it.label == RetrievalLabel.RELEVANT }
+            }, ::selectedRelevant),
+            "stale_rejection_accuracy" to candidateSample(RetrievalLabel.STALE, false),
+            "irrelevant_rejection_accuracy" to candidateSample(RetrievalLabel.IRRELEVANT, false),
+            "ambiguous_retrieval_rejection_rate" to trialsSample(observed.filter { row ->
+                row.trial.case.retrieval!!.candidates.any { it.label == RetrievalLabel.AMBIGUOUS }
+            }) { it.retrieval!!.selectedArtifactId == null },
+            "downstream_final_audit_coverage" to trialsSample(trials) { it.hasFinalLabel() },
+            "downstream_adjudicated_outcome_coverage" to trialsSample(trials) { it.adjudicatedSuccess() != null },
+            "downstream_independently_verified_success_rate" to sample(trials.mapNotNull {
+                it.adjudicatedSuccess()?.let { score -> it.taskId() to score }
+            }, seed)
+        )
+    }
+
+    private fun BenchmarkTrialResult.hasFinalLabel() = finalAudit?.verdict in setOf(AuditVerdict.MET, AuditVerdict.NOT_MET)
+
+    private fun BenchmarkTrialResult.adjudicatedSuccess(): Double? = if (!resetVerified) null else when {
+        status == BenchmarkTaskStatus.VERIFIED && finalAudit?.verdict == AuditVerdict.MET -> 1.0
+        status == BenchmarkTaskStatus.NOT_MET && finalAudit?.verdict == AuditVerdict.NOT_MET -> 0.0
+        else -> null
     }
 
     private fun recovery(trial: BenchmarkTrialResult): List<Pair<String, Double?>> = buildList {

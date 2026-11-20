@@ -15,6 +15,9 @@ import com.aniob.core.skills.SkillStep
 import com.aniob.core.verifier.DeterministicVerifier
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -66,10 +69,169 @@ class AniobBenchmarkRunnerTest {
         val runner = AniobBenchmarkRunner(fixture, BenchmarkGenerator { _, _ -> delay(2_000); BenchmarkGeneration(null) }, 0)
         val row = runner.runBenchmark(plan).single()
         assertEquals(BenchmarkTaskStatus.TIMED_OUT, row.status)
-        assertEquals(BenchmarkActionStatus.SKIPPED, row.actions.single().status)
-        assertEquals("DEADLINE", row.actions.single().failureKind)
+        assertEquals(BenchmarkActionStatus.FAILED, row.actions.single().status)
+        assertEquals("GENERATION_TIMEOUT", row.actions.single().failureKind)
         assertNotNull(row.actions.single().generationMs)
         assertEquals(0, fixture.dispatches)
+    }
+
+    @Test fun providerAndOutputFailuresProduceRowsWithoutStoppingSchedule() = runBlocking {
+        val fixture = Fixture(generationTimeoutMs = 30)
+        val plan = fixture.plan(listOf(fixture.case(BenchmarkCondition.COLD)), 4, listOf(BenchmarkConfiguration.NO_MEMORY))
+        var calls = 0
+        val saved = mutableListOf<BenchmarkTrialResult>()
+        val runner = AniobBenchmarkRunner(fixture, BenchmarkGenerator { _, _ ->
+            when (++calls) {
+                1 -> throw IllegalStateException("upstream capacity exhausted")
+                2 -> { delay(500); BenchmarkGeneration(null) }
+                3 -> BenchmarkGeneration(null)
+                else -> BenchmarkGeneration("not an action")
+            }
+        }, 0)
+        val rows = runner.runBenchmark(plan, saved::add)
+        assertEquals(plan.schedule(), rows.map { it.trial })
+        assertEquals(saved, rows)
+        val actions = rows.map { it.actions.single() }
+        assertEquals(listOf("PROVIDER_ERROR", "GENERATION_TIMEOUT", "INVALID_OUTPUT", "INVALID_OUTPUT"), actions.map { it.failureKind })
+        assertTrue(actions.all { it.status == BenchmarkActionStatus.FAILED && !it.dispatchAttempted })
+        assertTrue(actions.first().failureReason!!.contains("upstream capacity exhausted"))
+        val export = java.io.File(temporaryFolder.root, "provider-failures")
+        BenchmarkCsv.write(export, plan, rows)
+        assertTrue(java.io.File(export, "actions.csv").readText().contains("IllegalStateException: upstream capacity exhausted"))
+    }
+
+    @Test fun rejectionPreservesPlatformReasonAndDoesNotVerify() = runBlocking {
+        val fixture = Fixture(rejectDispatch = true)
+        val plan = fixture.plan(listOf(fixture.case(BenchmarkCondition.COLD)), arms = listOf(BenchmarkConfiguration.NO_MEMORY))
+        val action = fixture.runner().runBenchmark(plan).single().actions.first()
+        assertEquals(BenchmarkActionStatus.FAILED, action.status)
+        assertEquals("DISPATCH_REJECTED", action.failureKind)
+        assertEquals("fixture dispatch rejected", action.failureReason)
+    }
+
+    @Test fun unresolvedDispatchStopsTrialAndBlockedRecoveryRemainsTraceable() = runBlocking {
+        val fixture = Fixture()
+        val fence = BenchmarkDispatchFence(10, 10)
+        var issues = 0
+        val environment = object : BenchmarkEnvironment by fixture {
+            override suspend fun restore(case: BenchmarkCase) = fence.beforeReset({ false }) { fixture.restore(case) }
+            override suspend fun dispatch(action: AniobAction): StepPipeline.DispatchOutcome {
+                fence.dispatch { issues++ } // no terminal Android callback
+                error("An unresolved dispatch cannot return success")
+            }
+        }
+        val plan = fixture.plan(listOf(fixture.case(BenchmarkCondition.COLD)), 2, listOf(BenchmarkConfiguration.NO_MEMORY))
+        val runner = AniobBenchmarkRunner(environment, BenchmarkGenerator { _, _ ->
+            BenchmarkGeneration(AniobActionSchema.toActionJson(AniobAction.Tap(SemanticTarget.SomIndex(1))))
+        }, 0)
+        val rows = runner.runBenchmark(plan)
+        assertEquals(listOf(BenchmarkTaskStatus.DISPATCH_UNRESOLVED, BenchmarkTaskStatus.RECOVERY_BLOCKED), rows.map { it.status })
+        val action = rows.first().actions.single()
+        assertEquals(BenchmarkActionStatus.UNCONFIRMED, action.status)
+        assertFalse(action.dispatchResolved)
+        assertNull(action.audit)
+        assertEquals(AuditVerdict.UNKNOWN, rows.first().finalAudit!!.verdict)
+        assertEquals(1, fixture.resetCalls)
+        assertEquals(1, issues)
+    }
+
+    @Test fun cancellationCheckpointsActiveTrialAndExportsUnrunTrials() = runBlocking {
+        val fixture = Fixture()
+        val plan = fixture.plan(listOf(fixture.case(BenchmarkCondition.COLD)), 3, listOf(BenchmarkConfiguration.NO_MEMORY))
+        val saved = mutableListOf<BenchmarkTrialResult>()
+        val inModel = CompletableDeferred<Unit>()
+        val runner = AniobBenchmarkRunner(fixture, BenchmarkGenerator { _, _ ->
+            inModel.complete(Unit)
+            kotlinx.coroutines.awaitCancellation()
+        }, 0)
+        val job = launch { runner.runBenchmark(plan, saved::add) }
+        inModel.await()
+        job.cancelAndJoin()
+        assertEquals(BenchmarkTaskStatus.INTERRUPTED, saved.single().status)
+        assertEquals("INTERRUPTED", saved.single().actions.single().failureKind)
+        val dir = java.io.File(temporaryFolder.root, "cancelled")
+        BenchmarkCsv.write(dir, plan, saved)
+        assertEquals(2, java.io.File(dir, "trials.csv").readLines().count { ",NOT_RUN," in it })
+    }
+
+    @Test fun seededAdapterReceivesAndExportsEffectiveSeedsWhileUnconfirmedAdaptersCannotClaimThem() = runBlocking {
+        val settings = BenchmarkDecoding(DecodingMode.SEEDED_SAMPLING, mapOf("temperature" to "0.7", "top_k" to "5"))
+        val fixture = Fixture(decoding = settings)
+        val plan = fixture.plan(listOf(fixture.case(BenchmarkCondition.COLD)), 2, listOf(BenchmarkConfiguration.NO_MEMORY))
+        val seeds = mutableListOf<Int?>()
+        val generator = BenchmarkGenerator.configured(settings) { _, seed ->
+            seeds += seed
+            BenchmarkGeneration(java.util.Random(requireNotNull(seed).toLong()).nextInt().toString())
+        }
+        val runner = AniobBenchmarkRunner(fixture, generator, 0)
+        val first = runner.runBenchmark(plan)
+        runner.runBenchmark(plan)
+        val expected = plan.schedule().map { it.generationSeed }
+        assertEquals(expected + expected, seeds)
+        assertEquals(expected, first.map { it.actions.single().appliedGenerationSeed })
+        val dir = java.io.File(temporaryFolder.root, "seeded")
+        BenchmarkCsv.write(dir, plan, first)
+        assertTrue(java.io.File(dir, "study.csv").readText().contains(",SEEDED_SAMPLING,true,false,"))
+        assertTrue(java.io.File(dir, "decoding.csv").readText().contains("temperature,0.7"))
+        try {
+            fixture.runner().runBenchmark(plan)
+            fail("An unspecified generator must not be accepted as seeded")
+        } catch (_: IllegalArgumentException) { }
+        val deterministic = BenchmarkGenerator.configured(BenchmarkDecoding(DecodingMode.DETERMINISTIC, mapOf("sampler" to "greedy"))) { _, seed ->
+            assertNull(seed)
+            BenchmarkGeneration("fixed")
+        }
+        assertEquals(deterministic.generate("prompt", 1), deterministic.generate("prompt", 99))
+    }
+
+    @Test fun nativeAdapterDoesNotAdvertiseSeedSupportAndPreservesNativeFailure() = runBlocking {
+        val engine = object : com.aniob.core.providers.AniobNativeLlmEngine {
+            override fun isReady() = true
+            override fun load(path: String) = true
+            override fun generate(prompt: String): String? = null
+            override fun release() = Unit
+        }
+        val generator = AniobBenchmarkRunner.nativeGenerator(engine)
+        assertEquals(DecodingMode.NON_DETERMINISTIC, generator.decoding.mode)
+        val fixture = Fixture()
+        val plan = fixture.plan(listOf(fixture.case(BenchmarkCondition.COLD)), arms = listOf(BenchmarkConfiguration.NO_MEMORY))
+        val action = AniobBenchmarkRunner(fixture, generator, 0).runBenchmark(plan).single().actions.single()
+        assertNull(action.appliedGenerationSeed)
+        assertEquals("PROVIDER_ERROR", action.failureKind)
+        assertTrue(action.failureReason!!.contains("Native generation returned no result"))
+    }
+
+    @Test fun retrievalScoresCompetingCatalogsWithoutUsingFixtureLabelsForSelection() = runBlocking {
+        val fixture = Fixture()
+        val cold = fixture.case(BenchmarkCondition.COLD)
+        val warm = fixture.case(BenchmarkCondition.WARM).experience!!
+        val stale = fixture.case(BenchmarkCondition.STALE_EXPERIENCE).experience!!
+        fun candidate(name: String, label: RetrievalLabel, trigger: String, artifact: BenchmarkExperience = warm) =
+            BenchmarkRetrievalCandidate(artifact.copy(artifactId = name,
+                skill = artifact.skill!!.copy(name = name, triggerKeywords = listOf(trigger))), label)
+        fun query(id: String, vararg candidates: BenchmarkRetrievalCandidate) = cold.copy(scenarioId = id,
+            retrieval = BenchmarkRetrievalCase(id, candidates.toList()))
+        val decoy = candidate("decoy", RetrievalLabel.IRRELEVANT, "change airplane mode")
+        val positive = query("positive", candidate("correct", RetrievalLabel.RELEVANT, "result panel"), decoy,
+            candidate("old", RetrievalLabel.STALE, "retired panel", stale))
+        val wrong = query("wrong", candidate("stale-wins", RetrievalLabel.STALE, "find the result panel", stale),
+            candidate("relevant-loses", RetrievalLabel.RELEVANT, "result panel"))
+        val ambiguous = query("ambiguous", candidate("tie-a", RetrievalLabel.AMBIGUOUS, "result panel"),
+            candidate("tie-b", RetrievalLabel.AMBIGUOUS, "result panel"), decoy)
+        val plan = fixture.plan(listOf(positive, wrong, ambiguous), arms = listOf(BenchmarkConfiguration.VALIDATED_SKILLS))
+        val rows = fixture.runner().runBenchmark(plan)
+        val actual = rows.associate { it.trial.case.scenarioId to it.retrieval!!.selectedArtifactId }
+        assertEquals(mapOf("positive" to "correct", "wrong" to "stale-wins", "ambiguous" to null), actual)
+        val metrics = BenchmarkStatistics.retrievalMetrics(rows, 2)
+        for (name in listOf("retrieval_precision_at_1", "retrieval_recall_at_1", "stale_rejection_accuracy", "correct_skill_selection_rate"))
+            assertEquals(0.5, metrics.getValue(name).mean!!, 0.0)
+        for (name in listOf("irrelevant_rejection_accuracy", "ambiguous_retrieval_rejection_rate", "downstream_independently_verified_success_rate"))
+            assertEquals(1.0, metrics.getValue(name).mean!!, 0.0)
+        assertTrue(BenchmarkStatistics.summarize(rows, 2).isEmpty())
+        val dir = java.io.File(temporaryFolder.root, "retrieval")
+        BenchmarkCsv.write(dir, plan, rows)
+        assertTrue(java.io.File(dir, "retrieval.csv").readText().contains("stale-wins"))
+        assertTrue(java.io.File(dir, "study.csv").readText().contains("CONTROLLED_RETRIEVAL"))
     }
 
     @Test fun allArmsRunWithFrozenExperienceAndWithoutCarryover() = runBlocking {
@@ -134,6 +296,18 @@ class AniobBenchmarkRunnerTest {
         assertEquals(BenchmarkTaskStatus.NOT_MET, trial.status)
     }
 
+    @Test fun acceptedDispatchWithWrongForegroundRecordsVerificationFailure() = runBlocking {
+        val fixture = Fixture(fakeDispatchSnapshot = true)
+        val cold = fixture.case(BenchmarkCondition.COLD)
+        val shortcut = cold.copy(task = cold.task.copy(track = Track.DETERMINISTIC_SHORTCUT,
+            allowedActionTypes = setOf("open_app", "finish"), observableCriteria = SuccessCriteria(mustShowPackage = listOf("fixture.done"))))
+        val row = fixture.runner().runBenchmark(fixture.plan(listOf(shortcut))).single().actions.single()
+        assertTrue(row.dispatched)
+        assertEquals(BenchmarkActionStatus.FAILED, row.status)
+        assertEquals("VERIFICATION_FAILED", row.failureKind)
+        assertTrue(row.failureReason!!.contains("fixture.done"))
+    }
+
     @Test fun shortcutTrackNeverInvokesGenerationOrRunsFiveCopies() = runBlocking {
         val fixture = Fixture()
         val cold = fixture.case(BenchmarkCondition.COLD)
@@ -183,9 +357,10 @@ class AniobBenchmarkRunnerTest {
     }
 
     private class Fixture(private val skipRestoreAfterFirst: Boolean = false, private val initialOracleUnknown: Boolean = false,
-        private val fakeDispatchSnapshot: Boolean = false) : BenchmarkEnvironment {
+        private val fakeDispatchSnapshot: Boolean = false, private val rejectDispatch: Boolean = false,
+        decoding: BenchmarkDecoding = BenchmarkDecoding(), generationTimeoutMs: Long = 30_000L) : BenchmarkEnvironment {
         override val runtime = BenchmarkRuntime("fixture", "1", "fixture, sim", "1", "SCRIPTED", "1", "benchmark-test",
-            "fixture-settings@1", "test-source", simulated = true)
+            "fixture-settings@1", "test-source", simulated = true, decoding = decoding, generationTimeoutMs = generationTimeoutMs)
         var resetCalls = 0
         var dispatches = 0
         val prompts = mutableListOf<String>()
@@ -236,6 +411,7 @@ class AniobBenchmarkRunnerTest {
         override suspend fun observe() = observation(current.layoutId, current.inputId, phase)
         override suspend fun dispatch(action: AniobAction): StepPipeline.DispatchOutcome {
             dispatches++
+            if (rejectDispatch) return StepPipeline.DispatchOutcome(false, reason = "fixture dispatch rejected")
             if (fakeDispatchSnapshot) return StepPipeline.DispatchOutcome(true, screenAfter = observation(current.layoutId, current.inputId, "good").screen)
             val target = AniobActionExecutor.resolveTarget(action, observe().screen)?.node
             phase = when {

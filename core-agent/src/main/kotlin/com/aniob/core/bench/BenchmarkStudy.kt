@@ -13,7 +13,7 @@ import kotlin.random.Random
 enum class BenchmarkConfiguration { NO_MEMORY, HISTORY_ONLY, TRAJECTORY_REPLAY, LEARNED_SKILLS, VALIDATED_SKILLS }
 enum class BenchmarkCondition { COLD, WARM, REPEATED_INPUT, UI_DRIFT, STALE_EXPERIENCE }
 enum class BenchmarkActionStatus { VERIFIED, UNCONFIRMED, FAILED, SKIPPED }
-enum class BenchmarkTaskStatus { VERIFIED, NOT_MET, INCONCLUSIVE, INVALID_RESET, TIMED_OUT }
+enum class BenchmarkTaskStatus { VERIFIED, NOT_MET, INCONCLUSIVE, INVALID_RESET, TIMED_OUT, DISPATCH_UNRESOLVED, RECOVERY_BLOCKED, EXECUTION_ERROR, INTERRUPTED }
 enum class AuditVerdict { MET, NOT_MET, UNKNOWN }
 enum class ReuseDecision { NO_MATCH, REPLAYED, REUSED, REJECTED, ADAPTED, ADAPTATION_FAILED, VALIDATION_FAILED }
 
@@ -40,7 +40,33 @@ data class BenchmarkGeneration(
 /** Stateless generation: no server-side conversation or hidden cross-trial state. */
 fun interface BenchmarkGenerator {
     suspend fun generate(prompt: String, seed: Int): BenchmarkGeneration
+    val decoding: BenchmarkDecoding get() = BenchmarkDecoding()
+
+    companion object {
+        /** The adapter must apply these effective settings on every call, not merely advertise them. */
+        fun configured(settings: BenchmarkDecoding, call: suspend (String, Int?) -> BenchmarkGeneration): BenchmarkGenerator =
+            object : BenchmarkGenerator {
+                override val decoding = settings
+                override suspend fun generate(prompt: String, seed: Int) =
+                    call(prompt, seed.takeIf { settings.mode == DecodingMode.SEEDED_SAMPLING })
+            }
+    }
 }
+
+enum class DecodingMode { DETERMINISTIC, SEEDED_SAMPLING, NON_DETERMINISTIC }
+
+data class BenchmarkDecoding(
+    val mode: DecodingMode = DecodingMode.NON_DETERMINISTIC,
+    val effectiveParameters: Map<String, String> = emptyMap()
+) {
+    init {
+        require(effectiveParameters.none { (key, value) -> key.isBlank() || value.isBlank() })
+        require(mode == DecodingMode.NON_DETERMINISTIC || effectiveParameters.isNotEmpty())
+    }
+}
+
+class BenchmarkDispatchUnresolved(message: String) : IllegalStateException(message)
+class BenchmarkRecoveryBlocked(message: String) : IllegalStateException(message)
 
 data class BenchmarkRuntime(
     val deviceId: String,
@@ -53,9 +79,14 @@ data class BenchmarkRuntime(
     /** Immutable record of decoding, thermals/power policy, network, task budgets and engine settings. */
     val settingsId: String,
     val sourceRevision: String,
-    val simulated: Boolean
+    val simulated: Boolean,
+    val decoding: BenchmarkDecoding = BenchmarkDecoding(),
+    val generationTimeoutMs: Long = 30_000L
 ) {
-    init { require(listOf(deviceId, deviceBuild, model, modelVersion, provider, providerVersion, executionMode, settingsId, sourceRevision).none { it.isBlank() }) }
+    init {
+        require(generationTimeoutMs > 0)
+        require(listOf(deviceId, deviceBuild, model, modelVersion, provider, providerVersion, executionMode, settingsId, sourceRevision).none { it.isBlank() })
+    }
 }
 
 data class BenchmarkObservation(
@@ -113,12 +144,15 @@ data class BenchmarkCase(
     val condition: BenchmarkCondition,
     val expectedStart: BenchmarkStart,
     val slots: Map<String, String> = emptyMap(),
-    val experience: BenchmarkExperience? = null
+    val experience: BenchmarkExperience? = null,
+    val retrieval: BenchmarkRetrievalCase? = null
 ) {
     init {
         require(listOf(scenarioId, inputId, layoutId, difficulty).none { it.isBlank() })
         require(task.maxSteps > 0 && task.timeoutSeconds > 0 && task.observableCriteria.hasObservableCheck)
         require(!task.requiresConfirmation) { "Controlled fixtures must not require auto-approval" }
+        require(retrieval == null || (experience == null && condition == BenchmarkCondition.COLD &&
+            task.track == AniobBenchmarkManifest.Track.MODEL_GENERATION)) { "Retrieval has its own catalog, not a supplied seed" }
         val seed = experience
         require(seed == null || seed.sourceTaskId == task.taskId) { "Experience belongs to a different task" }
         require(when (condition) {
@@ -170,6 +204,10 @@ data class BenchmarkPlan(
         require(experimentId.isNotBlank() && sessionId.isNotBlank() && auditProtocolId.isNotBlank())
         require(repetitions > 0 && cases.isNotEmpty() && configurations.isNotEmpty())
         require(configurations.distinct().size == configurations.size)
+        require(cases.none { it.retrieval != null } || (cases.all { it.retrieval != null } &&
+            configurations == listOf(BenchmarkConfiguration.VALIDATED_SKILLS))) {
+            "Retrieval requires a separate plan using the validated skill execution policy"
+        }
         require(cases.map { it.task.taskId to it.scenarioId }.distinct().size == cases.size)
         cases.mapNotNull { it.experience }.forEach { require(it.sourceRunId != sessionId) }
         for (seed in cases.mapNotNull { it.experience }) {
@@ -197,7 +235,7 @@ data class BenchmarkPlan(
                     listOf(BenchmarkConfiguration.NO_MEMORY)
                 } else permutations.getValue(case)
                 val block = benchmarkDigest(listOf(experimentId, sessionId, case.task.taskId, case.scenarioId, repetition).joinToString("\u0000"))
-                val modelSeed = random.nextInt()
+                val modelSeed = random.nextInt() // schedule allocation; applied only by seeded samplers
                 order.indices.forEach { i ->
                     val arm = order[(i + repetition - 1) % order.size]
                     add(BenchmarkTrial(case, arm, repetition, size + 1, block, "$block-${arm.name}", modelSeed))
@@ -233,7 +271,11 @@ data class BenchmarkActionRow(
     /** Grounding, dispatch and verification wall time, excluding generation. */
     val actionLatencyMs: Double? = null,
     val preState: BenchmarkStart? = null,
-    val postState: BenchmarkStart? = null
+    val postState: BenchmarkStart? = null,
+    val failureReason: String? = null,
+    val appliedGenerationSeed: Int? = null,
+    /** False on an attempted dispatch whose physical completion/rejection is still unknown. */
+    val dispatchResolved: Boolean = dispatchAttempted
 )
 
 data class BenchmarkTrialResult(
@@ -249,8 +291,29 @@ data class BenchmarkTrialResult(
     val finalAudit: BenchmarkAudit? = null,
     val agentReportedSuccess: Boolean = false,
     /** Only artifacts exposed to the policy, independent of whether it invoked a skill. */
-    val loadedArtifactId: String? = null
+    val loadedArtifactId: String? = null,
+    val retrieval: BenchmarkRetrievalResult? = null
 )
 
 fun benchmarkDigest(value: String): String = MessageDigest.getInstance("SHA-256")
     .digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+/** Labels are used for scoring only, never passed to the matcher or execution policy. */
+enum class RetrievalLabel { RELEVANT, IRRELEVANT, STALE, AMBIGUOUS }
+
+data class BenchmarkRetrievalCandidate(val artifact: BenchmarkExperience, val label: RetrievalLabel) {
+    val skill: AniobSkill = requireNotNull(artifact.skill)
+    init { require(skill.steps.isNotEmpty() && skill.name.isNotBlank() && skill.version.isNotBlank()) }
+}
+
+data class BenchmarkRetrievalCase(val catalogId: String, val candidates: List<BenchmarkRetrievalCandidate>) {
+    init {
+        require(catalogId.isNotBlank() && candidates.size >= 2)
+        require(candidates.distinctBy { it.artifact.artifactId }.size == candidates.size)
+        require(candidates.distinctBy { it.skill.name.lowercase(java.util.Locale.ROOT) }.size == candidates.size)
+        require(candidates.none { it.label == RetrievalLabel.AMBIGUOUS } ||
+            (candidates.count { it.label == RetrievalLabel.AMBIGUOUS } >= 2 && candidates.none { it.label == RetrievalLabel.RELEVANT }))
+    }
+}
+
+data class BenchmarkRetrievalResult(val selectedArtifactId: String?, val reason: String)

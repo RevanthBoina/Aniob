@@ -11,8 +11,14 @@ import com.aniob.core.memory.RememberCache
 import com.aniob.core.providers.AniobNativeLlmEngine
 import com.aniob.core.providers.AniobToolCallParser
 import com.aniob.core.text.AniobTextFold
+import com.aniob.core.skills.AniobSkillEngine
+import com.aniob.core.skills.AniobSkillMatcher
+import com.aniob.core.auth.AniobSecretRedactor
 import com.aniob.core.verifier.DeterministicVerifier
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
@@ -34,23 +40,36 @@ class AniobBenchmarkRunner(
     /** [record] can persist each trial immediately so completed trials survive an interrupted study. */
     suspend fun runBenchmark(plan: BenchmarkPlan, record: (BenchmarkTrialResult) -> Unit = {}): List<BenchmarkTrialResult> = runLock.withLock {
         require(plan.runtime == environment.runtime) { "Benchmark runtime does not match the pre-registered plan" }
+        require(plan.runtime.decoding == generator.decoding) { "Generator decoding does not match the pre-registered plan" }
         val schedule = plan.schedule()
         val runIds = schedule.map { it.runId }.toSet()
-        require(plan.cases.none { it.experience?.sourceRunId in runIds }) { "Training/evaluation overlap" }
+        require(plan.cases.none { case -> (listOfNotNull(case.experience) +
+            case.retrieval?.candidates.orEmpty().map { it.artifact }).any { it.sourceRunId in runIds || it.sourceRunId == plan.sessionId }
+        }) { "Training/evaluation overlap" }
         val results = mutableListOf<BenchmarkTrialResult>()
         for (trial in schedule) {
             if (results.isNotEmpty() && cooldownMs > 0) delay(cooldownMs)
-            val result = runTrial(trial)
-            record(result)
+            var interruption: BenchmarkTrialResult? = null
+            val result = try {
+                runTrial(trial) { interruption = it }
+            } catch (e: CancellationException) {
+                record(interruption ?: BenchmarkTrialResult(trial, BenchmarkTaskStatus.INTERRUPTED, null, false,
+                    "Cancelled before reset verification", null))
+                throw e
+            } catch (e: Exception) {
+                BenchmarkTrialResult(trial, BenchmarkTaskStatus.EXECUTION_ERROR, null, false, diagnostic(e), null)
+            }
             results += result
+            record(result)
         }
         results
     }
 
-    private suspend fun runTrial(trial: BenchmarkTrial): BenchmarkTrialResult {
+    private suspend fun runTrial(trial: BenchmarkTrial, checkpoint: (BenchmarkTrialResult) -> Unit): BenchmarkTrialResult {
         val case = trial.case
         val task = case.task
         var resetError: String? = null
+        var recoveryBlocked = false
         val reset = runCatching {
             withTimeoutOrNull(task.timeoutSeconds * 1000L) {
                 environment.restore(case)
@@ -59,7 +78,8 @@ class AniobBenchmarkRunner(
             }
         }.getOrElse {
             if (it is CancellationException) throw it
-            resetError = "reset failed: ${it.javaClass.simpleName}"
+            recoveryBlocked = it is BenchmarkRecoveryBlocked
+            resetError = "reset failed: ${diagnostic(it)}"
             null
         }
         val initial = reset?.first
@@ -71,12 +91,14 @@ class AniobBenchmarkRunner(
                 startStamp != case.expectedStart -> "initial screen or world fingerprint did not match"
                 else -> "independent precondition not established (criterion already met or unknown)"
             }
-            return BenchmarkTrialResult(trial, BenchmarkTaskStatus.INVALID_RESET, startStamp, false, reason,
+            return BenchmarkTrialResult(trial, if (recoveryBlocked) BenchmarkTaskStatus.RECOVERY_BLOCKED else BenchmarkTaskStatus.INVALID_RESET, startStamp, false, reason,
                 durationMs = null, initialAudit = initialAudit)
         }
 
         // Every trial gets a fresh policy, replay store and TaskContext; no writes go back to the seed.
-        val policy = ExperiencePolicy(trial)
+        val selection = case.retrieval?.let { selectExperience(case) }
+        val policy = ExperiencePolicy(trial, selection?.first, selection?.second.orEmpty())
+        val retrieval = case.retrieval?.let { BenchmarkRetrievalResult(selection?.first?.artifactId, requireNotNull(selection).third) }
         val pending = mutableListOf<PendingAudit>()
         val seen = mutableSetOf<String>()
         var lastState = startStamp
@@ -104,7 +126,16 @@ class AniobBenchmarkRunner(
         fun elapsed() = (nanoTime() - started) / 1_000_000.0
         val deadlineMs = task.timeoutSeconds * 1000L
         var progress: Progress? = null
-        val final = withTimeoutOrNull(deadlineMs) {
+        var executionError: Exception? = null
+        fun interrupted() = BenchmarkTrialResult(trial, BenchmarkTaskStatus.INTERRUPTED, startStamp, true,
+            "Cancelled during trial", elapsed(), pending.map { it.row } + listOfNotNull(progress?.let { p ->
+                BenchmarkActionRow(p.step, (p.action ?: p.proposal?.action)?.toolName ?: "generation",
+                    if (p.attempted) BenchmarkActionStatus.UNCONFIRMED else BenchmarkActionStatus.FAILED,
+                    DeterministicVerifier.EvidenceCategory.NONE, p.attempted, p.accepted, false,
+                    elapsed() - p.startedMs, elapsed(), generationMs = p.generationMs, source = source(p.proposal, task.track),
+                    dispatchResolved = p.dispatchResolved, failureKind = "INTERRUPTED", failureReason = "Cancelled during step", appliedGenerationSeed = p.seed)
+            }), policy.decisions.toList(), initialAudit, loadedArtifactId = policy.seed?.artifactId, retrieval = retrieval)
+        suspend fun execute(): BenchmarkObservation? = withTimeoutOrNull(deadlineMs) {
             for (step in 0 until task.maxSteps) {
                 val stepStarted = elapsed()
                 val before = environment.observe()
@@ -114,19 +145,31 @@ class AniobBenchmarkRunner(
                 var generation: BenchmarkGeneration? = null
                 var generationMs: Double? = null
                 var schemaValid = true
-                var providerError = false
+                var failureKind: String? = null
+                var failureReason: String? = null
                 if (planned == null) {
                     if (task.track == Track.DETERMINISTIC_SHORTCUT) {
                         planned = StepPipeline.Proposal.Model(AniobAction.OpenApp(task.observableCriteria.mustShowPackage.single()), "SHORTCUT")
                     } else {
                         val modelPrompt = prompt(trial, before.screen, ctx, policy.history)
                         val genStart = elapsed()
+                        val requestedSeed = trial.generationSeed + step
+                        flight.seed = requestedSeed.takeIf { generator.decoding.mode == DecodingMode.SEEDED_SAMPLING }
                         generation = try {
-                            generator.generate(modelPrompt, trial.generationSeed + step)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: java.io.IOException) {
-                            providerError = true
+                            withTimeoutOrNull(environment.runtime.generationTimeoutMs) { generator.generate(modelPrompt, requestedSeed) }
+                                .also { if (it == null) {
+                                    failureKind = "GENERATION_TIMEOUT"
+                                    failureReason = "Model generation exceeded ${environment.runtime.generationTimeoutMs} ms"
+                                } }
+                        } catch (e: TimeoutCancellationException) {
+                            currentCoroutineContext().ensureActive() // do not swallow the trial deadline or caller cancellation
+                            failureKind = "GENERATION_TIMEOUT"
+                            failureReason = diagnostic(e)
+                            null
+                        } catch (e: Exception) {
+                            currentCoroutineContext().ensureActive()
+                            failureKind = "PROVIDER_ERROR"
+                            failureReason = diagnostic(e)
                             null
                         } finally {
                             flight.generationMs = elapsed() - genStart
@@ -134,8 +177,14 @@ class AniobBenchmarkRunner(
                         flight.generation = generation
                         generationMs = flight.generationMs
                         // Parse the shared schema; let StepPipeline record live grounding failures.
-                        val parsed = generation?.output?.takeIf { it.isNotBlank() }?.let(AniobToolCallParser::parseToAction)
+                        val parsed = generation?.output?.takeIf { it.isNotBlank() }?.let {
+                            try { AniobToolCallParser.parseToAction(it) } catch (_: IllegalArgumentException) { null }
+                        }
                         schemaValid = parsed != null
+                        if (!schemaValid && failureKind == null) {
+                            failureKind = "INVALID_OUTPUT"
+                            failureReason = if (generation?.output.isNullOrBlank()) "Provider returned no action" else "Response did not match the action schema"
+                        }
                         planned = StepPipeline.Proposal.Model(parsed ?: AniobAction.Fail("Invalid model output"), environment.runtime.provider)
                     }
                 }
@@ -169,16 +218,44 @@ class AniobBenchmarkRunner(
                                 flight.action = effective
                                 dispatchIdentity = fingerprint(effective, actualBefore.screen)
                                 flight.fingerprint = dispatchIdentity
-                                environment.dispatch(effective).also {
+                                val dispatch = try {
+                                    environment.dispatch(effective)
+                                } catch (e: Exception) {
+                                    // StepPipeline converts non-cancellation dispatch exceptions to rejections.
+                                    // Retain the original exception so an unknown physical outcome stops this trial.
+                                    flight.dispatchError = e
+                                    throw e
+                                }
+                                dispatch.also {
                                     accepted = it.dispatched
                                     flight.accepted = accepted
+                                    flight.dispatchResolved = true
+                                    if (!accepted) failureReason = it.reason.takeIf(String::isNotBlank)?.let(::safeDiagnostic)
                                     platformTapOrigin = it.tapOrigin
                                 }.copy(screenAfter = null)
                             }
                         })
+                    flight.dispatchError?.let { throw it }
                     ctx = result.nextCtx
                 }
-                val status = classifyAction(result, attempted, control, schemaValid && allowed)
+                if (failureKind == null) failureKind = when {
+                    !allowed -> "DISALLOWED_TOOL"
+                    attempted && !accepted -> "DISPATCH_REJECTED"
+                    result?.verification?.status == DeterministicVerifier.Status.FAILED ->
+                        result.verification.failureKind?.name ?: "VERIFICATION_FAILED"
+                    result?.verification?.status == DeterministicVerifier.Status.UNCONFIRMED -> "VERIFICATION_UNCONFIRMED"
+                    action is AniobAction.Fail -> "MODEL_REPORTED_FAILURE"
+                    else -> null
+                }
+                if (failureKind != null && failureReason == null) failureReason = when {
+                    !allowed -> "Tool outside manifest allowlist"
+                    attempted && !accepted -> result?.verification?.reason ?: "Dispatch rejected"
+                    action is AniobAction.Fail -> action.reason
+                    else -> result?.verification?.reason ?: result?.reflection?.reason
+                }?.let(::safeDiagnostic)
+                val status = if (!schemaValid || (attempted && !accepted) ||
+                    (control && result?.verification?.status == DeterministicVerifier.Status.FAILED)) BenchmarkActionStatus.FAILED
+                else classifyAction(result, attempted, control, schemaValid && allowed)
                 flight.status = status
                 flight.evidence = result?.verification?.takeIf { status == BenchmarkActionStatus.VERIFIED }?.evidenceCategory
                 val after = if (attempted) environment.observe().also { current = it } else settledObservation ?: current
@@ -195,16 +272,11 @@ class AniobBenchmarkRunner(
                         repeatedWithoutStateChange = duplicate, actionFingerprint = dispatchIdentity,
                         source = source(planned, task.track),
                         actionLatencyMs = flight.actionStartedMs?.let { ended - it }, preState = preState, postState = postState,
-                        failureKind = when {
-                            providerError -> "PROVIDER_ERROR"
-                            !schemaValid -> "SCHEMA"
-                            !allowed -> "DISALLOWED_TOOL"
-                            else -> result?.verification?.failureKind?.name
-                        }), result?.action ?: action, actualBefore, after)
+                        failureKind = failureKind, failureReason = failureReason, appliedGenerationSeed = flight.seed), result?.action ?: action, actualBefore, after)
                 progress = null
                 policy.afterStep(step, planned, status)
                 when {
-                    !schemaValid -> { reason = "invalid model output"; break }
+                    !schemaValid || (attempted && !accepted) -> { reason = "$failureKind: $failureReason"; break }
                     !allowed -> { reason = "tool outside manifest allowlist"; break }
                     action is AniobAction.Fail -> { reason = "model reported failure"; break }
                     result?.terminalState == StepResult.TerminalState.SUCCESS -> {
@@ -225,11 +297,23 @@ class AniobBenchmarkRunner(
             }
             environment.observe().also { current = it }
         }
+        val final = try {
+            execute()
+        } catch (e: CancellationException) {
+            checkpoint(interrupted())
+            throw e
+        } catch (e: Exception) {
+            executionError = e
+            reason = diagnostic(e)
+            null
+        }
         val duration = elapsed()
-        val timedOut = final == null || duration > deadlineMs
-        // For interrupted dispatches, try a fresh read, but do not invent an outcome from the last
-        // pre-action snapshot when the device did not yield a post-deadline observation.
-        val freshFinal = final ?: auditRead { environment.observe() }
+        val timedOut = executionError == null && (final == null || duration > deadlineMs)
+        val unresolved = executionError is BenchmarkDispatchUnresolved || progress?.let { it.attempted && !it.dispatchResolved } == true
+        // Never audit an unresolved dispatch against a screen the queued input could still change.
+        // For other terminal paths, a fresh observation is preferable to the last pre-action snapshot.
+        checkpoint(interrupted())
+        val freshFinal = if (unresolved) null else final ?: auditRead { environment.observe() }
         progress?.let { p ->
             val action = p.action ?: p.proposal?.action
             val control = action is AniobAction.Finish || action is AniobAction.Fail
@@ -237,14 +321,18 @@ class AniobBenchmarkRunner(
             val postState = freshFinal?.stamp()
             pending += PendingAudit(BenchmarkActionRow(p.step, action?.toolName ?: "interrupted_generation",
                 p.status ?: when {
-                    p.accepted -> BenchmarkActionStatus.UNCONFIRMED
-                    p.attempted -> BenchmarkActionStatus.FAILED
-                    else -> BenchmarkActionStatus.SKIPPED
+                    p.attempted && (p.accepted || !p.dispatchResolved) -> BenchmarkActionStatus.UNCONFIRMED
+                    else -> BenchmarkActionStatus.FAILED
                 }, p.evidence ?: DeterministicVerifier.EvidenceCategory.NONE, p.attempted, p.accepted,
                 control && p.schemaValid, duration - p.startedMs, duration, p.generationMs,
                 p.generation?.inputTokens, p.generation?.outputTokens, p.generation?.usageSource,
                 repeatedWithoutStateChange = repeated(p.fingerprint, preState, postState), actionFingerprint = p.fingerprint,
-                source = source(p.proposal, task.track), failureKind = "DEADLINE",
+                source = source(p.proposal, task.track), failureKind = when {
+                    unresolved -> "DISPATCH_UNRESOLVED"
+                    timedOut && p.proposal == null && p.generationMs != null -> "GENERATION_TIMEOUT"
+                    timedOut -> "DEADLINE"
+                    else -> "EXECUTION_ERROR"
+                }, dispatchResolved = p.dispatchResolved, failureReason = if (timedOut) "Trial deadline exceeded" else reason, appliedGenerationSeed = p.seed,
                 actionLatencyMs = p.actionStartedMs?.let { duration - it }, preState = preState, postState = postState), action, p.before, freshFinal)
         }
         // Auditing is outside timing, has no configuration/status input and never feeds the policy.
@@ -255,19 +343,23 @@ class AniobBenchmarkRunner(
             else p.row
         }
         val taskStatus = when {
+            unresolved -> BenchmarkTaskStatus.DISPATCH_UNRESOLVED
             timedOut -> BenchmarkTaskStatus.TIMED_OUT
+            executionError != null -> BenchmarkTaskStatus.EXECUTION_ERROR
             finalAudit.verdict == AuditVerdict.UNKNOWN -> BenchmarkTaskStatus.INCONCLUSIVE
             finalAudit.verdict == AuditVerdict.MET && rows.any { it.dispatchAttempted } -> BenchmarkTaskStatus.VERIFIED
             finalAudit.verdict == AuditVerdict.MET -> BenchmarkTaskStatus.INCONCLUSIVE
             else -> BenchmarkTaskStatus.NOT_MET
         }
-        return BenchmarkTrialResult(trial, taskStatus, startStamp, true, if (timedOut) "deadline exceeded" else reason,
-            duration, rows, policy.decisions.toList(), initialAudit, finalAudit, agentSuccess, policy.seed?.artifactId)
+        return BenchmarkTrialResult(trial, taskStatus, startStamp, true, if (unresolved) "Dispatch unresolved: ${if (timedOut) "trial deadline exceeded" else reason}" else if (timedOut) "deadline exceeded" else reason,
+            duration, rows, policy.decisions.toList(), initialAudit, finalAudit, agentSuccess, policy.seed?.artifactId, retrieval)
     }
 
     private suspend fun <T> auditRead(read: suspend () -> T): T? = try {
         withTimeoutOrNull(AUDIT_CAPTURE_TIMEOUT_MS) { read() }
-    } catch (_: java.io.IOException) {
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
         null
     }
 
@@ -282,6 +374,9 @@ class AniobBenchmarkRunner(
         var action: AniobAction? = null
         var actionStartedMs: Double? = null
         var attempted = false
+        var dispatchResolved = false
+        var dispatchError: Exception? = null
+        var seed: Int? = null
         var accepted = false
         var fingerprint: String? = null
         var status: BenchmarkActionStatus? = null
@@ -297,11 +392,13 @@ class AniobBenchmarkRunner(
             else -> if (track == Track.DETERMINISTIC_SHORTCUT) "SHORTCUT" else "MODEL"
         }
 
-        /** Only use with a native engine whose per-call context is cleared. Native usage is unknown. */
-        fun nativeGenerator(engine: AniobNativeLlmEngine): BenchmarkGenerator {
+        /** Native generate(prompt) has no verified seed or deterministic-decoding API. */
+        fun nativeGenerator(engine: AniobNativeLlmEngine, knownParameters: Map<String, String> = emptyMap()): BenchmarkGenerator {
             require(engine.isReady()) { "Load the benchmark model before measurement" }
-            return BenchmarkGenerator { prompt, _ ->
-                BenchmarkGeneration(runInterruptible(Dispatchers.IO) { engine.generate(prompt) })
+            return BenchmarkGenerator.configured(BenchmarkDecoding(effectiveParameters = knownParameters)) { prompt, _ ->
+                BenchmarkGeneration(checkNotNull(runInterruptible(Dispatchers.IO) { engine.generate(prompt) }) {
+                    "Native generation returned no result; engine does not expose the underlying error"
+                })
             }
         }
 
@@ -314,6 +411,20 @@ class AniobBenchmarkRunner(
                 attempted || verification?.failureKind != null -> BenchmarkActionStatus.FAILED
                 else -> BenchmarkActionStatus.SKIPPED
             }
+        }
+
+        private fun safeDiagnostic(message: String) = AniobSecretRedactor.redact(message).take(500)
+
+        private fun diagnostic(error: Throwable): String = safeDiagnostic(listOfNotNull(
+            error.javaClass.simpleName, error.message?.takeIf(String::isNotBlank)).joinToString(": "))
+
+        private fun selectExperience(case: BenchmarkCase): Triple<BenchmarkExperience?, Map<String, String>, String> {
+            val catalog = requireNotNull(case.retrieval)
+            val engine = AniobSkillEngine()
+            engine.getLoadedSkills().forEach { engine.removeSkill(it.name) }
+            catalog.candidates.forEach { engine.registerSkill(it.skill) }
+            val match = AniobSkillMatcher(engine).match(case.task.goal)
+            return Triple(catalog.candidates.singleOrNull { it.skill == match.skill }?.artifact, match.extractedSlots, match.reason)
         }
 
         private fun fingerprint(action: AniobAction, screen: AniobScreenState): String? {
@@ -350,8 +461,10 @@ class AniobBenchmarkRunner(
 }
 
 /** Isolated, one-mechanism policies; production replay, slot binding, grounding and gates are reused. */
-private class ExperiencePolicy(private val trial: BenchmarkTrial) {
-    val seed = trial.case.experience.takeUnless { trial.configuration == BenchmarkConfiguration.NO_MEMORY }
+private class ExperiencePolicy(private val trial: BenchmarkTrial, retrieved: BenchmarkExperience?,
+    retrievedSlots: Map<String, String>) {
+    val seed = (retrieved ?: trial.case.experience).takeUnless { trial.configuration == BenchmarkConfiguration.NO_MEMORY }
+    private val slots = if (trial.case.retrieval == null) trial.case.slots else retrievedSlots
     val history = seed?.history.orEmpty().takeLast(12)
     val decisions = mutableListOf<BenchmarkReuse>()
     private val replay = if (trial.configuration == BenchmarkConfiguration.TRAJECTORY_REPLAY) {
@@ -375,7 +488,7 @@ private class ExperiencePolicy(private val trial: BenchmarkTrial) {
         val skill = skill ?: return null
         if (skillStopped) return null
         val skillStep = skill.steps.getOrNull(skillIndex++) ?: return null
-        val bound = skillStep.toAniobAction(trial.case.slots)
+        val bound = skillStep.toAniobAction(slots)
         val reference = seed!!.references[skillStep.stepIndex]
         if (bound == null || skill.targetPackage?.let { it != screen.packageName } == true ||
             (bound !is AniobAction.Finish && bound.toolName !in trial.case.task.allowedActionTypes)) {

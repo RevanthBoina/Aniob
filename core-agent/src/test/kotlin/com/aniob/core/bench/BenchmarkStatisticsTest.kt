@@ -77,6 +77,31 @@ class BenchmarkStatisticsTest {
         assertNull(paired.difference.meanCi95)
     }
 
+    @Test fun unknownAndTimedOutOutcomesNeverBecomeAdjudicatedFailures() {
+        val arms = listOf(BenchmarkConfiguration.NO_MEMORY, BenchmarkConfiguration.LEARNED_SKILLS)
+        val trials = plan.copy(configurations = arms).schedule().map { trial ->
+            val row = result(trial, trial.configuration == BenchmarkConfiguration.LEARNED_SKILLS)
+            if (trial.configuration == BenchmarkConfiguration.LEARNED_SKILLS) row else when (trial.repetition) {
+                2 -> row.copy(status = BenchmarkTaskStatus.INCONCLUSIVE, finalAudit = BenchmarkAudit(AuditVerdict.UNKNOWN))
+                3 -> row.copy(status = BenchmarkTaskStatus.TIMED_OUT) // even a known audit is not an in-budget adjudication
+                4 -> row.copy(status = BenchmarkTaskStatus.INVALID_RESET, resetVerified = false, finalAudit = null)
+                5 -> row.copy(finalAudit = null) // a nominal NOT_MET without evidence does not count
+                else -> row
+            }
+        }
+        val baseline = BenchmarkStatistics.summarize(trials, 7).single { it.cell.configuration == arms.first() }.metrics
+        assertEquals(1, baseline.getValue("independently_verified_task_success_rate").n)
+        assertEquals(0.5, baseline.getValue("final_audit_coverage").mean!!, 0.0)
+        assertEquals(0.25, baseline.getValue("adjudicated_outcome_coverage").mean!!, 0.0)
+        assertEquals(0.25, baseline.getValue("timeout_rate").mean!!, 0.0)
+        assertEquals(0.25, baseline.getValue("inconclusive_rate").mean!!, 0.0)
+        assertEquals(0.2, baseline.getValue("invalid_reset_rate").mean!!, 0.0)
+        val paired = BenchmarkStatistics.pairedSuccess(trials, 7).single()
+        assertEquals(5, paired.candidatePairs)
+        assertEquals(1, paired.difference.n)
+        assertEquals(1, paired.wins)
+    }
+
     @Test fun statisticsUseSampleDeviationNearestRankAndTaskClusterIntervals() {
         val samples = listOf("A" to 1.0, "A" to 3.0, "B" to 5.0, "B" to 7.0)
         val s = BenchmarkStatistics.sample(samples, 10)
@@ -96,5 +121,6 @@ class BenchmarkStatisticsTest {
 
     private fun result(trial: BenchmarkTrial, success: Boolean, actions: List<BenchmarkActionRow> = emptyList()) =
         BenchmarkTrialResult(trial, if (success) BenchmarkTaskStatus.VERIFIED else BenchmarkTaskStatus.NOT_MET,
-            trial.case.expectedStart, true, "fixture", 40.0, actions)
+            trial.case.expectedStart, true, "fixture", 40.0, actions,
+            finalAudit = BenchmarkAudit(if (success) AuditVerdict.MET else AuditVerdict.NOT_MET, "fixture-audit"))
 }
