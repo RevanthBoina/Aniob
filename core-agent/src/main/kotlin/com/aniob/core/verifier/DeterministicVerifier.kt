@@ -1,11 +1,15 @@
 package com.aniob.core.verifier
 
 import com.aniob.core.domain.*
+import com.aniob.core.execution.AniobActionExecutor
 
 /**
  * High-speed deterministic action verifier (<10ms, ZERO LLM calls).
  */
 object DeterministicVerifier {
+
+    enum class Status { VERIFIED, UNCONFIRMED, FAILED }
+    enum class FailureKind { TARGET_MISSING, TARGET_UNAVAILABLE, DISPATCH_REJECTED, NO_PROGRESS }
 
     data class VerificationResult(
         val isExpected: Boolean,
@@ -15,7 +19,9 @@ object DeterministicVerifier {
         val isSuccessful: Boolean = isExpected,
         val explanation: String = reason,
         val textEvidence: String? = null,
-        val evaluations: List<com.aniob.core.domain.CriterionEvaluation> = emptyList()
+        val evaluations: List<com.aniob.core.domain.CriterionEvaluation> = emptyList(),
+        val status: Status = if (isExpected) Status.VERIFIED else Status.FAILED,
+        val failureKind: FailureKind? = null
     )
 
     /**
@@ -24,7 +30,9 @@ object DeterministicVerifier {
     fun verify(
         action: AniobAction,
         screenBefore: AniobScreenState?,
-        screenAfter: AniobScreenState
+        screenAfter: AniobScreenState,
+        dispatched: Boolean = true,
+        resolvedNode: AniobNode? = null
     ): VerificationResult {
         val start = System.currentTimeMillis()
 
@@ -38,21 +46,20 @@ object DeterministicVerifier {
             return VerificationResult(false, System.currentTimeMillis() - start, action.reason)
         }
 
+        if (action is AniobAction.Tap) {
+            val target = resolvedNode ?: screenBefore?.let {
+                AniobActionExecutor.resolveTarget(action, it)?.node ?: TapEvidence.unavailableTarget(action.target, it)
+            }
+            return verifyTap(screenBefore, screenAfter, target, dispatched, start)
+        }
+        if (!dispatched) return VerificationResult(false, System.currentTimeMillis() - start,
+            "Android did not accept dispatch", failureKind = FailureKind.DISPATCH_REJECTED)
+
         if (screenBefore == null && action !is AniobAction.OpenApp && action !is AniobAction.InputText) {
             return VerificationResult(true, System.currentTimeMillis() - start, "Initial step verified.")
         }
 
         val result = when (action) {
-            is AniobAction.Tap -> {
-                if (screenBefore != null && (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName)) {
-                    true to "Tap confirmed: screen transitioned."
-                } else if (screenBefore == null) {
-                    true to "Tap acknowledged on initial screen."
-                } else {
-                    false to "No-effect: treeHash unchanged after Tap on ${action.describeTarget()}."
-                }
-            }
-
             is AniobAction.LongPress -> {
                 if (screenBefore != null && screenBefore.treeHash != screenAfter.treeHash) {
                     true to "LongPress confirmed: UI state transitioned."
@@ -139,12 +146,39 @@ object DeterministicVerifier {
         val textEvidence = when (action) {
             is AniobAction.OpenApp -> if (result.first) screenAfter.packageName else null
             is AniobAction.InputText -> if (result.first) action.text else null
-            is AniobAction.Tap -> if (result.first && screenBefore != null && screenBefore.packageName != screenAfter.packageName) {
-                "${screenBefore.packageName} -> ${screenAfter.packageName}"
-            } else null
             else -> null
         }
         return VerificationResult(isExpected = result.first, durationMs = duration, reason = result.second, textEvidence = textEvidence)
+    }
+
+    private fun verifyTap(
+        before: AniobScreenState?,
+        after: AniobScreenState,
+        target: AniobNode?,
+        dispatched: Boolean,
+        start: Long
+    ): VerificationResult {
+        fun result(status: Status, reason: String, failure: FailureKind? = null, evidence: String? = null) =
+            VerificationResult(status == Status.VERIFIED, System.currentTimeMillis() - start, reason,
+                textEvidence = evidence, status = status, failureKind = failure)
+
+        if (before == null || target == null || target !in before.nodes) return result(Status.FAILED,
+            "Tap target not found on the pre-dispatch screen", FailureKind.TARGET_MISSING)
+        if (!TapEvidence.isActionable(target, before)) return result(Status.FAILED,
+            "Tap target unavailable or not actionable before dispatch", FailureKind.TARGET_UNAVAILABLE)
+        if (!dispatched) return result(Status.FAILED,
+            "Android did not accept tap dispatch", FailureKind.DISPATCH_REJECTED)
+
+        val current = TapEvidence.findTarget(after.nodes, target)
+        val interaction = TapEvidence.interaction(before, after, target, current)
+        if (interaction != null) return result(Status.VERIFIED, "Tap confirmed: $interaction.")
+        if (TapEvidence.screenTransition(before, after)) return result(Status.VERIFIED,
+            "Tap confirmed: screen transitioned.", evidence = if (before.packageName != after.packageName)
+                "${before.packageName} -> ${after.packageName}" else null)
+
+        // A partial observation can omit a dispatched control; absence after dispatch is not a
+        // grounding miss and does not prove the gesture failed (or that it should be replayed).
+        return result(Status.UNCONFIRMED, "Tap dispatched; no conclusive interaction evidence. Recheck the screen before choosing the next action.")
     }
 
     /**

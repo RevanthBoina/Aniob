@@ -31,7 +31,8 @@ data class CompactNode(
     val paneTitle: String = "",
     val tooltip: String = "",
     val platformIndex: Int = -1,
-    val markup: String = ""
+    val markup: String = "",
+    val isFocused: Boolean = false
 ) {
     val isInteractive: Boolean
         get() = isClickable || isCheckable || isEditable || isScrollable
@@ -172,7 +173,8 @@ object ObserveTreeCompactor {
                 paneTitle = snapshot.paneTitle,
                 tooltip = snapshot.tooltip,
                 platformIndex = snapshot.platformIndex,
-                markup = markupOf(id, role, snapshot, draft.label)
+                markup = markupOf(id, role, snapshot, draft.label),
+                isFocused = snapshot.isFocused
             )
         }
 
@@ -231,7 +233,8 @@ object ObserveTreeCompactor {
         val attribute = if (role == "input") "text" else "label"
         val checked = if (node.isCheckable) " checked=${node.isChecked}" else ""
         val enabled = if (!node.isEnabled) " enabled=false" else ""
-        return "<$role id=$id $attribute='${escape(label)}'$checked$enabled>"
+        val focused = if (node.isFocused) " focused=true" else ""
+        return "<$role id=$id $attribute='${escape(label)}'$checked$enabled$focused>"
     }
 
     /** Keeps the markup well-formed when a screen contains quotes, tags or newlines. */

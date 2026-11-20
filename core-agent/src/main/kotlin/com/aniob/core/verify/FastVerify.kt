@@ -3,6 +3,9 @@ package com.aniob.core.verify
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.SuccessCriteria
+import com.aniob.core.domain.AniobNode
+import com.aniob.core.execution.AniobActionExecutor
+import com.aniob.core.verifier.TapEvidence
 import kotlinx.coroutines.delay
 
 /**
@@ -11,7 +14,8 @@ import kotlinx.coroutines.delay
  * Tier 1 samples the service's window-event counter every [POLL_INTERVAL_MS] and reads the node
  * tree only when it moved — plus one baseline read and one safety read every
  * [CAPTURE_EVERY_TICKS] ticks for apps that change without announcing it. It returns as soon as
- * - the structural identity of the screen changed (the action had an effect), or
+ * - the structural identity of the screen changed,
+ * - target-specific tap interaction evidence appeared, or
  * - text the action/task expects appeared that was not already visible before the action.
  *
  * Tier 2 only runs when tier 1 times out: one bitmap capture, kept for the next planning step
@@ -41,6 +45,9 @@ object FastVerify {
 
         /** Expected text appeared even though the structure hash is unchanged. */
         EXPECTED_TEXT,
+
+        /** Focus, keyboard, state or a matching interaction event confirmed the tap. */
+        INTERACTION,
 
         /** Nothing changed within the budget: fall through to the bitmap check. */
         TIMEOUT
@@ -142,7 +149,9 @@ object FastVerify {
         windowEvents: () -> Long? = { null },
         capturePoll: suspend () -> AniobScreenState?,
         screenshot: suspend () -> String? = { null },
-        finalCaptureAtTimeout: Boolean = false
+        finalCaptureAtTimeout: Boolean = false,
+        tap: AniobAction.Tap? = null,
+        tapTarget: AniobNode? = null
     ): Outcome {
         val preIdentity = preAction?.let(::screenIdentity).orEmpty()
         val prePackage = preAction?.packageName.orEmpty()
@@ -153,6 +162,15 @@ object FastVerify {
                 node.text.contains(needle, ignoreCase = true) ||
                     node.contentDescription.contains(needle, ignoreCase = true)
             } == true
+        }
+        val target = tapTarget ?: tap?.let { action ->
+            preAction?.let { AniobActionExecutor.resolveTarget(action, it)?.node }
+        }
+        fun decide(screen: AniobScreenState): Decision {
+            if (preAction != null && target != null && TapEvidence.isActionable(target, preAction) &&
+                TapEvidence.interaction(preAction, screen, target, TapEvidence.findTarget(screen.nodes, target)) != null
+            ) return Decision(Tier.INTERACTION)
+            return evaluate(preIdentity, screen, wantedTexts, prePackage)
         }
         val startedAt = System.nanoTime()
         var polls = 0
@@ -175,7 +193,7 @@ object FastVerify {
                 val screen = runCatching { capturePoll() }.getOrNull()
                 if (screen != null) last = screen
                 if (screen != null) {
-                    val decision = evaluate(preIdentity, screen, wantedTexts, prePackage)
+                    val decision = decide(screen)
                     if (decision.passed) {
                         return Outcome(
                             tier = decision.tier,
@@ -197,7 +215,7 @@ object FastVerify {
             val finalScreen = runCatching { capturePoll() }.getOrNull()
             if (finalScreen != null) {
                 last = finalScreen
-                val decision = evaluate(preIdentity, finalScreen, wantedTexts, prePackage)
+                val decision = decide(finalScreen)
                 if (decision.passed) return Outcome(tier = decision.tier, elapsedMs = elapsedMs(startedAt),
                     polls = polls, screen = finalScreen, matchedText = decision.matchedText,
                     screenshotTaken = false, captures = captures)

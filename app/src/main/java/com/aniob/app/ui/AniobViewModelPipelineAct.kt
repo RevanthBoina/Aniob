@@ -14,6 +14,7 @@ import com.aniob.core.run.TaskWaitState
 import com.aniob.core.narration.AgentPhase
 import com.aniob.core.ladder.AniobExecutionRouter
 import com.aniob.core.verify.FastVerify
+import com.aniob.core.verifier.DeterministicVerifier
 import com.aniob.core.safety.AskCategory
 import com.aniob.core.safety.AskPolicy
 import com.aniob.core.safety.InterceptResult
@@ -64,11 +65,12 @@ internal suspend fun AniobViewModel.pipelineAct(
         /**
          * Waits for the dispatched action to show up, then returns the screen to verify
          * against. Tier 1 polls window events every 50 ms (max 800 ms) and stops on the
-         * first structural change or expected text; only a timeout buys a bitmap, which is
+         * first structural change, tap evidence or expected text; only a timeout buys a bitmap, which is
          * kept for the next Reason step because an unchanged tree is exactly what a visual
          * popup or a no-op tap looks like.
          */
-        suspend fun awaitTransition(act: AniobAction): AniobScreenState? {
+        suspend fun awaitTransition(act: AniobAction, dispatch: StepPipeline.DispatchOutcome? = null): AniobScreenState? {
+            val origin = dispatch?.tapOrigin ?: dispatchOrigin
             if (accessibility == null) return null
             // Opening an app that is already in front has nothing to wait for; using the
             // launch budget here would idle for seconds before the next step.
@@ -86,7 +88,7 @@ internal suspend fun AniobViewModel.pipelineAct(
                 com.aniob.core.verify.FastVerify.MAX_WAIT_MS
             }
             val fast = com.aniob.core.verify.FastVerify.await(
-                preAction = dispatchOrigin,
+                preAction = origin,
                 expectedTexts = com.aniob.core.verify.FastVerify.expectedTexts(act, resolvedCriteria),
                 timeoutMs = budget,
                 windowEvents = { accessibility.windowEventSequence() },
@@ -94,11 +96,13 @@ internal suspend fun AniobViewModel.pipelineAct(
                     screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                 } },
                 screenshot = { captureVerifyScreenshot() },
-                finalCaptureAtTimeout = activeRunMode.fastDeltaVerify
+                finalCaptureAtTimeout = activeRunMode.fastDeltaVerify,
+                tap = act as? AniobAction.Tap,
+                tapTarget = dispatch?.tapTarget
             )
             fast.screenshotBase64?.let { bitmap ->
                 val id = com.aniob.core.verify.FastVerify
-                    .screenIdentity(fast.screen ?: dispatchOrigin)
+                    .screenIdentity(fast.screen ?: origin)
                 if (id.isNotBlank()) pendingVerifyScreenshot = id to bitmap
             }
             return fast.screen ?: accessibility.captureCurrentScreenState()
@@ -142,23 +146,26 @@ internal suspend fun AniobViewModel.pipelineAct(
                     val plannedMiss = act.semanticTarget() != null &&
                         com.aniob.core.execution.AniobActionExecutor
                             .planDispatch(act, dispatchOrigin) is DispatchCommand.NoOp
-                    var ok = if (accessibility != null) executeActionSync(accessibility, act, burstDispatchTreeHash ?: dispatchOrigin.screenHash.ifBlank { dispatchOrigin.treeHash }, waitForIdle = false) else true
+                    var dispatch = dispatchActionSync(accessibility, act,
+                        burstDispatchTreeHash ?: dispatchOrigin.screenHash.ifBlank { dispatchOrigin.treeHash }, waitForIdle = false)
                     actionsDispatched++
-                    var screenAfter = if (researchMode.skipFastStepVerification) null else awaitTransition(act)
+                    var screenAfter = if (dispatch.dispatched &&
+                        (!researchMode.skipFastStepVerification || act is AniobAction.Tap)
+                    ) awaitTransition(act, dispatch) else null
                     // A target named by its text can be searched for directly: scroll the
                     // container that should hold it until it shows, then run the SAME step
                     // again. No model call is spent on "it is further down".
                     val namedTarget = act.semanticTarget()
                     val namedText = AniobScrollHelper.textOf(namedTarget)
                     var namedSearchTried = false
-                    if (!ok && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
+                    if (!dispatch.dispatched && dispatch.targetRejection?.reason?.startsWith("grounding_miss:") == true && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
                         namedText != null
                     ) {
                         namedSearchTried = true
                         val found = scrollUntilTargetVisible(accessibility, dispatchOrigin, namedTarget, namedText)
                         if (found?.found == true) {
-                            ok = executeActionSync(accessibility, act)
-                            screenAfter = awaitTransition(act) ?: found.screen
+                            dispatch = dispatchActionSync(accessibility, act)
+                            if (dispatch.dispatched) screenAfter = awaitTransition(act, dispatch) ?: found.screen
                             app.eventLogger.info(
                                 "AniobViewModel",
                                 "Scroll-until-visible revealed '${namedText.take(40)}' after ${found.swipes} steps"
@@ -168,7 +175,7 @@ internal suspend fun AniobViewModel.pipelineAct(
                             preObservedScreen = found.screen
                         }
                     }
-                    if (!ok && !namedSearchTried && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
+                    if (!dispatch.dispatched && dispatch.targetRejection?.reason?.startsWith("grounding_miss:") == true && !namedSearchTried && burstDispatchTreeHash == null && plannedMiss && accessibility != null &&
                         com.aniob.core.perception.PreObserveScroll
                             .shouldScroll(dispatchOrigin, preObservedScreens)
                     ) {
@@ -190,10 +197,10 @@ internal suspend fun AniobViewModel.pipelineAct(
                                     "Pre-observe scroll: target has no stable identity, re-planning"
                                 )
                             } else {
-                                ok = executeActionSync(accessibility, retry)
-                                screenAfter = awaitTransition(retry) ?: revealed
+                                dispatch = dispatchActionSync(accessibility, retry)
+                                if (dispatch.dispatched) screenAfter = awaitTransition(retry, dispatch) ?: revealed
                             }
-                            if (ok) {
+                            if (dispatch.dispatched) {
                                 app.eventLogger.info(
                                     "AniobViewModel",
                                     "Pre-observe scroll revealed the target of ${act.describeAction()}"
@@ -210,7 +217,7 @@ internal suspend fun AniobViewModel.pipelineAct(
                             }
                         }
                     }
-                    StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
+                    dispatch.copy(screenAfter = screenAfter)
                 }
             }
         }
@@ -304,7 +311,8 @@ internal suspend fun AniobViewModel.pipelineAct(
                                 // not be silently treated as a denial merely because it is
                                 // inside a burst.
                                 confirm = confirmLambda,
-                                targetNode = target
+                                targetNode = target,
+                                refreshAfterUnconfirmed = captureLambda
                             )
                         } finally {
                             burstDispatchTreeHash = null
@@ -337,6 +345,7 @@ internal suspend fun AniobViewModel.pipelineAct(
                     }
                 )
                 taskContext = run.ctx
+                if (run.stop == com.aniob.core.execution.ActionBurstRunner.Stop.UNCONFIRMED) observationPolicy.reset()
                 currentScreen = run.screen
                 lastPlanResult = run.lastResult
                 val burstAllVerified = run.stop == com.aniob.core.execution.ActionBurstRunner.Stop.NONE &&
@@ -419,7 +428,8 @@ internal suspend fun AniobViewModel.pipelineAct(
 
                     com.aniob.core.execution.ActionBurstRunner.Stop.TARGET_GONE,
                     com.aniob.core.execution.ActionBurstRunner.Stop.NAVIGATED,
-                    com.aniob.core.execution.ActionBurstRunner.Stop.NO_CAPTURE -> {
+                    com.aniob.core.execution.ActionBurstRunner.Stop.NO_CAPTURE,
+                    com.aniob.core.execution.ActionBurstRunner.Stop.UNCONFIRMED -> {
                         // What really happened is kept; the rest of the plan is closed and
                         // the loop continues from the screen the plan revealed. This is the
                         // normal end of a plan that spans screens, not an error.
@@ -456,7 +466,7 @@ internal suspend fun AniobViewModel.pipelineAct(
         if (burstAbort == null && burstReplan != null) {
             app.eventLogger.info(
                 "AniobViewModel",
-                "Plan target invalidated ($burstReplan); dropping the rest and planning from a fresh screen"
+                "Plan needs a fresh observation ($burstReplan); dropping the remaining actions"
             )
             // A plan that spans screens ends this way by design, so batching stays on. Only
             // repeated plans that cannot even start mean the screen is thrashing, and then
@@ -471,11 +481,12 @@ internal suspend fun AniobViewModel.pipelineAct(
             // the inputs of the next plan are stable.
             val replanQuiet = accessibility?.let { windowQuiet(it, requireMovement = false) }
             until(BURST_REPLAN_SETTLE_MS) { replanQuiet?.settled() ?: false }
+            screenBefore = lastPlanResult?.nextCtx?.lastScreenState ?: currentScreen
             accessibility?.captureCurrentScreenState()?.let { fresh ->
                 screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
                 screenBefore = fresh
             }
-            _uiState.update { it.copy(statusMessage = "The screen changed. Planning the next step from what is on screen...") }
+            _uiState.update { it.copy(statusMessage = "Rechecking the screen and planning the next step...") }
             currentStep++
             return PipelineFlow.Continue
         }
@@ -524,6 +535,7 @@ internal suspend fun AniobViewModel.pipelineAct(
         val targetMissCountForStep = if (planConsumedStep || res.verificationSkippedFast) null else
             recordStepTargetOutcome(task.id, res, currentScreen)
         app.researchTelemetry.recordStep()
+        val unconfirmed = res.verification?.status == DeterministicVerifier.Status.UNCONFIRMED
         if (!res.verificationSkippedFast && ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay) {
             val postScreen = res.nextCtx.lastScreenState ?: currentScreen
             val isStalled = FastVerify.screenIdentity(postScreen) == FastVerify.screenIdentity(currentScreen)
@@ -531,7 +543,10 @@ internal suspend fun AniobViewModel.pipelineAct(
             val expectedReached = replayEntry?.expectedNextHash.orEmpty().let {
                 it.isBlank() || it == FastVerify.screenIdentity(postScreen)
             }
-            if (res.verification?.isSuccessful == true && !isStalled && expectedReached) {
+            if (unconfirmed) {
+                // Don't replay a possibly effective tap, but don't train the cache on ambiguity.
+                stalledReplayIdentities.add(FastVerify.screenIdentity(currentScreen))
+            } else if (res.verification?.isSuccessful == true && !isStalled && expectedReached) {
                 replayEntry?.let { rememberCache.recordSuccess(it.key) }
                 app.researchTelemetry.recordReplayValidated()
             } else {
@@ -539,7 +554,7 @@ internal suspend fun AniobViewModel.pipelineAct(
                 stalledReplayIdentities.add(FastVerify.screenIdentity(currentScreen))
                 app.researchTelemetry.recordReplayDiverged()
             }
-            viewModelScope.launch(Dispatchers.IO) { app.rememberCacheFile.save(rememberCache) }
+            if (!unconfirmed) viewModelScope.launch(Dispatchers.IO) { app.rememberCacheFile.save(rememberCache) }
         }
         if (proposal is StepPipeline.Proposal.Model && proposal.action is AniobAction.OpenApp && primaryProvider == "APP_LAUNCH") {
             if (res.verification?.isSuccessful == true) {
@@ -592,9 +607,11 @@ internal suspend fun AniobViewModel.pipelineAct(
                 )
             )
         }
-        if (!res.verificationSkippedFast) observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
+        if (unconfirmed) observationPolicy.reset()
+        else if (!res.verificationSkippedFast) observationPolicy.recordActionOutcome(
+            res.action, currentScreen.packageName, res.verification?.isSuccessful == true)
 
-        if (!res.verificationSkippedFast && primaryProvider == "LOCAL_SLM") {
+        if (!res.verificationSkippedFast && !unconfirmed && primaryProvider == "LOCAL_SLM") {
             if (res.verification?.isSuccessful == true) localFailCount = 0 else localFailCount++
         }
 
@@ -687,6 +704,7 @@ internal fun classifyStepOutcome(step: StepResult): ExecutionOutcomeStatus {
             }
         step.verificationSkippedFast -> ExecutionOutcomeStatus.UNVERIFIED
         verification == null -> ExecutionOutcomeStatus.UNVERIFIED
+        verification.status == DeterministicVerifier.Status.UNCONFIRMED -> ExecutionOutcomeStatus.UNVERIFIED
         verification.isSuccessful -> ExecutionOutcomeStatus.VERIFIED
         else -> ExecutionOutcomeStatus.FAILED
     }

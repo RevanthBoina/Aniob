@@ -67,8 +67,14 @@ data class TaskContext(
     /** Structured conversation turns (user/assistant/tool/observation) across the task lifecycle. */
     val conversationHistory: List<ChatTurn> = emptyList(),
     /** Real post-execution outcomes for every attempted/planned action in order, correlated by actionId. */
-    val executionResults: List<ActionExecutionRecord> = emptyList()
+    val executionResults: List<ActionExecutionRecord> = emptyList(),
+    val unconfirmedTaps: List<UnconfirmedTap> = emptyList()
 ) {
+    /** Screen and stable target for a tap that may already have taken effect. */
+    data class UnconfirmedTap(val screen: AniobScreenState, val target: AniobNode)
+
+    val hasUnverifiedActions: Boolean get() = hasFastSkippedSteps || unconfirmedTaps.isNotEmpty()
+
     data class TokenBudget(
         val maxTotal: Int = 32_000,
         val usedEstimate: Int = 0

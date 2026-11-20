@@ -11,6 +11,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.aniob.core.diff.AniobScreenDiff
 import com.aniob.core.domain.*
+import com.aniob.core.verifier.TapEvidence
 import com.aniob.core.perception.AniobScreenCaptureSource
 import com.aniob.core.perception.AniobFusedIndex
 import com.aniob.core.perception.AniobPerceptionTier
@@ -214,21 +215,42 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     }
 
     /**
-     * Monotonic count of window-structure events. The post-action verifier polls this cheap
+     * Monotonic count of window and input interaction events. The post-action verifier polls this cheap
      * counter every 50 ms and reads the node tree only when it moved, instead of walking the
      * tree on every tick.
      */
     private val windowEventCounter = java.util.concurrent.atomic.AtomicLong(0L)
 
-    /** Current value of the window-event counter; any change means the window moved. */
+    private val recentInteractionEvents = ArrayDeque<UiInteractionEvent>()
+
+    private fun recordInteractionEvent(event: AccessibilityEvent, kind: UiInteractionEvent.Kind) {
+        val source = event.source
+        try {
+            synchronized(recentInteractionEvents) {
+                val sequence = windowEventCounter.incrementAndGet()
+                if (source == null) return
+                val rect = Rect().also(source::getBoundsInScreen)
+                if (recentInteractionEvents.size == 16) recentInteractionEvents.removeFirst()
+                recentInteractionEvents.addLast(UiInteractionEvent(kind, sequence, event.eventTime,
+                    event.packageName?.toString().orEmpty(), source.className?.toString().orEmpty(),
+                    source.viewIdResourceName.orEmpty(), AniobRect(rect.left, rect.top, rect.right, rect.bottom)))
+            }
+        } finally {
+            source?.recycle()
+        }
+    }
+
+    /** Monotonic counter for structural and input interaction events. */
     fun windowEventSequence(): Long = windowEventCounter.get()
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-        ) {
-            windowEventCounter.incrementAndGet()
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> recordInteractionEvent(event, UiInteractionEvent.Kind.CLICKED)
+            AccessibilityEvent.TYPE_VIEW_FOCUSED -> recordInteractionEvent(event, UiInteractionEvent.Kind.FOCUSED)
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> windowEventCounter.incrementAndGet()
         }
         if (isRecordingDemo) {
             when (event.eventType) {
@@ -350,6 +372,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     }
 
     private fun captureLegacyScreen(includeInvisible: Boolean): AniobScreenState {
+        val captureUptimeMs = android.os.SystemClock.uptimeMillis()
         val seqAtCaptureStart = windowEventSequence()
         recycleLatestRefs()
         val rawNodes = mutableListOf<AniobNode>()
@@ -442,7 +465,10 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             isEventDrivenSkip = waterfall.waterfallLevelUsed == 1,
             screenHash = legacyScreenHash,
             observationKind = "legacy",
-            windowEventSeq = seqNow
+            windowEventSeq = seqNow,
+            hasImeWindow = hasInputMethodWindow(windowList),
+            interactionEvents = synchronized(recentInteractionEvents) { recentInteractionEvents.toList() },
+            interactionStartUptimeMs = captureUptimeMs
         )
         lastScreenState = screenState
         return screenState
@@ -463,6 +489,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         synchronized(compactCaptureLock) { captureCompactScreenLocked() }
 
     private fun captureCompactScreenLocked(): AniobScreenState {
+        val captureUptimeMs = android.os.SystemClock.uptimeMillis()
         val seqAtCaptureStart = windowEventSequence()
         recycleLatestRefs()
         val refs = ArrayList<AccessibilityNodeInfo>(64)
@@ -560,7 +587,10 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                 isEventDrivenSkip = waterfall.waterfallLevelUsed == 1,
                 screenHash = observation.screenHash,
                 observationKind = "compact",
-                windowEventSeq = seqNow
+                windowEventSeq = seqNow,
+                hasImeWindow = hasInputMethodWindow(windowList),
+                interactionEvents = synchronized(recentInteractionEvents) { recentInteractionEvents.toList() },
+                interactionStartUptimeMs = captureUptimeMs
             )
             lastScreenState = screenState
             return screenState
@@ -639,6 +669,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             isCheckable = node.isCheckable,
             isChecked = node.isChecked,
             isEditable = node.isEditable,
+            isFocused = hasInputFocus(node),
             isScrollable = node.isScrollable,
             isSelected = node.isSelected,
             isEnabled = node.isEnabled,
@@ -671,7 +702,9 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         isHeading = isHeading,
         paneTitle = paneTitle,
         tooltip = tooltip,
-        markup = markup
+        markup = markup,
+        isFocused = isFocused,
+        isCheckable = isCheckable
     )
 
     /**
@@ -681,7 +714,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      * a recycled handle, a non-clickable label) returns false so the caller falls back to the
      * coordinate gesture.
      */
-    private fun isNodeOccluded(node: AccessibilityNodeInfo): Boolean {
+    private fun isNodeOccluded(node: AccessibilityNodeInfo, tapPoint: Pair<Int, Int>? = null): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
         val wins = try { windows } catch (ex: IllegalStateException) { null } catch (ex: SecurityException) { null } ?: return false
         val nodeWindowId = node.windowId
@@ -694,7 +727,8 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                 w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
                 val winRect = Rect()
                 w.getBoundsInScreen(winRect)
-                if (Rect.intersects(winRect, nodeRect)) {
+                if (if (tapPoint == null) Rect.intersects(winRect, nodeRect)
+                    else winRect.contains(tapPoint.first, tapPoint.second)) {
                     return true
                 }
             }
@@ -781,11 +815,13 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             bounds = clippedBounds,
             isClickable = node.isClickable,
             isEditable = node.isEditable,
+            isFocused = hasInputFocus(node),
             isScrollable = node.isScrollable,
             isSelected = node.isSelected,
             isChecked = node.isChecked,
             isEnabled = node.isEnabled,
             isVisibleToUser = isVisible,
+            isCheckable = node.isCheckable,
             isPassword = node.isPassword,
             errorText = errorText,
             isHeading = isHeading,
@@ -923,23 +959,36 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      *    planning screen. A miss calls back `false` and logs `grounding_miss`; we never fall back
      *    to a guessed coordinate.
      */
-    fun executeAction(action: AniobAction, expectedTreeHash: String? = null, callback: (Boolean) -> Unit) {
+    fun executeAction(action: AniobAction, expectedTreeHash: String? = null, callback: (Boolean) -> Unit) =
+        executeActionTracked(action, expectedTreeHash, callback = callback)
+
+    internal fun executeActionTracked(
+        action: AniobAction,
+        expectedTreeHash: String?,
+        onTapDispatch: (AniobScreenState, AniobNode) -> Unit = { _, _ -> },
+        onTargetRejected: (DispatchCommand.NoOp) -> Unit = {},
+        callback: (Boolean) -> Unit
+    ) {
         gateOnUiQuiescence(action)
 
         val liveScreen = try {
             captureCurrentScreenState()
         } catch (_: Exception) {
-            if (expectedTreeHash != null) {
+            if (expectedTreeHash != null || action is AniobAction.Tap) {
                 callback(false)
                 return
             }
             lastScreenState
         } ?: AniobScreenState(packageName = currentForegroundPackage().orEmpty())
 
-        if (expectedTreeHash != null) {
+        if (expectedTreeHash != null || action is AniobAction.Tap) {
             val target = action.semanticTarget()
             if (target != null && com.aniob.core.execution.AniobActionExecutor.resolveTarget(action, liveScreen) == null) {
-                // Target genuinely gone from live screen -> replan (B-9)
+                val rejection = if (action is AniobAction.Tap && TapEvidence.unavailableTarget(target, liveScreen) != null)
+                    DispatchCommand.NoOp("target_unavailable: tap target is disabled or hidden")
+                else DispatchCommand.groundingMiss(target)
+                onTargetRejected(rejection)
+                Log.w(TAG, rejection.reason)
                 callback(false)
                 return
             }
@@ -951,9 +1000,33 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
 
         when (val command = AniobActionExecutor.planDispatch(action, liveScreen, width, height)) {
             is DispatchCommand.TapAt -> {
+                val target = command.nodeId?.let(liveScreen::findNodeById)
+                if (target == null || !TapEvidence.isActionable(target, liveScreen)) {
+                    onTargetRejected(DispatchCommand.NoOp("target_unavailable: tap target is not actionable"))
+                    callback(false)
+                    return
+                }
+                val retained = currentObservedNode(target.id)
+                if (retained != null) {
+                    val fresh = try { retained.refresh() } catch (_: IllegalStateException) { false }
+                    val rejected = when {
+                        !fresh -> DispatchCommand.groundingMiss((action as AniobAction.Tap).target)
+                        !retained.isEnabled || !retained.isVisibleToUser ||
+                            isNodeOccluded(retained, command.x to command.y) ->
+                            DispatchCommand.NoOp("target_unavailable: tap target is disabled, hidden or occluded")
+                        else -> null
+                    }
+                    if (rejected != null) {
+                        onTargetRejected(rejected)
+                        callback(false)
+                        return
+                    }
+                }
                 spotlightOverlay.flash(command.x.toFloat(), command.y.toFloat())
                 // Node action first (a retained handle from the compact observation), gesture at
                 // the recorded centre as the fallback.
+                onTapDispatch(liveScreen.copy(windowEventSeq = windowEventSequence(),
+                    interactionStartUptimeMs = android.os.SystemClock.uptimeMillis()), target)
                 if (performNodeAction(command.nodeId, AccessibilityNodeInfo.ACTION_CLICK)) {
                     callback(true)
                 } else {
@@ -986,7 +1059,8 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             is DispatchCommand.SystemIntent -> handleSystemIntent(action, command, callback)
 
             is DispatchCommand.NoOp -> {
-                Log.w(TAG, "grounding_miss: ${command.reason}")
+                onTargetRejected(command)
+                Log.w(TAG, command.reason)
                 callback(false)
             }
         }
@@ -1024,6 +1098,13 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         }
     }
 
+    private fun hasInputFocus(node: AccessibilityNodeInfo): Boolean =
+        try { node.isFocused } catch (_: IllegalStateException) { false }
+
+    private fun hasInputMethodWindow(windowList: List<AccessibilityWindowInfo>? = null): Boolean = try {
+        (windowList ?: windows)?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
+    } catch (_: IllegalStateException) { false } catch (_: SecurityException) { false }
+
     /**
      * Commits [DispatchCommand.SetText] onto a field the way a person does it.
      *
@@ -1038,17 +1119,15 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         command: DispatchCommand.SetText,
         callback: (Boolean) -> Unit
     ) {
-        val alreadyFocused = try { node.isFocused } catch (ex: IllegalStateException) { false }
+        val alreadyFocused = hasInputFocus(node)
         focusField(node, command)
 
         var attempts = 0
         fun checkAndCommit() {
             attempts++
             val fresh = try { node.refresh() } catch (ex: IllegalStateException) { false }
-            val focused = try { node.isFocused } catch (ex: IllegalStateException) { false }
-            val hasIme = try {
-                windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
-            } catch (ex: IllegalStateException) { false } catch (ex: SecurityException) { false }
+            val focused = hasInputFocus(node)
+            val hasIme = hasInputMethodWindow()
 
             if (fresh && (focused || hasIme || attempts >= 5)) {
                 commitText(node, command, callback)
@@ -1495,7 +1574,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         path.moveTo(x, y)
         val stroke = GestureDescription.StrokeDescription(path, 0, 50)
         val builder = GestureDescription.Builder().addStroke(stroke)
-        dispatchGesture(builder.build(), object : GestureResultCallback() {
+        val accepted = dispatchGesture(builder.build(), object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 callback(true)
             }
@@ -1503,6 +1582,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                 callback(false)
             }
         }, null)
+        if (!accepted) callback(false)
     }
 
     private fun findAccessibilityNodeByBounds(root: AccessibilityNodeInfo, targetRect: AniobRect): AccessibilityNodeInfo? {

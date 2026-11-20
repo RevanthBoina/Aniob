@@ -31,6 +31,18 @@ class FastVerifyTest {
         }
     )
 
+    @Test fun targetFocusEndsPollingWithoutStructuralChangeOrBitmap() = runBlocking {
+        val target = AniobNode(1, "EditText", viewId = "id/search", isEditable = true,
+            bounds = AniobRect(10, 10, 150, 50))
+        val before = state("same").copy(nodes = listOf(target))
+        val after = before.copy(nodes = listOf(target.copy(id = 2, isFocused = true)), hasImeWindow = true)
+        val result = FastVerify.await(preAction = before, timeoutMs = 0,
+            tapTarget = target, capturePoll = { after }, screenshot = { error("Should not take a bitmap") })
+        assertEquals(FastVerify.Tier.INTERACTION, result.tier)
+        assertFalse(result.screenshotTaken)
+        assertEquals(1, result.captures)
+    }
+
     @Test fun finalCheapCaptureCanAvoidBitmap() = runBlocking {
         var captures = 0
         var bitmaps = 0

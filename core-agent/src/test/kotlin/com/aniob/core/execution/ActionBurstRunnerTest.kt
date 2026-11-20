@@ -58,6 +58,23 @@ class ActionBurstRunnerTest {
         terminalState = terminal
     )
 
+    @Test
+    fun `unconfirmed tap pauses the burst before the next member`() = runBlocking {
+        val pipe = StepPipeline()
+        var dispatches = 0
+        val runner = ActionBurstRunner(capture = { list }, executeMember = { member, context, screen, target ->
+            pipe.executeStep(context, screen, StepPipeline.Proposal.Model(member, "TEST"),
+                capture = { list }, targetNode = target,
+                dispatch = { dispatches++; StepPipeline.DispatchOutcome(true, screenAfter = list) })
+        })
+        val outcome = runner.run(ActionBurst(thought = "", isComplete = true, actions = listOf(tap(1), tap(2))),
+            origin = list, ctx = ctx())
+        assertEquals(1, dispatches)
+        assertEquals(ActionBurstRunner.Stop.UNCONFIRMED, outcome.stop)
+        assertFalse(outcome.completed)
+        assertEquals(0, outcome.ctx.consecutiveFailures)
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Happy path
     // ---------------------------------------------------------------------------------------------

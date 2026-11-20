@@ -70,6 +70,19 @@ class ObservePipelineTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
+    fun inputFocusPropagatesWithoutAffectingStructuralIdentity() {
+        val field = editable("Search").copy(viewId = "id/search")
+        fun capture(input: ObserveSnapshot) =
+            ObserveTreeCompactor.compact(listOf(clickable(children = listOf(input))), "com.example")
+        val before = capture(field)
+        val after = capture(field.copy(isFocused = true))
+        assertEquals(before.structuralSignature, after.structuralSignature)
+        assertEquals(before.screenHash, after.screenHash)
+        assertFalse(before.nodes.first { it.isEditable }.isFocused)
+        assertTrue(after.nodes.first { it.isEditable }.isFocused)
+    }
+
+    @Test
     fun invisibleNodeAndItsSubtreeArePruned() {
         val tree = container(
             listOf(

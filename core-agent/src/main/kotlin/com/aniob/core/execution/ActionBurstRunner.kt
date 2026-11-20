@@ -131,7 +131,10 @@ class ActionBurstRunner(
         ABORTED,
 
         /** Capturing the screen failed; never dispatch blind. */
-        NO_CAPTURE
+        NO_CAPTURE,
+
+        /** An accepted tap lacks evidence; don't execute the queued tail without replanning. */
+        UNCONFIRMED
     }
 
     /**
@@ -259,6 +262,11 @@ class ActionBurstRunner(
             currentCtx = result.nextCtx
             currentScreen = result.nextCtx.lastScreenState ?: liveScreen
             dispatchedSinceCapture++
+
+            if (result.verification?.status == com.aniob.core.verifier.DeterministicVerifier.Status.UNCONFIRMED) {
+                return Outcome(ran, result, currentCtx, currentScreen, Stop.UNCONFIRMED,
+                    result.verification.reason, memberResults = memberResults)
+            }
 
             when (result.terminalState) {
                 StepResult.TerminalState.SUCCESS ->

@@ -9,6 +9,8 @@ import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SuccessCriteria
 import com.aniob.core.domain.TaskContext
 import com.aniob.core.learning.LearningPipeline
+import com.aniob.core.verifier.DeterministicVerifier.FailureKind
+import com.aniob.core.verifier.DeterministicVerifier.Status
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -64,7 +66,7 @@ class StepPipelineTest {
             settle = { _, capture -> settled++; capture() })
         val before = screen("com.a", "Settings")
         val result = pipe.executeStep(ctx.copy(consecutiveFailures = 1), before,
-            StepPipeline.Proposal.Model(tap("Settings"), "TEST"), capture = { before },
+            StepPipeline.Proposal.Model(AniobAction.Wait(durationMs = 500), "TEST"), capture = { before },
             dispatch = { StepPipeline.DispatchOutcome(true) })
         assertTrue(result.verificationSkippedFast)
         assertFalse(records.single().verified)
@@ -374,7 +376,7 @@ class StepPipelineTest {
             val res = pipe.executeStep(
                 ctx = currentCtx,
                 planningScreen = before,
-                proposal = StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
+                proposal = StepPipeline.Proposal.Model(AniobAction.LongPress(SemanticTarget.Text("Settings")), "LOCAL"),
                 capture = { before },
                 dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = after) }
             )
@@ -507,20 +509,90 @@ class StepPipelineTest {
         assertEquals(1, learned.lastTrajectory.size)
     }
 
-    @Test
-    fun `failed steps never reach the learning pipeline`() = runBlocking {
+    @Test fun `unconfirmed dispatched tap is recorded and replanned without failure or learning`() = runBlocking {
         val learned = RecordingLearning()
+        val records = mutableListOf<StepPipeline.StepRecord>()
         val before = screen("com.a", "Settings")
-        val after = screen("com.a", "Settings") // unchanged -> no-effect
-        pipeline(learning = learned).executeStep(
-            ctx = ctx,
-            planningScreen = before,
-            proposal = StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
-            capture = { before },
-            dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = after) }
-        )
+        val final = screen("com.a", "Display")
+        val pipe = pipeline(learning = learned, records = records)
+        var captures = 0
+        val result = pipe.executeStep(ctx, before, StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
+            capture = { captures++; before }, dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = before) })
+        assertEquals(2, captures)
+        assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
+        assertEquals(Status.UNCONFIRMED, result.verification?.status)
+        assertEquals(0, result.nextCtx.consecutiveFailures)
+        assertEquals(null, result.reflection)
+        assertEquals(listOf(result.action), result.nextCtx.trajectory)
+        assertTrue(result.dispatch is DispatchCommand.TapAt)
+        assertTrue(records.single().dispatched)
+        assertFalse(records.single().verified)
+        assertEquals(null, records.single().failureReason)
         assertEquals(0, learned.verifiedSteps)
-        assertEquals(0, learned.taskSuccesses)
+
+        val rejected = pipe.executeStep(result.nextCtx, before,
+            StepPipeline.Proposal.Model(AniobAction.Finish("Done"), "LOCAL"),
+            capture = { before }, dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = before) })
+        assertFalse(rejected.verification!!.isExpected)
+        val finished = pipe.executeStep(result.nextCtx, final,
+            StepPipeline.Proposal.Model(AniobAction.Finish("Done"), "LOCAL"),
+            capture = { final }, dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = final) })
+        assertEquals(StepResult.TerminalState.SUCCESS, finished.terminalState)
+        assertEquals(1, learned.verifiedSteps) // Finish, not the unconfirmed tap.
+        assertEquals(0, learned.taskSuccesses) // No successful experience containing the unconfirmed tap.
+    }
+
+    @Test fun `planner can type into the editable child after an unconfirmed launcher tap`() = runBlocking {
+        val pkg = "com.sec.android.app.launcher"
+        val wrapper = node(1, "Search").copy(viewId = "$pkg:id/app_search_edit_text_wrapper")
+        val field = AniobNode(2, "android.widget.EditText", viewId = "$pkg:id/app_search_edit_text",
+            bounds = AniobRect(10, 110, 190, 170), isEditable = true)
+        fun launcher(input: AniobNode) = AniobScreenState(pkg, nodes = listOf(wrapper, input),
+            treeHash = "launcher-tree", screenHash = "launcher-structure")
+        val before = launcher(field)
+        // The next live observation exposes a ready input; keep the same wrapper and resource IDs.
+        val readyField = field.copy(isClickable = true, isFocused = true)
+        val ready = launcher(readyField)
+        val entered = launcher(readyField.copy(text = "Camera"))
+        val pipe = pipeline()
+        val tap = AniobAction.Tap(SemanticTarget.ResourceId(wrapper.viewId))
+        val accepted = pipe.executeStep(TaskContext(instruction = "Search for Camera"), before,
+            StepPipeline.Proposal.Model(tap, "TEST"), capture = { before },
+            dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = before) })
+        assertEquals(Status.UNCONFIRMED, accepted.verification?.status)
+        val input = AniobAction.InputText(SemanticTarget.ResourceId(field.viewId), "Camera")
+        val typed = pipe.executeStep(accepted.nextCtx, ready,
+            StepPipeline.Proposal.Model(input, "TEST"), capture = { ready },
+            dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = entered) })
+        assertEquals(Status.VERIFIED, typed.verification?.status)
+        assertEquals("Camera", typed.verification?.textEvidence)
+    }
+
+    @Test fun `same target is not dispatched twice on a stalled screen even if its SoM ID changed`() = runBlocking {
+        val before = screen("com.a", "Settings")
+        val reindexed = before.copy(nodes = listOf(before.nodes.single().copy(id = 9)),
+            fusedIndex = com.aniob.core.perception.AniobFusedIndex(listOf(before.nodes.single().copy(id = 9))))
+        val pipe = pipeline()
+        var dispatched = 0
+        val first = pipe.executeStep(ctx, before, StepPipeline.Proposal.Model(tap("Settings"), "TEST"),
+            capture = { before }, dispatch = { dispatched++; StepPipeline.DispatchOutcome(true, screenAfter = before) })
+        val repeated = pipe.executeStep(first.nextCtx, reindexed,
+            StepPipeline.Proposal.Model(AniobAction.Tap(SemanticTarget.SomIndex(9)), "TEST"), capture = { reindexed },
+            dispatch = { dispatched++; StepPipeline.DispatchOutcome(true) })
+        assertEquals(1, dispatched)
+        assertEquals(Status.UNCONFIRMED, first.verification?.status)
+        assertEquals(FailureKind.NO_PROGRESS, repeated.verification?.failureKind)
+        assertEquals(StepResult.TerminalState.FAIL, repeated.terminalState)
+    }
+
+    @Test fun `a late grounding miss preserves the existing target recovery signal`() = runBlocking {
+        val before = screen("com.a", "Settings")
+        val miss = DispatchCommand.groundingMiss(SemanticTarget.ResourceId(before.nodes.single().viewId))
+        val result = pipeline().executeStep(ctx, before, StepPipeline.Proposal.Model(tap("Settings"), "TEST"),
+            capture = { before }, dispatch = { StepPipeline.DispatchOutcome(false, targetRejection = miss) })
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertEquals(FailureKind.TARGET_MISSING, result.verification?.failureKind)
+        assertEquals(miss, result.dispatch)
     }
 
     @Test

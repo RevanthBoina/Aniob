@@ -14,6 +14,9 @@ import com.aniob.core.safety.AniobSafetyInterceptor
 import com.aniob.core.safety.InterceptResult
 import com.aniob.core.verifier.AniobReflectionAgent
 import com.aniob.core.verifier.DeterministicVerifier
+import com.aniob.core.verifier.DeterministicVerifier.FailureKind
+import com.aniob.core.verifier.DeterministicVerifier.Status
+import com.aniob.core.verifier.TapEvidence
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
@@ -102,7 +105,10 @@ class StepPipeline(
     data class DispatchOutcome(
         val dispatched: Boolean,
         val reason: String = "",
-        val screenAfter: AniobScreenState? = null
+        val screenAfter: AniobScreenState? = null,
+        val tapOrigin: AniobScreenState? = null,
+        val tapTarget: AniobNode? = null,
+        val targetRejection: DispatchCommand.NoOp? = null
     )
 
     /** One recorded step, fanned out through [recordStep]. */
@@ -120,7 +126,8 @@ class StepPipeline(
         val targetBounds: AniobRect? = resolvedNode?.bounds,
         val blockedBySafety: Boolean = false,
         val blockedFingerprint: String? = null,
-        val verificationSkippedFast: Boolean = false
+        val verificationSkippedFast: Boolean = false,
+        val verificationStatus: Status? = null
     )
 
     suspend fun executeStep(
@@ -131,7 +138,8 @@ class StepPipeline(
         dispatch: suspend (AniobAction) -> DispatchOutcome,
         confirm: suspend (AniobAction, AniobNode?, InterceptResult) -> Boolean = { _, _, _ -> false },
         judge: (String) -> ReflectionOutcome = { ReflectionOutcome.confirmed("Default judge abstained; outcome remains unverified") },
-        targetNode: AniobNode? = null
+        targetNode: AniobNode? = null,
+        refreshAfterUnconfirmed: suspend () -> AniobScreenState = capture
     ): StepResult {
         currentCoroutineContext().ensureActive()
         val start = System.currentTimeMillis()
@@ -205,12 +213,16 @@ class StepPipeline(
             else -> com.aniob.core.perception.BurstTargetGuard.match(observed.nodes, plannedNode)
         }
         if (target != null && resolvedNode == null) {
-            val reason = "grounding_miss: the intended control no longer matches the live screen"
+            val unavailable = !screenNavigated && action is AniobAction.Tap &&
+                TapEvidence.unavailableTarget(target, observed) != null
+            val reason = if (unavailable) "Tap target unavailable on the live screen" else
+                "grounding_miss: the intended control no longer matches the live screen"
             val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, reason).withFailure()
             return finish(
                 action, proposal, nextCtx, observed, plannedNode,
                 StepResult.TerminalState.FAIL, reason, start,
-                verification = null,
+                verification = DeterministicVerifier.VerificationResult(false, 0L, reason,
+                    failureKind = if (unavailable) FailureKind.TARGET_UNAVAILABLE else FailureKind.TARGET_MISSING),
                 dispatch = DispatchCommand.NoOp(reason),
                 dispatched = false
             )
@@ -323,6 +335,27 @@ class StepPipeline(
             )
         }
 
+        if (effectiveAction is AniobAction.Tap && effectiveNode != null) {
+            val node = effectiveNode
+            val unavailable = !TapEvidence.isActionable(node, observed)
+            val alreadyDispatched = !unavailable && ctx.unconfirmedTaps.any { previous ->
+                !TapEvidence.screenTransition(previous.screen, observed) &&
+                    TapEvidence.findTarget(observed.nodes, previous.target) == node &&
+                    TapEvidence.interaction(previous.screen, observed, previous.target, node,
+                        includeAcknowledgements = false) == null
+            }
+            if (unavailable || alreadyDispatched) {
+                val reason = if (unavailable) "Tap target unavailable or not actionable" else
+                    "No progress after an unconfirmed tap. The same control was not tapped again."
+                val failure = if (unavailable) FailureKind.TARGET_UNAVAILABLE else FailureKind.NO_PROGRESS
+                val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, reason).withFailure()
+                return finish(effectiveAction, proposal, nextCtx, observed, node,
+                    StepResult.TerminalState.FAIL, reason, start,
+                    verification = DeterministicVerifier.VerificationResult(false, 0L, reason, failureKind = failure),
+                    dispatch = DispatchCommand.NoOp(reason), dispatched = false)
+            }
+        }
+
         if (approvalVerdict.requiresConfirmation) {
             currentCoroutineContext().ensureActive()
             val approved = confirm(effectiveAction, effectiveNode, approvalVerdict)
@@ -349,24 +382,34 @@ class StepPipeline(
             }
 
         val dispatchElapsedMs = (System.nanoTime() - dispatchStartedAt) / 1_000_000L
+        // Dispatch latency says nothing about whether a tap focused the intended control.
         val skipFastVerification = fastVerificationSkipEnabled && dispatchElapsedMs < fastVerificationThresholdMs &&
-            proposal !is Proposal.DirectIntent && effectiveAction !is AniobAction.Finish && effectiveAction !is AniobAction.Fail
-        val liveCommand = AniobActionExecutor.planDispatch(effectiveAction, observed)
+            proposal !is Proposal.DirectIntent && effectiveAction !is AniobAction.Tap && effectiveAction !is AniobAction.Finish && effectiveAction !is AniobAction.Fail
+        val verificationOrigin = outcome.tapOrigin ?: observed
+        val verificationTarget = outcome.tapTarget ?: effectiveNode
+        val liveCommand = outcome.targetRejection ?: AniobActionExecutor.planDispatch(effectiveAction, verificationOrigin)
 
         // DispatchOutcome.dispatched=false must prevent a verified action
         if (!outcome.dispatched) {
-            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("dispatch did not complete: ${outcome.reason}")).withFailure()
+            val reason = outcome.targetRejection?.reason ?: outcome.reason.ifBlank { "Action not dispatched" }
+            val failure = when {
+                outcome.targetRejection == null -> FailureKind.DISPATCH_REJECTED
+                reason.startsWith("grounding_miss:") -> FailureKind.TARGET_MISSING
+                else -> FailureKind.TARGET_UNAVAILABLE
+            }
+            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("dispatch did not complete: $reason")).withFailure()
             return finish(
-                effectiveAction, proposal, nextCtx, observed, effectiveNode,
-                StepResult.TerminalState.FAIL, outcome.reason.ifBlank { "Action not dispatched" },
-                start, verification = null, dispatch = liveCommand, dispatched = false
+                effectiveAction, proposal, nextCtx, observed, verificationTarget,
+                StepResult.TerminalState.FAIL, reason, start,
+                verification = DeterministicVerifier.VerificationResult(false, 0L, reason, failureKind = failure),
+                dispatch = liveCommand, dispatched = false
             )
         }
 
         currentCoroutineContext().ensureActive()
 
         // SETTLE: idle-gate instead of a fixed sleep
-        val screenAfter = if (skipFastVerification) outcome.screenAfter ?: observed else outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
+        var screenAfter = if (skipFastVerification) outcome.screenAfter ?: observed else outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
             if (it is kotlinx.coroutines.CancellationException) throw it
             observed
         }
@@ -374,7 +417,7 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // VERIFY
-        val verification = if (skipFastVerification) {
+        var verification = if (skipFastVerification) {
             DeterministicVerifier.VerificationResult(isExpected = false, durationMs = 0L,
                 reason = "Verification skipped: dispatch completed in ${dispatchElapsedMs}ms")
         } else if (proposal is Proposal.DirectIntent) {
@@ -401,7 +444,17 @@ class StepPipeline(
                 DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
             }
         } else {
-            DeterministicVerifier.verify(effectiveAction, observed, screenAfter)
+            DeterministicVerifier.verify(effectiveAction, verificationOrigin, screenAfter,
+                resolvedNode = verificationTarget)
+        }
+        if (verification.status == Status.UNCONFIRMED) {
+            // One fresh read for late focus/IME events and for the next planner. Never redispatch.
+            screenAfter = runCatching { refreshAfterUnconfirmed() }.getOrElse {
+                if (it is kotlinx.coroutines.CancellationException) throw it
+                screenAfter
+            }
+            verification = DeterministicVerifier.verify(effectiveAction, verificationOrigin, screenAfter,
+                resolvedNode = verificationTarget)
         }
 
         // REFLECT
@@ -450,6 +503,11 @@ class StepPipeline(
         } else if (skipFastVerification) {
             // Neutral progress. No verified learning and no failure-counter change.
             nextCtx = nextCtx.copy(hasFastSkippedSteps = true)
+        } else if (verification.status == Status.UNCONFIRMED) {
+            if (verificationTarget != null) {
+                nextCtx = nextCtx.copy(unconfirmedTaps = nextCtx.unconfirmedTaps +
+                    TaskContext.UnconfirmedTap(screenAfter, verificationTarget))
+            }
         } else if (!verification.isExpected) {
             nextCtx = nextCtx.withFailure()
             val legacy = reflectionAgent.reflect(observed, screenAfter, effectiveAction, verifiedSuccess = false)
@@ -477,10 +535,10 @@ class StepPipeline(
         }
 
         return finish(
-            effectiveAction, proposal, nextCtx, screenAfter, effectiveNode,
+            effectiveAction, proposal, nextCtx, screenAfter, verificationTarget,
             terminal, verification.reason, start, verification, reflection, liveCommand,
             dispatched = true,
-            learningScreen = observed,
+            learningScreen = verificationOrigin,
             verificationSkippedFast = skipFastVerification
         )
     }
@@ -513,7 +571,8 @@ class StepPipeline(
         blockedFingerprint: String? = null,
         verificationSkippedFast: Boolean = false
     ): StepResult {
-        val verified = !verificationSkippedFast && verification?.isExpected == true && terminal != StepResult.TerminalState.FAIL && dispatched
+        val verified = !verificationSkippedFast && verification?.status == Status.VERIFIED &&
+            verification.isExpected && terminal != StepResult.TerminalState.FAIL && dispatched
         val computedTokens = (action.describeAction().length + screen.treeHash.length) / 4 + 50
         val record = StepRecord(
             stepIndex = nextCtx.stepIndex,
@@ -521,7 +580,7 @@ class StepPipeline(
             provider = proposal.providerLabel,
             dispatched = dispatched,
             verified = verified,
-            failureReason = if (verified || verificationSkippedFast) null else reason,
+            failureReason = if (verified || verificationSkippedFast || verification?.status == Status.UNCONFIRMED) null else reason,
             resolvedNode = resolvedNode,
             latencyMs = System.currentTimeMillis() - start,
             tokensUsed = computedTokens,
@@ -529,13 +588,14 @@ class StepPipeline(
             targetBounds = resolvedNode?.bounds,
             blockedBySafety = blockedBySafety,
             blockedFingerprint = blockedFingerprint,
-            verificationSkippedFast = verificationSkippedFast
+            verificationSkippedFast = verificationSkippedFast,
+            verificationStatus = verification?.status
         )
         // RECORD: one call site, verified-only for learning (failures must never distill).
         recordStep(record)
         if (verified && dispatched) {
             learning.onVerifiedStep(nextCtx, action, learningScreen)
-            if (terminal == StepResult.TerminalState.SUCCESS && !nextCtx.hasFastSkippedSteps && !deferTaskLearning) {
+            if (terminal == StepResult.TerminalState.SUCCESS && !nextCtx.hasUnverifiedActions && !deferTaskLearning) {
                 learning.onTaskSuccess(nextCtx, nextCtx.trajectory)
             }
         }
@@ -562,6 +622,7 @@ class StepPipeline(
     ): String = "${proposal.providerLabel}: ${action.describeAction()} -> " +
         (if (verificationSkippedFast) "verification skipped for speed"
         else if (verification.isExpected) "the expected change was observed"
+        else if (verification.status == Status.UNCONFIRMED) verification.reason
         else "the expected change was not observed (" +
             NeutralWordingContract.neutralize(verification.reason) + ")") +
         (dispatchNote?.takeIf { it.isNotBlank() }?.let { " | result: ${it.take(DEVICE_NOTE_MAX_CHARS)}" } ?: "")
