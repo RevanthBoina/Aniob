@@ -18,6 +18,7 @@ import com.aniob.core.providers.AniobStructuredOutput
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -203,13 +204,14 @@ class ContinuousExecutionEndToEndTest {
                 )
             }
         )
+        assertEquals(com.aniob.core.verifier.DeterministicVerifier.Status.UNCONFIRMED, step0.verification?.status)
         val id0 = step0.nextCtx.allocateActionId(0, 0)
         ctx = step0.nextCtx.recordCorrelatedOutcome(
             ActionExecutionRecord(
                 actionId = id0,
                 stepIndex = 0,
                 actionSummary = step0.action.describeAction(),
-                status = ExecutionOutcomeStatus.VERIFIED,
+                status = ExecutionOutcomeStatus.UNVERIFIED,
                 detail = "music volume is 40%",
                 screenPackage = currentScreen.packageName
             )
@@ -220,7 +222,7 @@ class ContinuousExecutionEndToEndTest {
 
         assertTrue(capturedPrompts[1].contains("music volume is 40%"))
         assertTrue(capturedPrompts[1].contains("ExecutionResult [action_id=$id0]:"))
-        assertTrue(capturedPrompts[1].contains("LAST RESULT / INCIDENT: [action_id=$id0 | status=VERIFIED]"))
+        assertTrue(capturedPrompts[1].contains("LAST RESULT / INCIDENT: [action_id=$id0 | status=UNVERIFIED]"))
     }
 
     @Test
@@ -271,33 +273,53 @@ class ContinuousExecutionEndToEndTest {
     }
 
     @Test
-    fun `uncertain Submit is reconciled to VERIFIED via screen evidence and preserves actionId`() {
-        val ctx = TaskContext(instruction = "Submit form")
+    fun `generic confirmation and a changed screen do not prove an uncertain action`() {
+        for (preHash in listOf("h4", "")) {
+            val ctx = TaskContext(instruction = "Submit form")
+                .recordCorrelatedOutcome(
+                    ActionExecutionRecord(
+                        actionId = "act_s1_m0_0",
+                        stepIndex = 1,
+                        actionSummary = "tap(Submit)",
+                        status = ExecutionOutcomeStatus.UNCERTAIN,
+                        detail = "Stopped before verification",
+                        preScreenHash = preHash
+                    )
+                )
+
+            val reconciled = ctx.reconcileUncertainExecutions(
+                screen("com.example.app", "h5", node(1, "Confirmation #123"))
+            )
+
+            assertTrue(reconciled.hasUncertainExecution())
+            val record = reconciled.uncertainExecutionRecords().single()
+            assertEquals("act_s1_m0_0", record.actionId)
+            assertNull(record.verificationEvidence)
+            assertTrue(reconciled.priorConversationTurns().any {
+                it.role == ChatTurn.TOOL && it.actionId == record.actionId && it.content.contains("status=UNCERTAIN")
+            })
+        }
+    }
+
+    @Test
+    fun `uncertain action can be reconciled from its expected foreground package`() {
+        val ctx = TaskContext(instruction = "Open the app")
             .recordCorrelatedOutcome(
                 ActionExecutionRecord(
                     actionId = "act_s1_m0_0",
                     stepIndex = 1,
-                    actionSummary = "tap(Submit)",
+                    actionSummary = "open app",
                     status = ExecutionOutcomeStatus.UNCERTAIN,
                     detail = "Stopped before verification",
-                    preScreenHash = "h4"
+                    expectedPackage = "com.example.app"
                 )
             )
-
-        assertTrue(ctx.hasUncertainExecution())
-        val reconciled = ctx.reconcileUncertainExecutions(
-            screen("com.example.app", "h5", node(1, "Confirmation #123"))
-        )
-
-        assertFalse(reconciled.hasUncertainExecution())
-        val resolvedRecord = reconciled.verifiedExecutionRecords().single()
-        assertEquals("act_s1_m0_0", resolvedRecord.actionId)
-        assertEquals(ExecutionOutcomeStatus.VERIFIED, resolvedRecord.status)
-        assertEquals("Confirmation #123", resolvedRecord.verificationEvidence)
-
-        val turns = reconciled.priorConversationTurns()
-        assertTrue(turns.any { it.role == ChatTurn.TOOL && it.actionId == "act_s1_m0_0" && it.content.contains("status=VERIFIED") })
-        assertTrue(turns.first().content.contains("Already VERIFIED actions"))
+        val unavailable = ctx.reconcileUncertainExecutions(screen("", "", node(1, "Loading")))
+        assertTrue(unavailable.hasUncertainExecution())
+        val reconciled = unavailable.reconcileUncertainExecutions(screen("com.example.app", "h5"))
+        val record = reconciled.verifiedExecutionRecords().single()
+        assertEquals("act_s1_m0_0", record.actionId)
+        assertEquals("foreground=com.example.app", record.verificationEvidence)
     }
 
     @Test
@@ -479,7 +501,7 @@ class ContinuousExecutionEndToEndTest {
     }
 
     @Test
-    fun `task recovery snapshot restores interrupted context and reconciles uncertain dispatch without replaying`() {
+    fun `task recovery keeps uncertain dispatch when generic confirmation is not proof`() {
         val snapshot = com.aniob.core.run.TaskRecoverySnapshot(
             taskId = "task_recovery_1",
             originalInstruction = "Submit expense report",
@@ -514,9 +536,9 @@ class ContinuousExecutionEndToEndTest {
         )
         assertEquals("Submit expense report", restored.instruction)
         assertEquals(listOf("Use corporate card"), restored.additionalInstructions)
-        assertEquals(2, restored.verifiedExecutionRecords().size)
-        assertFalse(restored.hasUncertainExecution())
-        assertEquals("act_s1_m0_1", restored.verifiedExecutionRecords()[1].actionId)
+        assertEquals(1, restored.verifiedExecutionRecords().size)
+        assertTrue(restored.hasUncertainExecution())
+        assertEquals("act_s1_m0_1", restored.uncertainExecutionRecords().single().actionId)
     }
 
     @Test

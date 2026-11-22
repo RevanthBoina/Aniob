@@ -92,32 +92,4 @@ class AniobReflectionAgent {
         )
     }
 
-    /**
-     * Judges a provisional `Finish`.
-     */
-    fun reflectFinish(
-        criteria: com.aniob.core.domain.SuccessCriteria,
-        finalScreen: AniobScreenState,
-        steps: Int,
-        deterministic: DeterministicVerifier.VerificationResult,
-        hasExecutedActions: Boolean = false,
-        hasDeviceEvidence: Boolean = false,
-        llmJudge: (String) -> com.aniob.core.execution.ReflectionOutcome = {
-            com.aniob.core.execution.ReflectionOutcome.confirmed("No judge evidence; accepting only as unverified")
-        }
-    ): com.aniob.core.execution.ReflectionOutcome {
-        if (deterministic.isExpected) {
-            return com.aniob.core.execution.ReflectionOutcome.confirmed(deterministic.reason)
-        }
-        if (criteria.isFullyCheckable) {
-            return com.aniob.core.execution.ReflectionOutcome.rejected(
-                deterministic.reason,
-                "The screen does not satisfy the task criteria yet (${deterministic.reason})."
-            )
-        }
-        if (hasDeviceEvidence) return com.aniob.core.execution.ReflectionOutcome.confirmed("Previous device command completed on dispatch")
-        if (hasExecutedActions) return com.aniob.core.execution.ReflectionOutcome.confirmed(
-            "Actions executed but no machine-checkable criteria exist; outcome unverified")
-        return llmJudge(deterministic.reason)
-    }
 }

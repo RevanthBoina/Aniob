@@ -68,7 +68,7 @@ class AniobForegroundService : Service() {
         @Volatile var onConfirmDecisionWithIds: ((com.aniob.app.ui.model.ConfirmDecision, String?, String?) -> Unit)? = null
         @Volatile var onGrillReplyWithIds: ((String, String, String) -> Unit)? = null
         @Volatile var onGrillChoiceWithIds: ((String, String, String) -> Unit)? = null
-        @Volatile var onGrillCancelForTask: ((String) -> Unit)? = null
+        @Volatile var onGrillCancelForTask: ((String, String) -> Unit)? = null
 
         @Volatile private var currentPrompt: String = ""
         @Volatile private var currentStep: Int = 0
@@ -318,6 +318,8 @@ class AniobForegroundService : Service() {
 
             val replyIntent = Intent(context, AniobForegroundService::class.java).apply {
                 action = ACTION_GRILL_REPLY
+                data = android.net.Uri.Builder().scheme("aniob-reply")
+                    .appendPath(taskId).appendPath(question.id).build()
                 putExtra(EXTRA_GRILL_TASK_ID, taskId)
                 putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
             }
@@ -335,41 +337,37 @@ class AniobForegroundService : Service() {
                 .setAllowGeneratedReplies(true)
                 .build()
 
+            val offeredChoices = if (question.choices.isNotEmpty()) question.choices
+                else question.options.filter { it.isNotBlank() }.map { com.aniob.core.grillme.GrillChoice(it, it) }
             val quickActions = when {
-                question.options.size >= 2 -> question.options.take(2).mapIndexed { index, answer ->
-                    val choiceIntent = Intent(context, AniobForegroundService::class.java).apply {
-                        action = ACTION_GRILL_CHOICE
-                        putExtra(EXTRA_GRILL_TASK_ID, taskId)
-                        putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
-                        putExtra(EXTRA_GRILL_ANSWER, answer)
+                offeredChoices.isNotEmpty() -> {
+                    val actions = offeredChoices.take(2).mapIndexed { index, choice ->
+                        val choiceIntent = Intent(context, AniobForegroundService::class.java).apply {
+                            action = ACTION_GRILL_CHOICE
+                            // PendingIntent identity ignores extras. Make it unique so an old
+                            // notification action cannot be silently rebound to a newer choice.
+                            data = android.net.Uri.Builder().scheme("aniob-choice")
+                                .appendPath(taskId).appendPath(question.id).appendPath(choice.id).build()
+                            putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                            putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
+                            putExtra(EXTRA_GRILL_ANSWER, choice.id)
+                        }
+                        val choicePi = PendingIntent.getService(
+                            context, 14 + index, choiceIntent,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        )
+                        NotificationCompat.Action.Builder(0, choice.label, choicePi).build()
                     }
-                    val choicePi = PendingIntent.getService(
-                        context, 14 + index, choiceIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                    NotificationCompat.Action.Builder(0, answer, choicePi).build()
-                }
-                question.options.size == 1 -> {
-                    val answer = question.options.first()
-                    val choiceIntent = Intent(context, AniobForegroundService::class.java).apply {
-                        action = ACTION_GRILL_CHOICE
-                        putExtra(EXTRA_GRILL_TASK_ID, taskId)
-                        putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
-                        putExtra(EXTRA_GRILL_ANSWER, answer)
-                    }
-                    val choicePi = PendingIntent.getService(
-                        context, 14, choiceIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                    listOf(
-                        NotificationCompat.Action.Builder(0, answer, choicePi).build(),
-                        NotificationCompat.Action.Builder(0, "Open Aniob", openPi).build()
-                    )
+                    if (offeredChoices.size != 2) actions + NotificationCompat.Action.Builder(0, "Open Aniob", openPi).build()
+                    else actions
                 }
                 else -> {
                     val cancelIntent = Intent(context, AniobForegroundService::class.java).apply {
                         action = ACTION_GRILL_CANCEL
+                        data = android.net.Uri.Builder().scheme("aniob-cancel")
+                            .appendPath(taskId).appendPath(question.id).build()
                         putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                        putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
                     }
                     val cancelPi = PendingIntent.getService(
                         context, 16, cancelIntent,
@@ -382,16 +380,20 @@ class AniobForegroundService : Service() {
                 }
             }
 
-            val explicitActions = if (question.options.isNotEmpty()) {
+            val explicitActions = if (offeredChoices.isNotEmpty()) {
                 val cancelIntent = Intent(context, AniobForegroundService::class.java).apply {
                     action = ACTION_GRILL_CANCEL
+                    data = android.net.Uri.Builder().scheme("aniob-cancel")
+                        .appendPath(taskId).appendPath(question.id).build()
                     putExtra(EXTRA_GRILL_TASK_ID, taskId)
+                    putExtra(EXTRA_GRILL_QUESTION_ID, question.id)
                 }
                 val cancelPi = PendingIntent.getService(
                     context, 17, cancelIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
-                quickActions + NotificationCompat.Action.Builder(0, "Cancel task", cancelPi).build()
+                if (offeredChoices.size > 2) quickActions
+                else quickActions + NotificationCompat.Action.Builder(0, "Cancel task", cancelPi).build()
             } else {
                 quickActions
             }
@@ -404,7 +406,7 @@ class AniobForegroundService : Service() {
                 .setContentIntent(openPi)
                 .setAutoCancel(false)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .addAction(replyAction)
+            if (question.choices.isEmpty() && question.allowFreeText) notificationBuilder.addAction(replyAction)
             explicitActions.forEach { notificationBuilder.addAction(it) }
             manager.notify(GRILL_NOTIFICATION_ID, notificationBuilder.build())
         }
@@ -608,8 +610,10 @@ class AniobForegroundService : Service() {
             }
             ACTION_GRILL_CANCEL -> {
                 val taskId = intent?.getStringExtra(EXTRA_GRILL_TASK_ID)
-                clearGrillQuestion(this)
-                if (!taskId.isNullOrBlank()) onGrillCancelForTask?.invoke(taskId)
+                val questionId = intent?.getStringExtra(EXTRA_GRILL_QUESTION_ID)
+                if (!taskId.isNullOrBlank() && !questionId.isNullOrBlank()) {
+                    onGrillCancelForTask?.invoke(taskId, questionId)
+                }
                 return START_STICKY
             }
             else -> {

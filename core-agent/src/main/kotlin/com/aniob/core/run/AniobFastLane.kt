@@ -12,7 +12,7 @@ import kotlinx.coroutines.delay
 
 /** Which path a task takes from intake to dispatch. */
 enum class RunLane {
-    /** A reflex whose dispatch *is* the outcome (torch, timer with SKIP_UI, dial, URL). */
+    /** A shortcut that does not require an editor; completion still requires evidence. */
     FAST_REFLEX,
 
     /** "Open <installed app>" and nothing else; proven by the foreground package. */

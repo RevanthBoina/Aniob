@@ -1,6 +1,7 @@
 package com.aniob.core.run
 
 import com.aniob.core.domain.TaskContext
+import com.aniob.core.domain.EntitySelection
 
 /**
  * What the user just said to a **running** task.
@@ -15,6 +16,9 @@ enum class TaskInputKind {
 
     /** An answer to a question the task asked (clarification / account choice / target miss). */
     CLARIFICATION_ANSWER,
+
+    /** An opaque entity reference selected from this task's offered candidates. */
+    ENTITY_SELECTION,
 
     /** A decision on a pending confirmation. */
     CONFIRMATION,
@@ -38,7 +42,9 @@ data class TaskInput(
     val kind: TaskInputKind,
     /** The user's own words, verbatim. Never rewritten, never summarised. */
     val text: String,
-    val receivedAt: Long
+    val receivedAt: Long,
+    /** Present only for ENTITY_SELECTION; never encoded in [text]. */
+    val selection: EntitySelection? = null
 )
 
 /**
@@ -93,11 +99,31 @@ class TaskInputChannel(
 
     @Synchronized
     fun post(kind: TaskInputKind, text: String): TaskInput? {
+        if (kind == TaskInputKind.ENTITY_SELECTION) return null
         val body = text.trim()
         if (body.isEmpty()) return null
         val input = TaskInput(seq = nextSeq++, kind = kind, text = body, receivedAt = now())
         inputs.addLast(input)
         return input
+    }
+
+    /** Queue a stable selection separately from free text, preserving the task's input order. */
+    @Synchronized
+    fun postSelection(selection: EntitySelection): TaskInput {
+        val input = TaskInput(nextSeq++, TaskInputKind.ENTITY_SELECTION, "", now(), selection)
+        inputs.addLast(input)
+        return input
+    }
+
+    @Synchronized
+    fun hasPendingSelection(): Boolean = inputs.any { it.kind == TaskInputKind.ENTITY_SELECTION }
+
+    /** Consume selections in submission order. */
+    @Synchronized
+    fun takeNextSelection(): TaskInput? {
+        val found = inputs.firstOrNull { it.kind == TaskInputKind.ENTITY_SELECTION } ?: return null
+        inputs.removeAll { it.seq == found.seq }
+        return found
     }
 
     @Synchronized
@@ -167,6 +193,12 @@ class TaskInputChannel(
  * without a device: the app layer only decides *when* to call these, never *what* they mean.
  */
 object TaskContinuation {
+
+    /** A selection is accepted only for the task and candidate set that actually requested it. */
+    fun applySelection(ctx: TaskContext, channel: TaskInputChannel, input: TaskInput): TaskContext? {
+        if (ctx.taskId.isBlank() || ctx.taskId != channel.taskId || input.kind != TaskInputKind.ENTITY_SELECTION) return null
+        return input.selection?.let(ctx::withEntitySelection)
+    }
 
     /** "stop", "cancel", "never mind", "abort", "forget it" — explicit cancellation, not an edit. */
     private val cancellationPhrases = setOf(
@@ -290,7 +322,9 @@ object TaskContinuation {
      * instruction is pending". Answers and acknowledgements do not block a close — they are
      * consumed by the flow that needed them — but an instruction does.
      */
-    fun mayClose(channel: TaskInputChannel?): Boolean = channel == null || !channel.hasPendingInstruction()
+    fun mayClose(channel: TaskInputChannel?, ctx: TaskContext? = null): Boolean =
+        ctx?.pendingEntityResolution == null &&
+            (channel == null || (!channel.hasPendingInstruction() && !channel.hasPendingSelection()))
 
     /** One short, honest line for the transcript when a continuation is accepted. */
     fun continuationNotice(instructions: List<TaskInput>): String = when (instructions.size) {

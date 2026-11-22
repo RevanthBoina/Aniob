@@ -59,9 +59,43 @@ internal suspend fun AniobViewModel.awaitIntentScreen(beforePackage: String?, ti
 }
 
 /** Runs one direct device command on the thread it needs (accessibility calls: main; queries: IO). */
-internal suspend fun AniobViewModel.runDeviceCommand(command: DeviceCommand, args: Map<String, String>): DeviceControlResult =
+internal suspend fun AniobViewModel.runDeviceCommand(
+    command: DeviceCommand,
+    args: Map<String, String>,
+    entityArguments: Map<String, EntityReference> = emptyMap()
+): DeviceControlResult =
     withContext(if (command.needsAccessibility) Dispatchers.Main else Dispatchers.IO) {
-        val fingerprint = args.toSortedMap().entries.joinToString(",") { "${it.key}=${it.value}" }
+        val arguments = args.toMap()
+        val pipe = activePipeline?.takeIf { it.task.id == _uiState.value.activeTask?.id }
+        val resolver = pipe?.let {
+            it.contactResolver ?: com.aniob.app.device.AniobContactEntityResolver(app).also { created -> it.contactResolver = created }
+        }
+        val selected = pipe?.selectedContactReplay?.takeIf { (action, _) ->
+            action.command == command && action.args == arguments
+        }
+        if (selected != null && taskInputs?.hasPendingInstruction() == true) {
+            pipe?.selectedContactReplay = null
+            return@withContext DeviceControlResult(false, "A newer instruction arrived before dispatch; re-planning.")
+        }
+        val selectedEntity = entityArguments.values.singleOrNull()?.takeIf { reference ->
+            reference.kind == com.aniob.app.device.AniobContactEntityResolver.KIND &&
+                pipe?.taskContext?.selectedEntities?.values?.contains(reference) == true
+        }
+        if (entityArguments.isNotEmpty() && selectedEntity == null) {
+            return@withContext DeviceControlResult(false, "The selected recipient is no longer valid; choose it again.")
+        }
+        val selectedReference = selected?.second ?: selectedEntity
+        val opaqueEntityFingerprint = entityArguments.toSortedMap().entries.joinToString("|") { (slot, ref) ->
+            "$slot:${ref.kind}:${ref.id}"
+        }.takeIf { it.isNotBlank() }?.let { raw ->
+            val scoped = "${_uiState.value.activeTask?.id.orEmpty()}|$raw"
+            java.security.MessageDigest.getInstance("SHA-256")
+                .digest(scoped.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }.orEmpty()
+        // The persistent dispatch ledger gets only a task-scoped digest, never the runtime entity ID.
+        val fingerprint = arguments.toSortedMap().entries.joinToString(",") { "${it.key}=${it.value}" } +
+            opaqueEntityFingerprint.takeIf { it.isNotBlank() }?.let { ":entity=$it" }.orEmpty()
         var captured: DeviceControlResult? = null
         val outcome = app.deviceActionGateway.execute(
             taskId = _uiState.value.activeTask?.id,
@@ -69,10 +103,17 @@ internal suspend fun AniobViewModel.runDeviceCommand(command: DeviceCommand, arg
             signature = com.aniob.core.execution.DeviceActionGateway.deviceCommandSignature(command.wire, fingerprint),
             requestedAction = command.wire
         ) {
-            val result = AniobDeviceControl.execute(app, command, args, AniobAccessibilityService.instance)
+            val result = AniobDeviceControl.executeForTask(
+                app, command, arguments, AniobAccessibilityService.instance, resolver, selectedReference
+            )
+            result.contactChoices?.let { choices ->
+                pipe?.pendingContactAction = AniobAction.DeviceControl(command, arguments)
+                pipe?.pendingContactChoices = choices
+            }
             captured = result
             com.aniob.core.execution.DeviceActionGateway.DispatchResult(result.ok, result.message.take(300))
         }
+        if (selected != null) pipe?.selectedContactReplay = null
         captured ?: DeviceControlResult(
             ok = outcome.ok,
             message = if (outcome.deduplicated) "That action was already dispatched moments ago." else outcome.record.detail,
@@ -114,17 +155,6 @@ internal fun AniobViewModel.evalDeviceAssertions(
     criteria: SuccessCriteria?,
     device: DeviceStateSnapshot = probeDeviceState(criteria)
 ): List<CriterionEvaluation> = criteria?.evaluateDeviceCriteria(device).orEmpty()
-
-/** Reflex path: 0 tokens. A command that cannot run says which setting to enable, then planning continues. */
-internal suspend fun AniobViewModel.runDeviceShortcut(command: DeviceCommand, args: Map<String, String>): Boolean {
-    val result = runDeviceCommand(command, args)
-    // A command that needs a choice from the user (several matching contacts) carries its question
-    // here; the step fails, the question sheet shows, and the run parks instead of guessing.
-    if (result.clarify != null) pendingDeviceClarify = result.clarify
-    app.eventLogger.info("AniobViewModel", "Device reflex ${command.wire}: ok=${result.ok}")
-    postDeviceResult(result)
-    return result.ok
-}
 
 /**
  * Shows answers ("12 GB free") and actionable blocks ("turn on notification access") in the chat.

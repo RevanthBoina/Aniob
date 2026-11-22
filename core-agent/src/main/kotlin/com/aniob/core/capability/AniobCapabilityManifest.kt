@@ -102,7 +102,9 @@ object AniobCapabilityManifest {
 
     /** Only the [DeviceCommand]s executable in the current runtime [state]. */
     fun availableCommands(state: DeviceState = DeviceState()): List<DeviceCommand> =
-        DeviceCommand.entries.filter { isCommandExecutable(it, state) }
+        AniobCapabilityRegistry.deviceCommands { state }.toolDefinitions().mapNotNull { capability ->
+            DeviceCommand.entries.firstOrNull { it.wire == capability.id }
+        }
 
     /** Generic action tools executable in the current runtime [state] (no app-specific logic). */
     fun availableActionTools(state: DeviceState = DeviceState()): List<String> = buildList {
@@ -145,6 +147,8 @@ object AniobCapabilityManifest {
 
     private fun fullText(state: DeviceState, executableOnly: Boolean): String = buildString {
         val allowedTools = availableActionTools(state)
+        val registry = AniobCapabilityRegistry.deviceCommands { state }
+        val listed = registry.toolDefinitions(includeUnavailable = !executableOnly)
         appendLine("DEVICE CAPABILITIES (read first):")
         if (executableOnly && !state.accessibility) {
             appendLine(
@@ -183,9 +187,8 @@ object AniobCapabilityManifest {
         )
         appendLine("Commands:")
         for (group in DeviceCommandGroup.entries) {
-            val commands = DeviceCommand.entries.filter { c ->
-                c.group == group && (!executableOnly || isCommandExecutable(c, state))
-            }
+            val commands = listed.mapNotNull { capability -> DeviceCommand.entries.firstOrNull { it.wire == capability.id } }
+                .filter { it.group == group }
             if (commands.isEmpty()) continue
             appendLine("[${group.label}]")
             for (c in commands) {
@@ -199,6 +202,8 @@ object AniobCapabilityManifest {
 
     private fun compactText(state: DeviceState, executableOnly: Boolean): String = buildString {
         val allowedTools = availableActionTools(state)
+        val registry = AniobCapabilityRegistry.deviceCommands { state }
+        val listed = registry.toolDefinitions(includeUnavailable = !executableOnly)
         if (executableOnly && !state.accessibility) {
             appendLine("DEVICE CAPABILITIES: Accessibility is OFF (no TAP/INPUT/SWIPE). Tools: ${allowedTools.joinToString(",")}.")
         } else {
@@ -206,9 +211,8 @@ object AniobCapabilityManifest {
         }
         appendLine("Prefer DEVICE_CONTROL (no UI, instant): {\"tool\":\"DEVICE_CONTROL\",\"command\":\"name\",\"args\":{\"k\":\"v\"}}. Result shows in next ExecutionResult. FINISH after verified evidence.")
         for (group in DeviceCommandGroup.entries) {
-            val commands = DeviceCommand.entries.filter { c ->
-                c.group == group && (!executableOnly || isCommandExecutable(c, state))
-            }
+            val commands = listed.mapNotNull { capability -> DeviceCommand.entries.firstOrNull { it.wire == capability.id } }
+                .filter { it.group == group }
             if (commands.isEmpty()) continue
             val line = commands.joinToString("; ") { c ->
                 val off = if (blockedReason(c, state) != null) "[off]" else ""

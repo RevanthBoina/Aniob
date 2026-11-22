@@ -261,6 +261,44 @@ class AniobViewModelExecutionWiringTest {
     }
 
     @Test
+    fun staleOrUnofferedContactChoiceCannotResumeParkedTask() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+        val task = AniobTask(id = "contact-task", rawPrompt = "Message River", status = TaskStatus.RUNNING)
+        val pipe = parkedRun(task)
+        val a = com.aniob.core.domain.EntityReference("contact", "opaque-a")
+        val b = com.aniob.core.domain.EntityReference("contact", "opaque-b")
+        val choices = com.aniob.core.domain.EntityResolution.MultipleCandidates(listOf(
+            com.aniob.core.domain.EntityCandidate(a, "River"),
+            com.aniob.core.domain.EntityCandidate(b, "River")
+        ))
+        val question = com.aniob.app.device.AniobDeviceControl.contactChoiceQuestion(choices)
+        pipe.contactResolver = com.aniob.app.device.AniobContactEntityResolver(app)
+        pipe.pendingContactAction = com.aniob.core.domain.AniobAction.DeviceControl(
+            com.aniob.core.domain.DeviceCommand.MESSAGE_SMS, mapOf("contact" to "River", "text" to "Hi"))
+        pipe.pendingContactChoices = choices
+        pipe.taskContext = pipe.taskContext.copy(pendingEntityResolution =
+            com.aniob.core.domain.PendingEntityResolution("contact_recipient", choices))
+        vm.activeGeneration = 1L
+        vm.activePipeline = pipe
+        vm.openTaskInputChannel(task.id)
+        vm._uiState.update { it.copy(activeTask = task, isRunning = false, showGrillMeSheet = true,
+            grillMeResult = com.aniob.core.grillme.AniobGrillMeResult(true, listOf(question))) }
+        vm.onGrillAnswersSubmitted(mapOf(question.id to "River"))
+        assertTrue(pipe.parked)
+        assertNull(pipe.selectedContactReplay)
+        assertNotNull(pipe.taskContext.pendingEntityResolution)
+        vm.onGrillAnswersSubmitted(mapOf(question.id to "foreign-id"))
+        assertTrue(pipe.parked)
+        assertNull(pipe.selectedContactReplay)
+        vm.activeGeneration = 2L
+        vm.onGrillAnswersSubmitted(mapOf(question.id to a.id))
+        assertTrue(pipe.parked)
+        assertNull(pipe.selectedContactReplay)
+        vm.closeTaskInputChannel()
+    }
+
+    @Test
     fun aClarificationResumesTheSameTaskFromTheSameStep() {
         val app = ApplicationProvider.getApplicationContext<AniobApplication>()
         val vm = AniobViewModel(app)
@@ -443,6 +481,23 @@ class AniobViewModelExecutionWiringTest {
             verificationSkippedFast = false
         )
         assertEquals(com.aniob.core.domain.ExecutionOutcomeStatus.VERIFIED, classifyStepOutcome(verified))
+    }
+
+    @Test
+    fun deviceControlRejectsArgumentsOutsideTheRegistrySchemaBeforeDispatch() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val invalidNumber = com.aniob.app.device.AniobDeviceControl.execute(
+            app, com.aniob.core.domain.DeviceCommand.VOLUME_SET,
+            mapOf("percent" to "not-a-number"), null
+        )
+        assertFalse(invalidNumber.ok)
+        assertTrue(invalidNumber.blockedBy?.contains("percent") == true)
+        val unknownArgument = com.aniob.app.device.AniobDeviceControl.execute(
+            app, com.aniob.core.domain.DeviceCommand.INSTALLED_APPS,
+            mapOf("invented" to "value"), null
+        )
+        assertFalse(unknownArgument.ok)
+        assertTrue(unknownArgument.blockedBy?.contains("invented") == true)
     }
 
     @Test

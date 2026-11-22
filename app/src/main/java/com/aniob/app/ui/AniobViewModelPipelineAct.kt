@@ -55,7 +55,8 @@ internal suspend fun AniobViewModel.pipelineAct(
 
         val captureLambda: suspend () -> AniobScreenState = {
             screenReads++; screenCaptureCount++; app.researchTelemetry.recordTreeRead()
-            accessibility?.captureCurrentScreenState() ?: currentScreen
+            accessibility?.captureCurrentScreenState()
+                ?: throw IllegalStateException("A fresh accessibility screen is unavailable")
         }
 
         // The screen the action was planned on: the two-tier verifier compares against it.
@@ -118,7 +119,7 @@ internal suspend fun AniobViewModel.pipelineAct(
                     StepPipeline.DispatchOutcome(dispatched = ok, reason = act.describeAction(), screenAfter = screenAfter)
                 }
                 act is AniobAction.DeviceControl -> {
-                    val result = runDeviceCommand(act.command, act.args)
+                    val result = runDeviceCommand(act.command, act.args, act.entityArguments)
                     // A command that could not choose for the user (no file matched) asks.
                     pendingDeviceClarify = result.clarify
                     postDeviceResult(result)
@@ -532,6 +533,26 @@ internal suspend fun AniobViewModel.pipelineAct(
             )
         }
         stepResult = res
+        val planIndex = taskPlanCursor
+        val activePlan = taskPlan
+        if (planIndex != null && activePlan != null) {
+            when (val progress = com.aniob.core.capability.AniobPlanProgress.afterStep(
+                activePlan, planIndex, taskPlanExpectedAction, res,
+                hasPendingEntityChoice = pendingDeviceClarify?.choices?.isNotEmpty() == true
+            )) {
+                is com.aniob.core.capability.AniobPlanProgress.Decision.Next -> {
+                    taskPlanCursor = progress.index
+                    taskPlanExpectedAction = null
+                }
+                com.aniob.core.capability.AniobPlanProgress.Decision.AwaitSelection -> Unit
+                com.aniob.core.capability.AniobPlanProgress.Decision.Stop -> {
+                    taskPlanCursor = null
+                    taskPlanExpectedAction = null
+                }
+            }
+        }
+        // A denied or intercepted replay must not be silently retried on the next step.
+        selectedContactReplay = null
         val targetMissCountForStep = if (planConsumedStep || res.verificationSkippedFast) null else
             recordStepTargetOutcome(task.id, res, currentScreen)
         app.researchTelemetry.recordStep()
@@ -616,8 +637,17 @@ internal suspend fun AniobViewModel.pipelineAct(
         }
 
         if (res.terminalState == StepResult.TerminalState.SUCCESS) {
+            if (!hasAuthoritativeCompletionCriteria) {
+                finalOutcome = Outcome.UNVERIFIED
+                terminalReason = "The observed state alone does not establish the requested outcome."
+                return PipelineFlow.Break
+            }
             finalOutcome = Outcome.SUCCESS
             terminalReason = res.verification?.reason ?: "Verified successfully"
+            return PipelineFlow.Break
+        } else if (res.terminalState == StepResult.TerminalState.UNVERIFIED) {
+            finalOutcome = Outcome.UNVERIFIED
+            terminalReason = res.verification?.reason ?: "The outcome could not be independently verified"
             return PipelineFlow.Break
         } else if (res.terminalState == StepResult.TerminalState.FAIL) {
             if (targetMissCountForStep != null) {
@@ -658,7 +688,7 @@ internal suspend fun AniobViewModel.pipelineAct(
             // also blocked a *different* question after the first answer); an answered question
             // resumes the SAME run from this step.
             val ask = parsedAsk?.let { grillMeEngine.sanitizeQuestion(it) }
-            if (ask != null && askedQuestions.add(ask.question.replace(Regex("\\s+"), " ").trim().lowercase())) {
+            if (ask != null && (ask.choices.isNotEmpty() || askedQuestions.add(ask.question.replace(Regex("\\s+"), " ").trim().lowercase()))) {
                 parkTask(pipe, TaskWaitState.USER_INPUT, ask.question)
                 _uiState.update {
                     it.copy(
@@ -697,10 +727,10 @@ internal fun classifyStepOutcome(step: StepResult): ExecutionOutcomeStatus {
         step.terminalState == StepResult.TerminalState.FAIL -> ExecutionOutcomeStatus.FAILED
         step.action is AniobAction.Fail -> ExecutionOutcomeStatus.FAILED
         step.action is AniobAction.Finish ->
-            if (step.terminalState == StepResult.TerminalState.SUCCESS) {
-                ExecutionOutcomeStatus.VERIFIED
-            } else {
-                ExecutionOutcomeStatus.FAILED
+            when (step.terminalState) {
+                StepResult.TerminalState.SUCCESS -> ExecutionOutcomeStatus.VERIFIED
+                StepResult.TerminalState.UNVERIFIED -> ExecutionOutcomeStatus.UNVERIFIED
+                else -> ExecutionOutcomeStatus.FAILED
             }
         step.verificationSkippedFast -> ExecutionOutcomeStatus.UNVERIFIED
         verification == null -> ExecutionOutcomeStatus.UNVERIFIED

@@ -38,11 +38,11 @@ smoke pins, UX copy, catalog URLs, repository hygiene, and outcome invariants). 
 - `AniobAppBootstrap` (`app/knowledge`) is the only Android-aware piece: sync TSV load + role probe,
   background launchable scan. `AniobApplication.onCreate` installs it; the accessibility service and
   `AniobPackageReceiver` refresh it. Keeps `core-agent` free of `android.*`.
-- App opening is a **lookup**, never a model call: `AniobLaunchHub.plan` (step 0) and
-  `planMidTask` (a switch later in the task, remembers what this task already opened).
+- App opening currently uses `AniobLaunchHub.plan` and `planMidTask`. Preserve registry lookup and
+  remembered task state while moving natural-language routing into the first model plan.
 - An app launch is **never** a `DirectIntent`. It is an `OpenApp` action verified against the real
   foreground package (`DeterministicVerifier`), dispatched with the registry's explicit launcher
-  component when known. Only reflexes (torch, battery, dial, URL) may finish on dispatch alone.
+  component when known. A reflex dispatch alone must not be treated as independent completion evidence.
 - Fuzzy matching is single-token only and typos are Levenshtein-based; see
   `docs/APP_DISCOVERY_AND_LAUNCH.md` before "improving" the matcher.
 
@@ -92,9 +92,9 @@ See `docs/ACTION_PLANS.md` for the contract; the invariants that must not be "si
   an LLM call. `AniobViewModel.degradeAfterCloudFailure` then retries the step on the on-device model
   (`cloud-only` routing is honoured and never downgraded). The hosted `omniroute.online` is **not** an
   implicit fallback any more; it is used only when the user picks it.
-- **Reflexes complete on dispatch.** `ResolvedIntentShortcut.completesOnDispatch` (alarm/timer with
-  `SKIP_UI`, torch, battery, dial, URL, a settings panel that is the whole request) closes the run as
-  `SUCCESS`; a bare "set alarm" that only opens the editor stays `UNVERIFIED`.
+- **Legacy reflex routing.** `ResolvedIntentShortcut.completesOnDispatch` is a routing hint, not
+  an evidence policy. Independent postcondition verification is required; missing evidence remains
+  unverified.
 - **Web launch.** `AniobLaunchHub.planWeb` (`AniobWebLaunchPlanner`): `open <site> in chrome|browser`,
   `search [for X] in <site>`, and the web fallback for an app that is *not installed*. An installed app or an
   ambiguity always wins over the web fallback; a bare word only becomes `<word>.com` with an explicit browser cue.
@@ -127,3 +127,23 @@ See `docs/ACTION_PLANS.md` for the contract; the invariants that must not be "si
 * Account registration is not the bootstrap client ID: persist the callback-issued ID before code exchange and retain it on sign-out; forget it on provider deletion. RS256/JWKS identity + issuer/audience/expiry/nonce and granted plan scope must validate before `SignedIn`. Production token clients must supply `AniobJwksIdTokenVerifier`; the default rejects identity. Tests may inject fakes only for non-crypto contracts.
 * Session/pending codec v2 intentionally invalidates unverified legacy records. Logout must cancel/join sign-in before clearing state. Wrong-state callback traffic must not consume a valid attempt. Keep OAuth bound to IPv4 loopback even though browser preview servers use wildcard bindings.
 * `SystemState.localModelReady` means an installed local model; `cloudReady` follows the selected provider through `AniobCloudSourceSelector`; `modelReady` is their union. Auth/source changes refresh this snapshot without inference calls. Model availability and a successful inference test remain separate concepts.
+
+## Capability-first migration target
+
+The current prompt routers and overlapping completion policies are legacy; do not add new
+phrase-specific routing or claim the migration is complete until production uses the replacement.
+The migration should preserve existing execution and safety paths until each is connected:
+
+- The first model planning response decides answer, read, execute or clarify and supplies typed
+  capability invocations and postconditions. Do not add an extra model call solely for routing.
+- One registry must drive the model offer and validated runtime dispatch, including live availability,
+  permissions and approval requirements. Recheck availability at dispatch; keep Android adapters in
+  `app` and `core-agent` platform-free.
+- Resolve entities through typed domain ports. Candidate IDs are distinct from display labels; keep
+  selections in task-scoped state through parking and resume, and do not reconstruct them from text.
+- Ground UI actions on fresh accessibility observations, treat screen content as untrusted, and do
+  not maintain a vocabulary of completion-control labels.
+- Verify the requested postconditions independently. Dispatch, screen changes and generic confirmation
+  text alone do not establish the requested outcome; missing evidence stays unconfirmed.
+- Exercise new capabilities with deterministic fake-model plans, unseen paraphrases, arbitrary entity
+  values, ambiguity, lost permissions, continuation and delayed or inconclusive evidence.

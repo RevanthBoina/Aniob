@@ -22,7 +22,7 @@ internal fun grillAnswersToSubmit(
     answers: Map<String, String>,
     notes: String
 ): Map<String, String>? {
-    if (questions.any { answers[it.id].isNullOrBlank() }) return null
+    if (questions.any { !it.acceptsAnswer(answers[it.id].orEmpty()) }) return null
     val result = answers.filterValues { it.isNotBlank() }.toMutableMap()
     if (notes.isNotBlank()) result["notes"] = notes
     return result
@@ -50,7 +50,7 @@ fun GrillMeInlineCard(
     val userAnswers = remember(grillResult) {
         mutableStateMapOf<String, String>().apply {
             grillResult.questions.forEach { q ->
-                put(q.id, q.defaultOption.orEmpty())
+                put(q.id, if (q.choices.isEmpty()) q.defaultOption.orEmpty() else "")
             }
         }
     }
@@ -64,7 +64,7 @@ fun GrillMeInlineCard(
     // Prefill from the vault so a remembered answer is honored, not re-asked.
     LaunchedEffect(grillResult) {
         grillResult.questions.forEach { q ->
-            lookupRemembered(q.id)?.let { userAnswers[q.id] = it }
+            if (q.choices.isEmpty()) lookupRemembered(q.id)?.let { userAnswers[q.id] = it }
         }
     }
 
@@ -75,7 +75,9 @@ fun GrillMeInlineCard(
         if (submitted) return
         val answers = grillAnswersToSubmit(grillResult.questions, userAnswers, generalNotes) ?: return
         submitted = true
-        onConfirm(answers, rememberToggles.filterValues { it }.keys)
+        onConfirm(answers, rememberToggles.filter { (id, enabled) ->
+            enabled && grillResult.questions.firstOrNull { it.id == id }?.choices.isNullOrEmpty()
+        }.keys)
     }
 
     ElevatedCard(modifier = modifier.fillMaxWidth().testTag("grill_me_card")) {
@@ -98,20 +100,22 @@ fun GrillMeInlineCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    question.options.forEach { option ->
+                    val choices = if (question.choices.isNotEmpty()) question.choices
+                    else question.options.filter { it.isNotBlank() }.map { com.aniob.core.grillme.GrillChoice(it, it) }
+                    choices.forEach { option ->
                         val selected = !customMode[question.id].orDefault(false) &&
-                            userAnswers[question.id] == option
+                            userAnswers[question.id] == option.id
                         FilterChip(
                             selected = selected,
                             onClick = {
                                 customMode[question.id] = false
-                                userAnswers[question.id] = option
+                                userAnswers[question.id] = option.id
                             },
-                            label = { Text(option) },
-                            modifier = Modifier.testTag("chip_${question.id}_$option")
+                            label = { Text(option.label) },
+                            modifier = Modifier.testTag("chip_${question.id}_${option.id}")
                         )
                     }
-                    if (question.allowFreeText) {
+                    if (question.allowFreeText && question.choices.isEmpty()) {
                         AssistChip(
                             onClick = {
                                 if (!customMode[question.id].orDefault(false)) {
@@ -127,7 +131,7 @@ fun GrillMeInlineCard(
                 }
 
                 // Decoupled free-text: only shown after the "Type it yourself…" chip is chosen.
-                if (question.allowFreeText && customMode[question.id].orDefault(false)) {
+                if (question.allowFreeText && question.choices.isEmpty() && customMode[question.id].orDefault(false)) {
                     OutlinedTextField(
                         value = userAnswers[question.id] ?: "",
                         onValueChange = { userAnswers[question.id] = it },
@@ -139,7 +143,7 @@ fun GrillMeInlineCard(
                     )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                if (question.choices.isEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = rememberToggles[question.id].orDefault(false),
                         onCheckedChange = { rememberToggles[question.id] = it },
@@ -184,7 +188,7 @@ fun GrillMeInlineCard(
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
                     onClick = { submitOnce() },
-                    enabled = !submitted && grillResult.questions.all { !userAnswers[it.id].isNullOrBlank() },
+                    enabled = !submitted && grillResult.questions.all { it.acceptsAnswer(userAnswers[it.id].orEmpty()) },
                     modifier = Modifier.testTag("grill_me_confirm")
                 ) { Text("Continue") }
             }

@@ -35,7 +35,7 @@ internal class PipelineRun(
     val lane: RunLane,
     val laneShortcut: ResolvedIntentShortcut?,
     val researchMode: FeatureSelection,
-    val resolvedCriteria: SuccessCriteria,
+    var resolvedCriteria: SuccessCriteria,
     val startTime: Long,
     val hydration: kotlinx.coroutines.Deferred<Any?>?,
     val accessibility: AniobAccessibilityService?,
@@ -44,6 +44,20 @@ internal class PipelineRun(
     var screenBefore: AniobScreenState?,
     var fastReflexOpen: Boolean
 ) {
+    // Planning metadata is task-local; the live device gateway remains the only dispatcher.
+    // Model-proposed criteria may add constraints, but may not alone certify the user's goal.
+    val hasAuthoritativeCompletionCriteria: Boolean = resolvedCriteria.hasObservableCheck
+    var taskPlan: AniobTaskPlan? = null
+    /** Index of the next model-plan invocation; null when no plan is queued. */
+    var taskPlanCursor: Int? = null
+    var taskPlanExpectedAction: AniobAction.DeviceControl? = null
+
+    // Never persisted: references are valid only for this live task/resolver instance.
+    var contactResolver: com.aniob.app.device.AniobContactEntityResolver? = null
+    var pendingContactAction: AniobAction.DeviceControl? = null
+    var pendingContactChoices: EntityResolution.MultipleCandidates? = null
+    var selectedContactReplay: Pair<AniobAction.DeviceControl, EntityReference>? = null
+
     var currentStep = 0
     var totalTokens = 0
     var primaryProvider = "INTENT"

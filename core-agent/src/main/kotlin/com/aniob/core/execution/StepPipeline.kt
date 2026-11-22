@@ -158,6 +158,16 @@ class StepPipeline(
 
         currentCoroutineContext().ensureActive()
 
+        // A provisional finish cannot consume or guess an unresolved entity selection.
+        if (action is AniobAction.Finish && ctx.pendingEntityResolution != null) {
+            val reason = "A required entity selection is still pending"
+            return finish(
+                action, proposal, ctx.withStep(ctx.stepIndex + 1, observed, reason), observed, null,
+                StepResult.TerminalState.CONTINUE, reason, start, verification = null,
+                dispatch = DispatchCommand.NoOp(reason), dispatched = false
+            )
+        }
+
         // Plan-7.5: Prompt Injection Canary check on state-mutating actions
         val isMutating = action is AniobAction.Tap || action is AniobAction.LongPress ||
             action is AniobAction.InputText || action is AniobAction.OpenApp || action is AniobAction.Swipe ||
@@ -172,9 +182,14 @@ class StepPipeline(
             if (action is AniobAction.DeviceControl && action.command.reachesOutside) {
                 // A recipient, number or URL that appears nowhere in the user's request and is quoted
                 // from the screen is how an injected page would steer a call or a message.
-                val suspicious = action.args.values.firstOrNull {
+                val entitySlots = action.entityArguments.keys.flatMap { key ->
+                    when (key) { "phone", "to" -> listOf(key, "contact"); else -> listOf(key) }
+                }.toSet()
+                val suspicious = action.args.filterKeys { it !in entitySlots }.values.firstOrNull {
                     com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(it)
-                } ?: action.args.values.firstOrNull { it.isNotBlank() && !ctx.instruction.contains(it, ignoreCase = true) }
+                } ?: action.args.filterKeys { it !in entitySlots }.values.firstOrNull {
+                    it.isNotBlank() && !ctx.instruction.contains(it, ignoreCase = true)
+                }
                 suspicious?.let { put("text", it) }
             }
             if (com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(action.thought)) {
@@ -409,8 +424,10 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // SETTLE: idle-gate instead of a fixed sleep
+        var settleFailed = false
         var screenAfter = if (skipFastVerification) outcome.screenAfter ?: observed else outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrElse {
             if (it is kotlinx.coroutines.CancellationException) throw it
+            settleFailed = true
             observed
         }
 
@@ -420,9 +437,20 @@ class StepPipeline(
         var verification = if (skipFastVerification) {
             DeterministicVerifier.VerificationResult(isExpected = false, durationMs = 0L,
                 reason = "Verification skipped: dispatch completed in ${dispatchElapsedMs}ms")
+        } else if ((effectiveAction is AniobAction.Finish || proposal is Proposal.DirectIntent) &&
+            settleFailed && ctx.successCriteria.hasScreenCheck
+        ) {
+            DeterministicVerifier.VerificationResult(
+                isExpected = false, durationMs = 0L,
+                reason = "A fresh screen observation was unavailable; the outcome is unverified",
+                evaluations = listOf(com.aniob.core.domain.CriterionEvaluation(
+                    "Final screen", com.aniob.core.domain.CriterionState.INCONCLUSIVE,
+                    "A fresh post-action screen could not be captured"
+                ))
+            )
         } else if (proposal is Proposal.DirectIntent) {
             val summary = (effectiveAction as? AniobAction.Finish)?.summary ?: effectiveAction.describeAction()
-            if (ctx.successCriteria != null && ctx.successCriteria.hasObservableCheck) {
+            if (ctx.successCriteria.hasObservableCheck) {
                 DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
             } else {
                 DeterministicVerifier.VerificationResult(
@@ -432,17 +460,7 @@ class StepPipeline(
                 )
             }
         } else if (effectiveAction is AniobAction.Finish) {
-            val deviceEvidence = completedDeviceCommand(ctx)
-            if (deviceEvidence != null && ctx.successCriteria?.hasObservableCheck != true) {
-                DeterministicVerifier.VerificationResult(
-                    isExpected = true,
-                    durationMs = 0L,
-                    reason = "Device command ${deviceEvidence.command.wire} completed on dispatch",
-                    textEvidence = deviceEvidence.command.wire
-                )
-            } else {
-                DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
-            }
+            DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1, deviceState(ctx.successCriteria))
         } else {
             DeterministicVerifier.verify(effectiveAction, verificationOrigin, screenAfter,
                 resolvedNode = verificationTarget)
@@ -476,34 +494,37 @@ class StepPipeline(
         if (effectiveAction is AniobAction.Fail) {
             terminal = StepResult.TerminalState.FAIL
         } else if (effectiveAction is AniobAction.Finish) {
-            // Finish is PROVISIONAL: it only becomes SUCCESS with evidence
+            // A model's Finish and an accepted dispatch are not outcome evidence. A task with no
+            // observable postcondition can close honestly as unverified, without another model call.
             val verdict = if (verification.isExpected) {
                 ReflectionOutcome.confirmed(verification.reason)
             } else {
-                reflectionAgent.reflectFinish(
-                    criteria = ctx.successCriteria,
-                    finalScreen = screenAfter,
-                    steps = ctx.stepIndex + 1,
-                    deterministic = verification,
-                    hasExecutedActions = ctx.trajectory.any { it !is AniobAction.Finish && it !is AniobAction.Fail },
-                    hasDeviceEvidence = completedDeviceCommand(ctx) != null,
-                    llmJudge = judge
+                ReflectionOutcome.rejected(
+                    verification.reason,
+                    "The requested outcome is not supported by independent evidence (${verification.reason})."
                 )
             }
             reflection = verdict
-            if (verdict.confirmed) {
+            if (verification.isExpected && verdict.confirmed) {
                 terminal = StepResult.TerminalState.SUCCESS
+            } else if (!ctx.successCriteria.hasObservableCheck) {
+                terminal = StepResult.TerminalState.UNVERIFIED
             } else {
-                nextCtx = nextCtx.withRejectedFinish(verdict.feedback)
-                    .withFailure()
+                nextCtx = nextCtx.withRejectedFinish(verdict.feedback).withFailure()
                 if (nextCtx.rejectedFinishCount >= (if (optimizedFinish) MAX_REJECTED_FINISHES else BASELINE_MAX_REJECTED_FINISHES) || proposal is Proposal.DirectIntent) {
-                    terminal = StepResult.TerminalState.FAIL
+                    terminal = if (verification.evaluations.any { it.state == com.aniob.core.domain.CriterionState.INCONCLUSIVE } &&
+                        verification.evaluations.none { it.state == com.aniob.core.domain.CriterionState.FAILED }) {
+                        StepResult.TerminalState.UNVERIFIED
+                    } else StepResult.TerminalState.FAIL
                 }
             }
         } else if (skipFastVerification) {
             // Neutral progress. No verified learning and no failure-counter change.
             nextCtx = nextCtx.copy(hasFastSkippedSteps = true)
         } else if (verification.status == Status.UNCONFIRMED) {
+            if (effectiveAction is AniobAction.DeviceControl) {
+                nextCtx = nextCtx.copy(hasUnverifiedDeviceActions = true)
+            }
             if (verificationTarget != null) {
                 nextCtx = nextCtx.copy(unconfirmedTaps = nextCtx.unconfirmedTaps +
                     TaskContext.UnconfirmedTap(screenAfter, verificationTarget))
@@ -541,16 +562,6 @@ class StepPipeline(
             learningScreen = verificationOrigin,
             verificationSkippedFast = skipFastVerification
         )
-    }
-
-    /**
-     * The device command the previous step ran and the system accepted, when it was a command whose
-     * dispatch *is* the outcome (volume, torch, pause...). A `Finish` straight after it has real
-     * evidence; without this a UI-less task could never be confirmed because no screen changes.
-     */
-    private fun completedDeviceCommand(ctx: TaskContext): AniobAction.DeviceControl? {
-        val last = ctx.trajectory.lastOrNull() as? AniobAction.DeviceControl ?: return null
-        return last.takeIf { it.command.completesOnDispatch && ctx.consecutiveFailures == 0 }
     }
 
     private fun finish(
@@ -609,7 +620,8 @@ class StepPipeline(
             resolvedNode = resolvedNode,
             tokensUsed = computedTokens,
             latencyMs = record.latencyMs,
-            verificationSkippedFast = verificationSkippedFast
+            verificationSkippedFast = verificationSkippedFast,
+            dispatched = dispatched
         )
     }
 

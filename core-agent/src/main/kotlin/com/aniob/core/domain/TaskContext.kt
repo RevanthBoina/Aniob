@@ -68,12 +68,27 @@ data class TaskContext(
     val conversationHistory: List<ChatTurn> = emptyList(),
     /** Real post-execution outcomes for every attempted/planned action in order, correlated by actionId. */
     val executionResults: List<ActionExecutionRecord> = emptyList(),
-    val unconfirmedTaps: List<UnconfirmedTap> = emptyList()
+    val unconfirmedTaps: List<UnconfirmedTap> = emptyList(),
+    /** Typed entity state is task-local and is never folded into the user's instruction. */
+    val selectedEntities: Map<String, EntityReference> = emptyMap(),
+    val pendingEntityResolution: PendingEntityResolution? = null,
+    /** Device dispatches without independently verified effects must not enter success learning. */
+    val hasUnverifiedDeviceActions: Boolean = false
 ) {
     /** Screen and stable target for a tap that may already have taken effect. */
     data class UnconfirmedTap(val screen: AniobScreenState, val target: AniobNode)
 
-    val hasUnverifiedActions: Boolean get() = hasFastSkippedSteps || unconfirmedTaps.isNotEmpty()
+    val hasUnverifiedActions: Boolean get() = hasFastSkippedSteps || hasUnverifiedDeviceActions || unconfirmedTaps.isNotEmpty()
+
+    /** Apply only an exact offered reference for the pending binding. */
+    fun withEntitySelection(selection: EntitySelection): TaskContext? {
+        val pending = pendingEntityResolution ?: return null
+        if (selection.binding != pending.binding || pending.candidates.select(selection.reference) == null) return null
+        return copy(
+            selectedEntities = selectedEntities + (selection.binding to selection.reference),
+            pendingEntityResolution = null
+        )
+    }
 
     data class TokenBudget(
         val maxTotal: Int = 32_000,
@@ -275,26 +290,8 @@ data class TaskContext(
             }
         }
 
-        // 4. Commit/submit tap transitioned off the pre-screen and confirmation text is visible
-        val isCommitTap = COMMIT_ACTION_WORDS.any { record.actionSummary.contains(it, ignoreCase = true) }
-        val transitioned = record.preScreenHash.isBlank() ||
-            (screen.treeHash.isNotBlank() && screen.treeHash != record.preScreenHash)
-        if (isCommitTap && transitioned) {
-            val confirmText = screenTexts.firstOrNull { text ->
-                CONFIRMATION_WORDS.any { kw -> text.contains(kw, ignoreCase = true) }
-            }
-            if (confirmText != null) {
-                return record.copy(
-                    status = ExecutionOutcomeStatus.VERIFIED,
-                    detail = "Reconciled as VERIFIED: confirmation '$confirmText' observed on live screen",
-                    screenPackage = screen.packageName,
-                    screenHash = screen.treeHash,
-                    verificationEvidence = confirmText.take(120)
-                )
-            }
-        }
-
-        // 5. Insufficient evidence -> remain UNCERTAIN, preserve actionId, warn against blind retry
+        // A changed screen and generic confirmation text do not identify the requested outcome.
+        // Keep the action uncertain unless a specific criterion or expected state proves it.
         return record.copy(
             status = ExecutionOutcomeStatus.UNCERTAIN,
             detail = "Still UNCERTAIN on pkg=${screen.packageName} (insufficient evidence); verify screen before retrying",
@@ -476,12 +473,13 @@ data class TaskContext(
         appendLine("CONSECUTIVE FAILURES: $consecutiveFailures")
         appendLine("REJECTED FINISHES: $rejectedFinishCount")
     }
+}
 
-    companion object {
-        private val COMMIT_ACTION_WORDS = listOf("submit", "confirm", "save", "send", "place order", "checkout", "finish")
-        private val CONFIRMATION_WORDS = listOf(
-            "submitted", "confirmed", "confirmation", "saved", "sent",
-            "order placed", "thank you", "completed", "success", "receipt"
-        )
-    }
+/** Choice state contains model-safe metadata and opaque references, never domain-private data. */
+data class PendingEntityResolution(val binding: String, val candidates: EntityResolution.MultipleCandidates) {
+    init { require(binding.isNotBlank()) }
+}
+
+data class EntitySelection(val binding: String, val reference: EntityReference) {
+    init { require(binding.isNotBlank()) }
 }

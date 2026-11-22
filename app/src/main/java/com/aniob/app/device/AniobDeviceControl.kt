@@ -31,7 +31,6 @@ import android.os.PersistableBundle
 import android.os.StatFs
 import android.provider.AlarmClock
 import android.provider.CalendarContract
-import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.KeyEvent
@@ -74,12 +73,24 @@ object AniobDeviceControl {
         command: DeviceCommand,
         args: Map<String, String>,
         service: AniobAccessibilityService? = AniobAccessibilityService.instance
+    ): DeviceControlResult = executeForTask(context, command, args, service, null, null)
+
+    /** Task-owned resolver and reference never appear in the model-facing action arguments. */
+    internal fun executeForTask(
+        context: Context,
+        command: DeviceCommand,
+        args: Map<String, String>,
+        service: AniobAccessibilityService?,
+        contactResolver: AniobContactEntityResolver?,
+        selectedContact: com.aniob.core.domain.EntityReference?
     ): DeviceControlResult {
         val app = context.applicationContext
+        // Callers may own mutable maps; validation and execution must see the same snapshot.
+        val arguments = java.util.Collections.unmodifiableMap(LinkedHashMap(args))
         // DND handles its own missing-access case by opening the right settings page.
         if (command != DeviceCommand.DND_ON && command != DeviceCommand.DND_OFF) {
             val state = AniobCapabilityProbe.snapshot(app)
-            AniobCapabilityManifest.blockedReason(command, state, args)?.let { reason ->
+            AniobCapabilityManifest.blockedReason(command, state, arguments)?.let { reason ->
                 if (command.needsAccessibility) openSettings(app, Settings.ACTION_ACCESSIBILITY_SETTINGS, "a11y")
                 if (command.needsNotificationAccess) openSettings(app, Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS, "nla")
                 if ((command == DeviceCommand.CALL && !state.callPhone) ||
@@ -102,8 +113,56 @@ object AniobDeviceControl {
                 return blocked(reason)
             }
         }
+        // Every entry point (ViewModel, accessibility and legacy shortcuts) checks the same
+        // registry used by the model offer. Re-probe immediately before Android dispatch; an
+        // earlier offer or approval must not outlive a permission or service change.
+        val registry = com.aniob.core.capability.AniobCapabilityRegistry.deviceCommands {
+            AniobCapabilityProbe.snapshot(app)
+        }
+        when (val checked = com.aniob.core.providers.AniobToolCallParser.legacyDeviceAction(command, arguments, registry)) {
+            is com.aniob.core.providers.AniobToolCallParser.CapabilityConversion.Rejected -> {
+                if ((command == DeviceCommand.DND_ON || command == DeviceCommand.DND_OFF) &&
+                    !AniobCapabilityProbe.snapshot(app).dndAccess
+                ) {
+                    openSettings(app, Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS, "dnd")
+                }
+                return blocked(checked.reasons.joinToString("; "))
+            }
+            is com.aniob.core.providers.AniobToolCallParser.CapabilityConversion.Proposed -> Unit
+        }
         return try {
-            run(app, command, args, service)
+            val contactQuery = if (selectedContact != null) "__selected_contact_query__" else contactQuery(command, arguments)
+            val contactNumber = if (contactQuery != null) {
+                val resolver = contactResolver ?: AniobContactEntityResolver(app)
+                val reference = if (selectedContact != null) selectedContact else when (val resolution =
+                    resolver.resolve(AniobContactEntityResolver.KIND, contactQuery)) {
+                    is com.aniob.core.domain.EntityResolution.Resolved -> resolution.candidate.reference
+                    is com.aniob.core.domain.EntityResolution.MultipleCandidates -> {
+                        val question = contactChoiceQuestion(resolution)
+                        return DeviceControlResult(false, "More than one contact matched; choose one.",
+                            clarify = question, contactChoices = resolution)
+                    }
+                    is com.aniob.core.domain.EntityResolution.PermissionRequired ->
+                        return blocked("Allow Contacts for Aniob in the app's permissions")
+                    is com.aniob.core.domain.EntityResolution.Unavailable ->
+                        return fail("Contacts provider is unavailable; no recipient was selected.")
+                    com.aniob.core.domain.EntityResolution.NotFound ->
+                        return fail("No matching contact with a phone number was found.")
+                }
+                when (val number = resolver.numberFor(reference)) {
+                    is ContactNumberResult.Resolved -> number.number
+                    ContactNumberResult.PermissionRequired -> return blocked("Allow Contacts for Aniob in the app's permissions")
+                    ContactNumberResult.NotFound -> return fail("That contact selection is no longer valid; select the contact again.")
+                    ContactNumberResult.Unavailable -> return fail("Contacts provider is unavailable; no recipient was selected.")
+                }
+            } else {
+                if (selectedContact != null) return fail("The contact selection does not match this command.")
+                null
+            }
+            val safeArguments = arguments.mapValues { (_, value) ->
+                if (value == "__selected_entity__") "selected contact" else value
+            }
+            run(app, command, safeArguments, service, contactNumber)
         } catch (e: SecurityException) {
             fail("Android refused this (${e.message ?: "permission"}). Check the app's permissions in Settings.")
         } catch (_: ActivityNotFoundException) {
@@ -123,7 +182,8 @@ object AniobDeviceControl {
         context: Context,
         command: DeviceCommand,
         args: Map<String, String>,
-        service: AniobAccessibilityService?
+        service: AniobAccessibilityService?,
+        contactNumber: String?
     ): DeviceControlResult = when (command) {
         DeviceCommand.MEDIA_PLAY_PAUSE -> media(context, MediaOp.TOGGLE)
         DeviceCommand.MEDIA_PLAY -> media(context, MediaOp.PLAY)
@@ -153,10 +213,10 @@ object AniobDeviceControl {
         DeviceCommand.DND_ON -> dnd(context, on = true)
         DeviceCommand.DND_OFF -> dnd(context, on = false)
 
-        DeviceCommand.CALL -> call(context, args, service)
-        DeviceCommand.MESSAGE_WHATSAPP -> whatsapp(context, args)
-        DeviceCommand.MESSAGE_TELEGRAM -> telegram(context, args)
-        DeviceCommand.MESSAGE_SMS -> sms(context, args)
+        DeviceCommand.CALL -> call(context, args, service, contactNumber)
+        DeviceCommand.MESSAGE_WHATSAPP -> whatsapp(context, args, contactNumber)
+        DeviceCommand.MESSAGE_TELEGRAM -> telegram(context, args, contactNumber)
+        DeviceCommand.MESSAGE_SMS -> sms(context, args, contactNumber)
 
         DeviceCommand.NOTIFICATION_LIST -> notificationList(args)
         DeviceCommand.NOTIFICATION_DISMISS -> notificationDismiss(args)
@@ -569,16 +629,10 @@ object AniobDeviceControl {
     // calls & messages
     // ============================================================================================
 
-    private fun call(context: Context, args: Map<String, String>, service: AniobAccessibilityService?): DeviceControlResult {
+    private fun call(context: Context, args: Map<String, String>, service: AniobAccessibilityService?, contactNumber: String?): DeviceControlResult {
         val speaker = args["speaker"]?.equals("true", ignoreCase = true) == true
         val number = args["number"]?.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }?.takeIf { it.isNotBlank() }
-            ?: args["contact"]?.let { name ->
-                when (val r = resolveContact(context, name)) {
-                    is ContactResolution.Single -> r.number
-                    is ContactResolution.Multiple -> return contactAmbiguity(name, r.candidates)
-                    ContactResolution.Unavailable -> return contactsBlocked(context, name)
-                }
-            }
+            ?: contactNumber
             ?: return fail("call needs a number or a contact name.")
         val who = args["contact"] ?: number
         val canCall = AniobCapabilityProbe.granted(context, Manifest.permission.CALL_PHONE)
@@ -627,16 +681,10 @@ object AniobDeviceControl {
         return false
     }
 
-    private fun whatsapp(context: Context, args: Map<String, String>): DeviceControlResult {
+    private fun whatsapp(context: Context, args: Map<String, String>, contactNumber: String?): DeviceControlResult {
         val text = args["text"].orEmpty()
         val phone = args["phone"]?.filter { it.isDigit() }?.takeIf { it.isNotBlank() }
-            ?: args["contact"]?.let { name ->
-                when (val r = resolveContact(context, name)) {
-                    is ContactResolution.Single -> r.number.filter { c -> c.isDigit() }
-                    is ContactResolution.Multiple -> return contactAmbiguity(name, r.candidates)
-                    ContactResolution.Unavailable -> null
-                }
-            }
+            ?: contactNumber?.filter { it.isDigit() }?.takeIf { it.isNotBlank() }
         val installed = WHATSAPP_PACKAGES.firstOrNull { isInstalled(context, it) }
             ?: return fail("WhatsApp is not installed.")
         if (phone == null) {
@@ -653,7 +701,7 @@ object AniobDeviceControl {
         } else fail("WhatsApp could not open that chat.")
     }
 
-    private fun telegram(context: Context, args: Map<String, String>): DeviceControlResult {
+    private fun telegram(context: Context, args: Map<String, String>, contactNumber: String?): DeviceControlResult {
         val to = args["to"].orEmpty().trim()
         val text = args["text"].orEmpty()
         if (to.isEmpty()) return fail("telegram_message needs a recipient.")
@@ -663,12 +711,7 @@ object AniobDeviceControl {
         val uri = when {
             to.none { it.isLetter() } && digits.length >= 6 -> Uri.parse("tg://msg?to=$digits$encodedText")
             Regex("^[A-Za-z0-9_]{5,32}$").matches(username) -> Uri.parse("tg://resolve?domain=$username$encodedText")
-            else -> when (val r = resolveContact(context, to)) {
-                is ContactResolution.Single ->
-                    Uri.parse("tg://msg?to=${r.number.filter { c -> c.isDigit() || c == '+' }}$encodedText")
-                is ContactResolution.Multiple -> return contactAmbiguity(to, r.candidates)
-                ContactResolution.Unavailable -> null
-            }
+            else -> contactNumber?.let { Uri.parse("tg://msg?to=${it.filter { c -> c.isDigit() || c == '+' }}$encodedText") }
         }
         if (uri == null) {
             val pkg = listOf("org.telegram.messenger", "org.telegram.messenger.web").firstOrNull { isInstalled(context, it) }
@@ -681,15 +724,9 @@ object AniobDeviceControl {
         } else fail("Telegram is not installed.")
     }
 
-    private fun sms(context: Context, args: Map<String, String>): DeviceControlResult {
+    private fun sms(context: Context, args: Map<String, String>, contactNumber: String?): DeviceControlResult {
         val phone = args["phone"]?.filter { it.isDigit() || it == '+' }?.takeIf { it.isNotBlank() }
-            ?: args["contact"]?.let { name ->
-                when (val r = resolveContact(context, name)) {
-                    is ContactResolution.Single -> r.number
-                    is ContactResolution.Multiple -> return contactAmbiguity(name, r.candidates)
-                    ContactResolution.Unavailable -> return contactsBlocked(context, name)
-                }
-            }
+            ?: contactNumber
             ?: return fail("sms_message needs a phone number or contact name.")
         val intent = Intent(Intent.ACTION_SENDTO, Uri.fromParts("smsto", phone, null))
             .putExtra("sms_body", args["text"].orEmpty())
@@ -698,87 +735,32 @@ object AniobDeviceControl {
         else fail("No messaging app could open the draft.")
     }
 
-    private fun contactsBlocked(context: Context, name: String): DeviceControlResult {
-        return if (!AniobCapabilityProbe.granted(context, Manifest.permission.READ_CONTACTS)) {
-            openSettings(context, Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "contacts")
-            blocked("Allow Contacts for Aniob in the app's permissions, or give a phone number instead of \"$name\"")
-        } else fail("No contact called \"$name\" has a phone number.")
-    }
-
-    /**
-     * Outcome of looking up [name] among saved numbers. Ambiguity is a first-class result, never an
-     * arbitrary pick: the caller turns [Multiple] into a Grill-Me question so the user chooses.
-     */
-    private sealed class ContactResolution {
-        /** Exactly one usable number (best ranked, unique). */
-        data class Single(val number: String) : ContactResolution()
-        /** More than one distinct number matched: ask which one. */
-        data class Multiple(val candidates: List<Pair<String, String>>) : ContactResolution()
-        /** Permission missing or no match: caller reports / opens settings. */
-        object Unavailable : ContactResolution()
-    }
-
-    private fun resolveContact(context: Context, name: String): ContactResolution {
-        if (!AniobCapabilityProbe.granted(context, Manifest.permission.READ_CONTACTS)) return ContactResolution.Unavailable
-        val projection = arrayOf(
-            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-            ContactsContract.CommonDataKinds.Phone.NUMBER
-        )
-        val trimmed = name.trim()
-        val scored = mutableListOf<Pair<Int, Pair<String, String>>>() // rank to (display, number)
-        context.contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI, projection,
-            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?", arrayOf("%$trimmed%"), null
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
-                val display = cursor.getString(0).orEmpty()
-                val number = cursor.getString(1).orEmpty().trim()
-                if (display.isBlank() || number.isBlank()) continue
-                val rank = when {
-                    display.equals(trimmed, ignoreCase = true) -> 0
-                    display.startsWith(trimmed, ignoreCase = true) -> 1000 + display.length
-                    else -> 2000 + display.length
-                }
-                scored.add(rank to (display to number))
-            }
+    /** Existing Telegram username/number handling is preserved; other names use contact resolution. */
+    private fun contactQuery(command: DeviceCommand, args: Map<String, String>): String? = when (command) {
+        DeviceCommand.CALL -> args["contact"]?.takeIf { args["number"].isNullOrBlank() && it.isNotBlank() }
+        DeviceCommand.MESSAGE_WHATSAPP, DeviceCommand.MESSAGE_SMS ->
+            args["contact"]?.takeIf { args["phone"].isNullOrBlank() && it.isNotBlank() }
+        DeviceCommand.MESSAGE_TELEGRAM -> args["to"]?.trim()?.takeIf { to ->
+            val username = to.removePrefix("@")
+            val numeric = to.none { it.isLetter() } && to.count { it.isDigit() } >= 6
+            !numeric && !Regex("^[A-Za-z0-9_]{5,32}$").matches(username) && to.isNotBlank()
         }
-        if (scored.isEmpty()) return ContactResolution.Unavailable
-        val bestRank = scored.minOf { it.first }
-        val best = scored.filter { it.first == bestRank }
-            .map { it.second }
-            .distinctBy { it.second }
-        return if (best.size == 1) ContactResolution.Single(best.first().second)
-        else ContactResolution.Multiple(best.take(4))
+        else -> null
     }
 
-    /**
-     * The Grill-Me question shown when a name matches several numbers. The options carry the digits
-     * so the confirmed choice is dialable without another lookup; the caller parks the run and the
-     * confirmed answer re-enters the same flow with the number it names.
-     */
-    internal fun contactChoiceQuestion(name: String, candidates: List<Pair<String, String>>): com.aniob.core.grillme.GrillQuestion {
-        val options = candidates.map { (display, number) ->
-            val digits = number.filter { it.isDigit() || it == '+' }
-            "${display.take(30)} — ${digits.take(20)}"
+    internal fun contactChoiceQuestion(
+        candidates: com.aniob.core.domain.EntityResolution.MultipleCandidates
+    ): com.aniob.core.grillme.GrillQuestion = com.aniob.core.grillme.GrillQuestion(
+        id = "contact_choice_${java.util.UUID.randomUUID()}",
+        question = "Which contact did you mean?",
+        options = emptyList(),
+        allowFreeText = false,
+        choices = candidates.candidates.map { candidate ->
+            com.aniob.core.grillme.GrillChoice(candidate.reference.id,
+                listOfNotNull(candidate.label.take(30), candidate.detail).joinToString(" — "))
         }
-        return com.aniob.core.grillme.GrillQuestion(
-            id = CONTACT_CHOICE_ID,
-            question = "Which \"${name.take(40)}\" did you mean? Pick the number to use.",
-            options = options,
-            allowFreeText = true,
-            defaultOption = null
-        )
-    }
+    )
 
-    const val CONTACT_CHOICE_ID = "contact_choice"
-
-    /** A contact name that matches several numbers must be chosen by the user, never picked arbitrarily. */
-    private fun contactAmbiguity(name: String, candidates: List<Pair<String, String>>): DeviceControlResult =
-        DeviceControlResult(
-            ok = false,
-            message = "That name matches ${candidates.size} numbers; ask which one.",
-            clarify = contactChoiceQuestion(name, candidates)
-        )
 
     // ============================================================================================
     // notifications, OTP, clipboard

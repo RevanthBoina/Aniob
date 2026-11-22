@@ -7,13 +7,28 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * Grill-Me Dynamic Clarification Data Models & Engine.
  */
+/** Opaque option value is distinct from the label shown to the user. */
+data class GrillChoice(val id: String, val label: String) {
+    init { require(id.isNotBlank() && label.isNotBlank()) }
+}
+
 data class GrillQuestion(
     val id: String,
     val question: String,
     val options: List<String>,
     val allowFreeText: Boolean = true,
-    val defaultOption: String? = null
-)
+    val defaultOption: String? = null,
+    /** Task-scoped choices must be returned by ID and never persisted as preferences. */
+    val choices: List<GrillChoice> = emptyList()
+) {
+    init { require(choices.map { it.id }.distinct().size == choices.size) }
+
+    fun acceptsAnswer(answer: String, requireOption: Boolean = false): Boolean =
+        if (answer.isBlank()) false
+        else if (choices.isNotEmpty()) choices.any { it.id == answer }
+        else if (requireOption || !allowFreeText) answer in options
+        else answer.isNotBlank()
+}
 
 data class AniobGrillMeResult(
     val needsClarification: Boolean,
@@ -346,6 +361,8 @@ class AniobGrillMeEngine(
     fun sanitizeQuestion(question: GrillQuestion): GrillQuestion = sanitizeQuestionOptions(question)
 
     private fun sanitizeQuestionOptions(question: GrillQuestion): GrillQuestion {
+        // Domain-owned choices have stable IDs; do not discard or rewrite them as free text.
+        if (question.choices.isNotEmpty()) return question
         val id = question.id.lowercase()
         val text = question.question.lowercase()
         val isDestinationOrContact = id.contains("destination") || id.contains("recipient") ||

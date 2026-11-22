@@ -172,9 +172,12 @@ sealed class AniobAction {
     data class DeviceControl(
         val command: DeviceCommand,
         val args: Map<String, String> = emptyMap(),
-        override val thought: String = "Running device command ${command.wire}"
+        override val thought: String = "Running device command ${command.wire}",
+        /** Opaque task-owned identities are kept out of string arguments, prompts and logs. */
+        val entityArguments: Map<String, EntityReference> = emptyMap()
     ) : AniobAction() {
         override val toolName: String = "device_control"
+        override fun toString(): String = "DeviceControl(command=$command, args=$args, entityArguments=[redacted])"
     }
 
     // Execution failure state

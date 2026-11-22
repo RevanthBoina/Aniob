@@ -53,6 +53,17 @@ data class SuccessCriteria(
      */
     val requireInstallConfirmation: Boolean = false
 ) {
+    /** Combine independent requirements conservatively; this cannot weaken existing checks. */
+    fun requiringAlso(other: SuccessCriteria): SuccessCriteria = copy(
+        mustContainText = (mustContainText + other.mustContainText).distinct(),
+        mustShowPackage = (mustShowPackage + other.mustShowPackage).distinct(),
+        mustShowActivity = (mustShowActivity + other.mustShowActivity).distinct(),
+        minSteps = maxOf(minSteps, other.minSteps),
+        deviceAsserts = (deviceAsserts + other.deviceAsserts).distinct(),
+        mustBeInstalled = (mustBeInstalled + other.mustBeInstalled).distinct(),
+        requireInstallConfirmation = requireInstallConfirmation || other.requireInstallConfirmation
+    )
+
     val isEmpty: Boolean
         get() = mustContainText.isEmpty() && mustShowPackage.isEmpty() &&
             mustShowActivity.isEmpty() && minSteps == 0 &&
@@ -60,7 +71,7 @@ data class SuccessCriteria(
 
     /** True when a deterministic check needs a DEVICE probe (not only a screen read). */
     val hasDeviceChecks: Boolean
-        get() = deviceAsserts.isNotEmpty() || mustBeInstalled.isNotEmpty()
+        get() = deviceAsserts.isNotEmpty() || mustBeInstalled.isNotEmpty() || requireInstallConfirmation
 
     /** True when an observable SCREEN check is present. */
     val hasScreenCheck: Boolean
@@ -88,6 +99,10 @@ data class SuccessCriteria(
         val evaluations = mutableListOf<CriterionEvaluation>()
 
         mustContainText.forEach { needle ->
+            if (needle.isBlank()) {
+                evaluations += CriterionEvaluation("Text target", CriterionState.INCONCLUSIVE, "Text target is blank")
+                return@forEach
+            }
             val matchingNode = screen.nodes.firstOrNull {
                 it.text.contains(needle, ignoreCase = true) ||
                     it.contentDescription.contains(needle, ignoreCase = true)
@@ -110,6 +125,10 @@ data class SuccessCriteria(
         }
 
         mustShowPackage.forEach { pkg ->
+            if (pkg.isBlank()) {
+                evaluations += CriterionEvaluation("Foreground package", CriterionState.INCONCLUSIVE, "Package target is blank")
+                return@forEach
+            }
             if (screen.packageName.equals(pkg, ignoreCase = true)) {
                 evaluations += CriterionEvaluation(
                     description = "Package '$pkg'",
@@ -127,6 +146,10 @@ data class SuccessCriteria(
         }
 
         mustShowActivity.forEach { activity ->
+            if (activity.isBlank()) {
+                evaluations += CriterionEvaluation("Activity target", CriterionState.INCONCLUSIVE, "Activity target is blank")
+                return@forEach
+            }
             if (screen.activityName.isBlank()) {
                 evaluations += CriterionEvaluation("Activity '$activity'", CriterionState.INCONCLUSIVE, "Activity identity unknown")
             } else {
@@ -191,7 +214,18 @@ data class SuccessCriteria(
             }
         }
 
+        if (requireInstallConfirmation && mustBeInstalled.isEmpty()) {
+            evaluations += CriterionEvaluation(
+                "Device state: installation confirmed", CriterionState.INCONCLUSIVE,
+                "Install target is unresolved; PackageManager cannot confirm it"
+            )
+        }
+
         mustBeInstalled.forEach { pkg ->
+            if (pkg.isBlank()) {
+                evaluations += CriterionEvaluation("Installation target", CriterionState.INCONCLUSIVE, "Package target is blank")
+                return@forEach
+            }
             when (val installed = device.installedPackages[pkg]) {
                 null -> evaluations += CriterionEvaluation(
                     "Device state: $pkg installed", CriterionState.INCONCLUSIVE,
@@ -209,6 +243,18 @@ data class SuccessCriteria(
         }
 
         return evaluations
+    }
+
+    /**
+     * Replace earlier device observations with a fresh probe at task closure. A stale passed
+     * assertion must never hide a later failed or inconclusive reading.
+     */
+    fun withLatestDeviceEvaluations(
+        earlier: List<CriterionEvaluation>, device: DeviceStateSnapshot
+    ): List<CriterionEvaluation> {
+        val latest = evaluateDeviceCriteria(device)
+        val deviceDescriptions = latest.map { it.description }.toSet()
+        return earlier.filterNot { it.description in deviceDescriptions } + latest
     }
 
     /**

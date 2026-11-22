@@ -377,6 +377,23 @@ class ActionBurstRunnerTest {
     }
 
     @Test
+    fun `an unverified finish ends the burst without reporting completion or running later actions`() = runBlocking {
+        val runner = ActionBurstRunner(
+            capture = { list },
+            executeMember = { member, c, screen, _ ->
+                stepResult(member, screen, StepResult.TerminalState.UNVERIFIED, verified = false, ctx = c)
+            }
+        )
+        val outcome = runner.run(
+            ActionBurst(thought = "p", isComplete = true, actions = listOf(AniobAction.Finish("done"), tap(1))),
+            origin = list, ctx = ctx()
+        )
+        assertFalse(outcome.completed)
+        assertEquals(1, outcome.ran.size)
+        assertEquals(StepResult.TerminalState.UNVERIFIED, outcome.lastResult?.terminalState)
+    }
+
+    @Test
     fun `a stopped run aborts between members`() = runBlocking {
         val ran = mutableListOf<AniobAction>()
         val runner = ActionBurstRunner(
