@@ -20,20 +20,21 @@ internal suspend fun AniobViewModel.buildTaskHistoryReport(
 ): String {
     val dao = app.database.sessionScoreDao()
     val limit = query.limit.coerceIn(1, 50)
-    val scores = if (query.taskId != null) {
-        dao.getByTaskId(query.taskId)?.let { listOf(it) } ?: emptyList()
+    val taskId = query.taskId
+    val scores = if (taskId != null) {
+        dao.getByTaskId(taskId)?.let { listOf(it) } ?: emptyList()
     } else {
         dao.getLatest(limit)
     }
     if (scores.isEmpty()) {
-        return if (query.taskId != null) "No task recorded with id ${query.taskId}."
+        return if (taskId != null) "No task recorded with id $taskId."
         else "No tasks in Aniob's history yet."
     }
 
     val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     val out = StringBuilder()
     out.append("== Aniob task report — ")
-        .append(if (query.taskId != null) "task ${query.taskId}" else "last ${scores.size} task(s)")
+        .append(if (taskId != null) "task $taskId" else "last ${scores.size} task(s)")
         .append(" ==\n")
     out.append("Source: Aniob's local database (session_scores + task_outcomes + audit_logs). ")
         .append("Per-step latency and per-step token counts are not persisted; only prompt totals are shown.\n")
@@ -51,9 +52,12 @@ internal suspend fun AniobViewModel.buildTaskHistoryReport(
         out.append("When: ${fmt.format(Date(score.timestamp))} · Provider: ${score.providerUsed} · ")
         out.append("Steps: ${score.totalSteps} · Latency: ${score.durationMs} ms · ")
         out.append("Tokens (prompt): ${score.tokensUsed}\n")
-        sealed?.let { out.append("Outcome: ${it.outcome} — ${it.reason.take(200)}")
-            if (it.userDecision != null) out.append(" (your decision: ${it.userDecision})")
-            out.append('\n') }
+        sealed?.let { outcome ->
+            out.append("Outcome: ${outcome.outcome} — ${outcome.reason.take(200)}")
+            val decision = outcome.userDecision
+            if (decision != null) out.append(" (your decision: $decision)")
+            out.append('\n')
+        }
         val steps = runCatching { app.database.auditLogDao().getByTask(score.taskId) }
             .getOrDefault(emptyList())
         if (steps.isNotEmpty()) {

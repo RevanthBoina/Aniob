@@ -242,7 +242,7 @@ class AniobBenchmarkRunner(
                     !allowed -> "DISALLOWED_TOOL"
                     attempted && !accepted -> "DISPATCH_REJECTED"
                     result?.verification?.status == DeterministicVerifier.Status.FAILED ->
-                        result.verification.failureKind?.name ?: "VERIFICATION_FAILED"
+                        result?.verification?.failureKind?.name ?: "VERIFICATION_FAILED"
                     result?.verification?.status == DeterministicVerifier.Status.UNCONFIRMED -> "VERIFICATION_UNCONFIRMED"
                     action is AniobAction.Fail -> "MODEL_REPORTED_FAILURE"
                     else -> null

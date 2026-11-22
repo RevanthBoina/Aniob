@@ -64,7 +64,8 @@ object BenchmarkCsv {
             }
             table(directory, "retrieval_candidates.csv", "run_id,catalog_id,catalog_order,artifact_id,skill_id,skill_version,independent_label,training_run_id,training_evidence_ref") {
                 for (trial in schedule) for ((index, candidate) in trial.case.retrieval!!.candidates.withIndex()) {
-                    row(trial.runId, trial.case.retrieval.catalogId, index + 1, candidate.artifact.artifactId, candidate.skill.name,
+                    val retrieval = trial.case.retrieval!!
+                    row(trial.runId, retrieval.catalogId, index + 1, candidate.artifact.artifactId, candidate.skill.name,
                         candidate.skill.version, candidate.label, candidate.artifact.sourceRunId, candidate.artifact.trainingAudit.evidenceRef)
                 }
             }
