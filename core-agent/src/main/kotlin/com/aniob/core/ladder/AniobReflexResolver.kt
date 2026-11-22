@@ -586,7 +586,8 @@ object AniobReflexResolver {
         return calendarShortcut(slots.title, begin)
     }
 
-    private data class ReminderSlots(val title: String, val day: String, val time: String)
+    /** Internal so the app-layer gate (and unit tests) can inspect the slots it resolved. */
+    internal data class ReminderSlots(val title: String, val day: String, val time: String)
 
     /**
      * Order-independent reminder extraction, run on the RAW request (subject spelling and
