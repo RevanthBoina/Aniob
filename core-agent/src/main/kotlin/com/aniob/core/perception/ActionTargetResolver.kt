@@ -33,6 +33,17 @@ object ActionTargetResolver {
     fun soleEditableField(screen: AniobScreenState): AniobNode? =
         screen.nodes.filter { it.isEditable && it.isVisibleToUser && it.isEnabled && !it.isPassword }.singleOrNull()
 
+    /**
+     * Diagnostic only — never for dispatch. When there is exactly one editable, visible, enabled
+     * field on [screen] but it is protected, [soleEditableField] fails closed to null and the
+     * unnamed input is refused. This surfaces that protected field so the caller can say
+     * "refused: protected field" (and let the user clarify) instead of a bare miss.
+     */
+    fun blockedSoleEditableField(screen: AniobScreenState): AniobNode? =
+        screen.nodes.filter { it.isEditable && it.isVisibleToUser && it.isEnabled }
+            .singleOrNull()
+            ?.takeIf { it.isPassword }
+
     /** True when [action]'s target is the unnamed-input sentinel. */
     fun isUnnamedInput(action: AniobAction): Boolean =
         action is AniobAction.InputText &&

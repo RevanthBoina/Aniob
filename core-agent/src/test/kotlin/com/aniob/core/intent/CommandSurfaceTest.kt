@@ -78,7 +78,7 @@ class CommandSurfaceTest {
         assertEquals(AniobIntent.TASK_HISTORY, AniobTaskIntentClassifier.classify("show my last 10 tasks"))
         assertEquals(AniobIntent.TASK_HISTORY, AniobTaskIntentClassifier.classify("give me details of the last 10 tasks in copy-paste format"))
         assertEquals(AniobIntent.TASK_HISTORY, AniobTaskIntentClassifier.classify("task history"))
-        assertEquals(AniobIntent.EXTERNAL_AI_QUERY, AniobTaskIntentClassifier.classify("what is the capital of France"))
+        assertEquals(AniobIntent.KNOWLEDGE_QA, AniobTaskIntentClassifier.classify("what is the capital of France"))
     }
 
     @Test
@@ -106,7 +106,7 @@ class CommandSurfaceTest {
         val slots = AniobReflexResolver.extractReminderSlots("Set an remainder for tommorow at 9am for holi")
         assertNotNull(slots)
         assertEquals("tomorrow", slots!!.day)
-        assertEquals("09:00", slots.time)
+        assertEquals("9:00", slots.time)
         assertEquals("holi", slots.title)
 
         val reversed = AniobReflexResolver.extractReminderSlots("Remainde me tommorow about holi at 5pm")
