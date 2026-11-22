@@ -586,8 +586,8 @@ object AniobReflexResolver {
         return calendarShortcut(slots.title, begin)
     }
 
-    /** Internal so the app-layer gate (and unit tests) can inspect the slots it resolved. */
-    internal data class ReminderSlots(val title: String, val day: String, val time: String)
+    /** Public: the app-layer gate inspects the slots it resolved. */
+    data class ReminderSlots(val title: String, val day: String, val time: String)
 
     /**
      * Order-independent reminder extraction, run on the RAW request (subject spelling and
@@ -604,7 +604,7 @@ object AniobReflexResolver {
      * "at"; a bare hour ("at 9") keeps meaning midnight-ambiguous 09:00 exactly as before, and an
      * absent time is left absent (the calendar opens with a blank time rather than inventing one).
      */
-    internal fun extractReminderSlots(raw: String): ReminderSlots? {
+    fun extractReminderSlots(raw: String): ReminderSlots? {
         var work = raw.trim().trimEnd('?', '.', '!', ',', ';', ' ', '-')
         work = politeOpeners.replace(leadingGreeting.replace(work, ""), "").trim()
         val opener = REMINDER_OPENER.find(work) ?: return null

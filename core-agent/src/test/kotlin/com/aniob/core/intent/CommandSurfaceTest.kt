@@ -159,9 +159,9 @@ class CommandSurfaceTest {
             lower("Hello, remind me to water plants tomorrow at 5pm")
         )
         assertNotNull("greeting-prefixed reminder must still resolve via reflex", shortcut)
-        assertEquals(com.aniob.core.domain.DeviceCommand.CALENDAR_INSERT, AniobReflexResolver.commandOf(shortcut))
-        assertEquals("water plants", AniobReflexResolver.argsOf(shortcut)["title"])
-        assertTrue(AniobReflexResolver.argsOf(shortcut)["begin"]?.isNotBlank() == true)
+        assertEquals(com.aniob.core.domain.DeviceCommand.CALENDAR_INSERT, AniobReflexResolver.commandOf(shortcut!!))
+        assertEquals("water plants", AniobReflexResolver.argsOf(shortcut!!)["title"])
+        assertTrue(AniobReflexResolver.argsOf(shortcut!!)["begin"]?.isNotBlank() == true)
     }
 
     @Test
@@ -173,6 +173,6 @@ class CommandSurfaceTest {
             lower("remind me to call mom tomorrow")
         )
         assertNotNull(shortcut)
-        assertNull(AniobReflexResolver.argsOf(shortcut)["begin"])
+        assertNull(AniobReflexResolver.argsOf(shortcut!!)["begin"])
     }
 }
