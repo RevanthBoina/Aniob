@@ -272,6 +272,8 @@ class ActionBurstRunner(
             }
 
             when (result.terminalState) {
+                StepResult.TerminalState.UNVERIFIED ->
+                    return Outcome(ran, result, currentCtx, currentScreen, Stop.NONE, completed = false, memberResults = memberResults)
                 StepResult.TerminalState.SUCCESS ->
                     return Outcome(ran, result, currentCtx, currentScreen, Stop.NONE, completed = true, memberResults = memberResults)
                 StepResult.TerminalState.FAIL ->

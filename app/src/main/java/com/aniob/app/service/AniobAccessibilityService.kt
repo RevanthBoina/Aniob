@@ -376,7 +376,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         val seqAtCaptureStart = windowEventSequence()
         recycleLatestRefs()
         val rawNodes = mutableListOf<AniobNode>()
-        var primaryPackage = currentForegroundPackage().orEmpty()
+        val primaryPackage = currentForegroundPackage().orEmpty()
         val displayMetrics = resources.displayMetrics
         val screenBounds = AniobRect(0, 0, displayMetrics.widthPixels, displayMetrics.heightPixels)
 
@@ -396,9 +396,6 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
 
             for (w in targetWindows) {
                 val root = w.root ?: continue
-                if (primaryPackage.isEmpty() && root.packageName != null) {
-                    primaryPackage = root.packageName.toString()
-                }
                 val winRect = Rect()
                 w.getBoundsInScreen(winRect)
                 val windowClip = AniobRect(winRect.left, winRect.top, winRect.right, winRect.bottom).intersect(screenBounds)
@@ -414,7 +411,6 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         } else {
             val root = rootInActiveWindow
             if (root != null) {
-                primaryPackage = root.packageName?.toString().orEmpty()
                 traverseNodeBounded(
                     node = root,
                     list = rawNodes,
@@ -494,7 +490,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         recycleLatestRefs()
         val refs = ArrayList<AccessibilityNodeInfo>(64)
         val roots = ArrayList<ObserveSnapshot>(2)
-        var primaryPackage = currentForegroundPackage().orEmpty()
+        val primaryPackage = currentForegroundPackage().orEmpty()
         val displayMetrics = resources.displayMetrics
         val screenBounds = AniobRect(0, 0, displayMetrics.widthPixels, displayMetrics.heightPixels)
 
@@ -517,7 +513,6 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             }
             for (w in targetWindows) {
                 val root = w.root ?: continue
-                if (primaryPackage.isEmpty()) root.packageName?.toString()?.let { primaryPackage = it }
                 val winRect = Rect()
                 w.getBoundsInScreen(winRect)
                 val clip = AniobRect(winRect.left, winRect.top, winRect.right, winRect.bottom)
@@ -526,7 +521,6 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             }
         } else {
             rootInActiveWindow?.let { root ->
-                primaryPackage = root.packageName?.toString().orEmpty()
                 rootsToRead.add(root to screenBounds)
             }
         }
@@ -1536,35 +1530,35 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     }
 
     /**
-     * Package currently owning the active window, read live. Used to detect an OEM background-kill
-     * that invalidated our cached session before we reuse it.
-     *
-     * `rootInActiveWindow` is not the application foreground window on every device: a notification
-     * shade, volume panel, IME or system alert owned by the System UI can hold it, which reported
-     * `com.android.systemui` as "the foreground app" and let callers act on the wrong window. The
-     * application window is identified instead — the active (or top-layer) TYPE_APPLICATION window —
-     * and only then its root is read. Falls back to `rootInActiveWindow` when the window list is
-     * unavailable so behaviour degrades to the old, never crashes.
+     * Only an identified application window can establish foreground app identity. The active
+     * root may instead belong to the keyboard, notification shade, or another system surface.
+     * If the window list or its root is unavailable, the foreground package is unknown.
      */
     fun currentForegroundPackage(): String? =
         try {
             val appWindows = windows
-                ?.filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+                ?.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
                 .orEmpty()
-            val appWindow = appWindows.firstOrNull { it.isActive }
-                ?: appWindows.maxByOrNull { it.layer }
-            val root = appWindow?.root ?: rootInActiveWindow
-            val packageName = root?.packageName?.toString()
-            root?.recycle()
-            appWindows.forEach { it.recycle() }
-            packageName
+            try {
+                val appWindow = appWindows.firstOrNull { it.isActive }
+                    ?: appWindows.maxByOrNull { it.layer }
+                val root = appWindow?.root
+                try {
+                    val packageName = root?.packageName?.toString()?.takeIf { it.isNotBlank() }
+                    // A window classified as TYPE_APPLICATION is still not authoritative when
+                    // its owner is System UI or the configured input method.
+                    val inputMethod = android.provider.Settings.Secure.getString(
+                        contentResolver, android.provider.Settings.Secure.DEFAULT_INPUT_METHOD
+                    )?.let(android.content.ComponentName::unflattenFromString)?.packageName
+                    packageName?.takeUnless { it == "com.android.systemui" || it == inputMethod }
+                } finally {
+                    root?.recycle()
+                }
+            } finally {
+                appWindows.forEach { it.recycle() }
+            }
         } catch (_: Exception) {
-            runCatching {
-                val root = rootInActiveWindow
-                val packageName = root?.packageName?.toString()
-                root?.recycle()
-                packageName
-            }.getOrNull()
+            null
         }
 
     private fun gateOnUiQuiescence(action: AniobAction) {

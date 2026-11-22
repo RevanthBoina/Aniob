@@ -57,6 +57,12 @@ object DeterministicVerifier {
         }
         if (!dispatched) return VerificationResult(false, System.currentTimeMillis() - start,
             "Android did not accept dispatch", failureKind = FailureKind.DISPATCH_REJECTED)
+        // A device adapter accepting a command is not an observation of its effects. A later
+        // task-level verifier may use an independent device probe or fresh screen as evidence.
+        if (action is AniobAction.DeviceControl) return VerificationResult(
+            false, System.currentTimeMillis() - start, "Device command dispatched; effect not independently verified",
+            status = Status.UNCONFIRMED
+        )
 
         if (screenBefore == null && action !is AniobAction.OpenApp && action !is AniobAction.InputText) {
             return VerificationResult(true, System.currentTimeMillis() - start, "Initial step verified.")

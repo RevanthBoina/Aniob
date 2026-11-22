@@ -1,6 +1,7 @@
 package com.aniob.app.ui.chat
 
 import com.aniob.core.grillme.GrillQuestion
+import com.aniob.core.grillme.GrillChoice
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -20,5 +21,12 @@ class GrillMeInlineCardTest {
         val answers = mapOf("recipient" to "typed by hand", "app" to "X")
         assertEquals(answers, grillAnswersToSubmit(questions, answers, "  "))
         assertEquals(answers + ("notes" to "be quick"), grillAnswersToSubmit(questions, answers, "be quick"))
+    }
+    @Test fun entityChoiceSubmitsOpaqueIdNotItsLabel() {
+        val q = GrillQuestion("contact_choice", "Which contact?", emptyList(), allowFreeText = false,
+            choices = listOf(GrillChoice("id-1", "Alex"), GrillChoice("id-2", "Alex")))
+        assertNull(grillAnswersToSubmit(listOf(q), mapOf(q.id to "Alex"), ""))
+        assertNull(grillAnswersToSubmit(listOf(q), mapOf(q.id to "unoffered"), ""))
+        assertEquals(mapOf(q.id to "id-2"), grillAnswersToSubmit(listOf(q), mapOf(q.id to "id-2"), ""))
     }
 }

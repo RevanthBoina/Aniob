@@ -14,8 +14,8 @@ import com.aniob.core.knowledge.AppLookup
  * [requiresObservation] is the field that fixes the "Open Clock" bug: a shortcut that opens an app
  * can only be called done by looking at the screen afterwards, so it must never be turned into a
  * `DirectIntent` (which finishes without a post-condition and is therefore reported as FAILED).
- * Reflex shortcuts — flashlight, battery, dial, open URL — are the opposite: their effect *is* the
- * dispatch, and they may finish immediately.
+ * Some reflex shortcuts require no further UI action, but dispatch alone is not proof that the
+ * requested outcome occurred.
  */
 data class ResolvedIntentShortcut(
     val action: String,
@@ -45,10 +45,8 @@ data class ResolvedIntentShortcut(
     val opensEditorOnly: Boolean = false
 ) {
     /**
-     * True for a reflex whose effect *is* the dispatch: Android resolved the intent (or the
-     * system service accepted the call) and there is no interactive screen left to check — alarm
-     * and timer with `SKIP_UI`, torch, battery, dial, URL, maps and a settings panel that is the
-     * whole request. The caller may close the run as verified on a successful dispatch.
+     * Routing hint that the shortcut does not leave an editor to complete. Android accepting a
+     * dispatch is not verification; the closing path still requires independent evidence.
      */
     val completesOnDispatch: Boolean
         get() = !requiresObservation && !opensEditorOnly

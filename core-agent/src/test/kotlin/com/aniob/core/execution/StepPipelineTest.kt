@@ -146,7 +146,7 @@ class StepPipelineTest {
             capture = { screenNow },
             dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = screenNow) }
         )
-        assertEquals(StepResult.TerminalState.SUCCESS, result.terminalState)
+        assertEquals(StepResult.TerminalState.UNVERIFIED, result.terminalState)
         assertEquals(0, result.nextCtx.rejectedFinishCount)
     }
 
@@ -161,8 +161,50 @@ class StepPipelineTest {
             capture = { screenNow },
             dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = screenNow) }
         )
-        assertEquals(StepResult.TerminalState.SUCCESS, result.terminalState)
+        assertEquals(StepResult.TerminalState.UNVERIFIED, result.terminalState)
         assertEquals(0, result.nextCtx.rejectedFinishCount)
+        assertFalse(result.verification!!.isExpected)
+    }
+
+    @Test
+    fun `accepted device dispatch is not proof of a later finish`() = runBlocking {
+        val screenNow = screen("com.a", "Clock")
+        val noEvidence = TaskContext(instruction = "turn on the torch", stepIndex = 1,
+            trajectory = listOf(AniobAction.DeviceControl(com.aniob.core.domain.DeviceCommand.TORCH_ON, emptyMap())))
+        val result = pipeline().executeStep(noEvidence, screenNow,
+            StepPipeline.Proposal.Model(AniobAction.Finish("done"), "FAKE"),
+            capture = { screenNow }, dispatch = { StepPipeline.DispatchOutcome(true) },
+            judge = { ReflectionOutcome.confirmed("model claims success") })
+        assertEquals(StepResult.TerminalState.UNVERIFIED, result.terminalState)
+        assertFalse(result.verification!!.isExpected)
+    }
+
+    @Test
+    fun `unknown device state remains unverified after the last retry`() = runBlocking {
+        val screenNow = screen("com.a", "Clock")
+        val context = TaskContext(instruction = "turn on the torch",
+            successCriteria = SuccessCriteria(deviceAsserts = listOf(com.aniob.core.domain.DeviceAssertion.TORCH_ON)),
+            rejectedFinishCount = StepPipeline.BASELINE_MAX_REJECTED_FINISHES - 1)
+        val result = pipeline().executeStep(context, screenNow,
+            StepPipeline.Proposal.Model(AniobAction.Finish("done"), "FAKE"),
+            capture = { screenNow }, dispatch = { StepPipeline.DispatchOutcome(true) })
+        assertEquals(StepResult.TerminalState.UNVERIFIED, result.terminalState)
+        assertFalse(result.verification!!.isExpected)
+    }
+
+    @Test
+    fun `finish cannot use a stale screen after the post-action capture fails`() = runBlocking {
+        val screenNow = screen("com.a", "Display")
+        val pipe = StepPipeline(optimizedFinish = true)
+        var captures = 0
+        val result = pipe.executeStep(ctx, screenNow,
+            StepPipeline.Proposal.Model(AniobAction.Finish("done"), "FAKE"),
+            capture = {
+                captures++
+                if (captures > 1) throw IllegalStateException("capture failed")
+                screenNow
+            }, dispatch = { StepPipeline.DispatchOutcome(true) })
+        assertEquals(StepResult.TerminalState.UNVERIFIED, result.terminalState)
         assertFalse(result.verification!!.isExpected)
     }
 
@@ -704,5 +746,21 @@ class StepPipelineTest {
             }
         )
         assertFalse((dispatched as AniobAction.InputText).submit)
+    }
+    @Test
+    fun `accepted device dispatch is unconfirmed and excluded from verified learning`() = runBlocking {
+        val screen = AniobScreenState(packageName = "com.aniob.app", treeHash = "unchanged")
+        val action = AniobAction.DeviceControl(com.aniob.core.domain.DeviceCommand.TORCH_ON)
+        val result = pipeline().executeStep(
+            ctx = TaskContext(instruction = "turn on the torch"),
+            planningScreen = screen,
+            proposal = StepPipeline.Proposal.Model(action, "MOCK"),
+            capture = { screen },
+            dispatch = { StepPipeline.DispatchOutcome(true, reason = "Android accepted", screenAfter = screen) }
+        )
+        assertEquals(com.aniob.core.verifier.DeterministicVerifier.Status.UNCONFIRMED, result.verification?.status)
+        assertFalse(result.verification!!.isSuccessful)
+        assertTrue(result.nextCtx.hasUnverifiedActions)
+        assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
     }
 }

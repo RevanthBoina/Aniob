@@ -57,11 +57,11 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
             if (pipe.parked) return
             pendingAdded = drainInstructionsInto(pipe)
         }
-        if (!mayCloseTask()) {
+        if (!mayCloseTask(taskContext)) {
             // Input that landed between the last drain and this report. The task may not present a
             // result it has not processed, so it says what is true instead.
             finalOutcome = Outcome.UNVERIFIED
-            terminalReason = "A newer instruction arrived before this report; it was not applied."
+            terminalReason = "The task still has unresolved or unprocessed user input."
         }
         // The loop has ended; nothing assigns the last step result any more.
         val stepResult = pipe.stepResult
@@ -92,14 +92,15 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
         // v1 only wired it into the intent branch, leaving the common ladder path unguarded.
         setPhase(AgentPhase.VERIFYING)
         val finalDeviceState = if (resolvedCriteria?.hasDeviceChecks == true) probeDeviceState(resolvedCriteria) else DeviceStateSnapshot.UNKNOWN
-        val deviceEvaluations = evalDeviceAssertions(resolvedCriteria, finalDeviceState)
-        val criteriaEvaluations = (
-            when {
-                intentVerdict != null -> intentVerdict!!
-                completedByIntent -> emptyList()
-                else -> resolvedCriteria?.evaluateCriteria(finalScreen, currentStep, finalDeviceState) ?: emptyList()
-            } + deviceEvaluations
-        ).distinctBy { it.description }
+        val priorEvaluations = when {
+            intentVerdict != null -> intentVerdict!!
+            completedByIntent -> emptyList()
+            else -> resolvedCriteria?.evaluateCriteria(finalScreen, currentStep, finalDeviceState) ?: emptyList()
+        }
+        // A shortcut's earlier hardware verdict can become stale before closure. Replace it with
+        // the final live probe, rather than distinctBy keeping an older PASSED value.
+        val criteriaEvaluations = resolvedCriteria?.withLatestDeviceEvaluations(priorEvaluations, finalDeviceState)
+            ?: priorEvaluations
         val evidenceItems = criteriaEvaluations.map { ev ->
             EvidenceItem(
                 label = ev.description,
@@ -118,6 +119,7 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
                 }
                 stepResult?.terminalState == StepResult.TerminalState.SUCCESS ->
                     if (resolvedCriteria?.hasObservableCheck == true) Outcome.SUCCESS else Outcome.UNVERIFIED
+                stepResult?.terminalState == StepResult.TerminalState.UNVERIFIED -> Outcome.UNVERIFIED
                 stepResult?.terminalState == StepResult.TerminalState.FAIL -> Outcome.FAILED
                 else -> Outcome.FAILED
             }
@@ -126,6 +128,11 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
         ) {
             // Confirmed with no machine-checkable criterion: honest "unverified", never a failure.
             finalOutcome = Outcome.UNVERIFIED
+        }
+
+        if (finalOutcome == Outcome.SUCCESS && taskPlan != null && !hasAuthoritativeCompletionCriteria) {
+            finalOutcome = Outcome.UNVERIFIED
+            terminalReason = "The observed state alone does not establish the requested outcome."
         }
 
         // PART 2/7: a read request is judged against what was OBSERVED inside the app. Opening the
@@ -147,12 +154,19 @@ internal suspend fun AniobViewModel.pipelineComplete(pipe: PipelineRun) {
         // FINAL GATE (BUG-01/06): SUCCESS may not survive an unmet or unprobed criterion — even
         // when a pipeline step or a model Finish claimed it. This is the single place every run
         // passes through, so no future code path can quietly opt out of real completion checks.
-        if (finalOutcome == Outcome.SUCCESS && !completedByIntent) {
+        if (finalOutcome == Outcome.SUCCESS &&
+            (resolvedCriteria?.hasObservableCheck != true || criteriaEvaluations.isEmpty())
+        ) {
+            finalOutcome = Outcome.UNVERIFIED
+            terminalReason = "The outcome could not be independently verified."
+        }
+        if (finalOutcome == Outcome.SUCCESS) {
             val failedCriteria = criteriaEvaluations.filter {
                 it.state == com.aniob.core.domain.CriterionState.FAILED
             }
             val inconclusiveCriteria = criteriaEvaluations.filter {
-                it.state == com.aniob.core.domain.CriterionState.INCONCLUSIVE
+                it.state == com.aniob.core.domain.CriterionState.INCONCLUSIVE ||
+                    it.state == com.aniob.core.domain.CriterionState.UNCHECKED
             }
             if (failedCriteria.isNotEmpty()) {
                 finalOutcome = Outcome.FAILED

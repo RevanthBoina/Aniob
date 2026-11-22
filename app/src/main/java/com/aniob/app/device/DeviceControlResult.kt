@@ -24,5 +24,7 @@ data class DeviceControlResult(
      * shows it as a clarifying question and restarts the task with the answer; [message] stays a
      * plain sentence for the model and the chat.
      */
-    val clarify: com.aniob.core.grillme.GrillQuestion? = null
+    val clarify: com.aniob.core.grillme.GrillQuestion? = null,
+    /** Task-local opaque candidates; private numbers never leave the Android adapter. */
+    val contactChoices: com.aniob.core.domain.EntityResolution.MultipleCandidates? = null
 )

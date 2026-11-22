@@ -258,6 +258,35 @@ class ObservePipelineTest {
         assertTrue(prompt.contains("using the index [X]"))
     }
 
+    @Test
+    fun executorPromptKeepsAllControlLabelsInsideUntrustedObservation() {
+        val nodes = listOf("Save", "Archive", "Complete transaction").mapIndexed { index, label ->
+            AniobNode(
+                id = index + 1,
+                className = "android.widget.Button",
+                text = label,
+                isClickable = true,
+                isEnabled = true,
+                isVisibleToUser = true,
+                bounds = AniobRect(0, index * 60, 200, index * 60 + 50)
+            )
+        }
+        val prompt = ExecutorRequest(
+            goal = "Complete the requested change",
+            packageName = "com.example",
+            observationId = "hash",
+            actionableNodes = nodes
+        ).toPromptString()
+        val start = prompt.indexOf(com.aniob.core.safety.AniobInjectionCanary.OPEN)
+        val end = prompt.indexOf(com.aniob.core.safety.AniobInjectionCanary.CLOSE)
+        assertTrue(start >= 0 && end > start)
+        for (node in nodes) {
+            val labelPosition = prompt.indexOf(node.text)
+            assertTrue("${node.text} should remain untrusted screen data", labelPosition in (start + 1) until end)
+            assertEquals(labelPosition, prompt.lastIndexOf(node.text))
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Structural hash
     // ---------------------------------------------------------------------------------------------

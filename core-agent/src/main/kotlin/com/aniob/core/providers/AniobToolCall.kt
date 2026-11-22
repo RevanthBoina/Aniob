@@ -5,6 +5,11 @@ import com.aniob.core.domain.AniobActionSchema
 import com.aniob.core.domain.KeyType
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
+import com.aniob.core.domain.DeviceCommand
+import com.aniob.core.capability.AniobCapabilityRegistry
+import com.aniob.core.capability.CapabilityInvocation
+import com.aniob.core.capability.CapabilityValue
+import com.aniob.core.capability.CapabilityValueType
 
 /**
  * Parsed shape of the JSON tool call an on-device SLM is expected to emit.
@@ -54,6 +59,114 @@ sealed class AniobGenerationResult {
  * so the "hallucinated node id" guarantee survives the action-model rewrite.
  */
 object AniobToolCallParser {
+
+    /** A schema-validated proposal; it must still pass StepPipeline safety and live dispatch gates. */
+    sealed interface CapabilityConversion {
+        data class Proposed(val action: AniobAction.DeviceControl) : CapabilityConversion
+        data class Rejected(val reasons: List<String>) : CapabilityConversion
+    }
+
+    /**
+     * Bridge canonical device capabilities to the existing guarded action pipeline. There is no
+     * alias lookup, no entity-to-label conversion, and no execution in this method.
+     */
+    fun capabilityToAction(
+        invocation: CapabilityInvocation,
+        registry: AniobCapabilityRegistry
+    ): CapabilityConversion {
+        val args = java.util.Collections.unmodifiableMap(LinkedHashMap(invocation.arguments))
+        val snapshot = invocation.copy(arguments = args)
+        val errors = registry.validate(snapshot)
+        if (errors.isNotEmpty()) return CapabilityConversion.Rejected(errors)
+        val descriptor = registry.find(snapshot.capabilityId)!!
+        val command = DeviceCommand.entries.firstOrNull {
+            it.wire == descriptor.executionKey && it.wire == descriptor.id
+        } ?: return CapabilityConversion.Rejected(listOf("no canonical device adapter for '${descriptor.id}'"))
+        val entityArgs = args.mapNotNull { (name, value) ->
+            (value as? CapabilityValue.Entity)?.let { name to it.value }
+        }.toMap()
+        if (entityArgs.size > 1) {
+            return CapabilityConversion.Rejected(listOf("one entity reference per device call is supported"))
+        }
+        val wireArgs = args.mapNotNull { (name, value) ->
+            val wire = when (value) {
+                is CapabilityValue.Text -> value.value
+                is CapabilityValue.Integer -> value.value.toString()
+                is CapabilityValue.Decimal -> value.value.toString()
+                is CapabilityValue.BooleanValue -> value.value.toString()
+                is CapabilityValue.Entity -> null
+            }
+            wire?.let { name to it }
+        }.toMap().toMutableMap()
+        // Android's legacy bridge accepts a string slot; this marker is never interpreted as
+        // user data. The opaque reference travels separately in entityArguments.
+        entityArgs.keys.forEach { name ->
+            val slot = when (name) {
+                "phone" -> if ("contact" in command.argNames) "contact" else name
+                else -> name
+            }
+            if (slot !in wireArgs && slot in command.argNames) wireArgs[slot] = "__selected_entity__"
+        }
+        return CapabilityConversion.Proposed(
+            AniobAction.DeviceControl(
+                command,
+                args = java.util.Collections.unmodifiableMap(LinkedHashMap(wireArgs)),
+                thought = "Execute selected capability",
+                entityArguments = java.util.Collections.unmodifiableMap(LinkedHashMap(entityArgs))
+            )
+        )
+    }
+
+    /**
+     * Transitional wire adapter for existing DeviceControl callers. Android's old executor accepts
+     * strings, but those strings must still satisfy the registry's typed schema and live availability.
+     * This does not approve or perform the action; the shared execution gates remain mandatory.
+     */
+    sealed interface InvocationConversion {
+        data class Proposed(val invocation: CapabilityInvocation) : InvocationConversion
+        data class Rejected(val reasons: List<String>) : InvocationConversion
+    }
+
+    /** Preserve typed arguments when translating a deterministic shortcut into a plan. */
+    fun legacyDeviceInvocation(
+        command: DeviceCommand,
+        wireArguments: Map<String, String>,
+        registry: AniobCapabilityRegistry
+    ): InvocationConversion {
+        val schema = registry.find(command.wire)?.schema
+            ?: return InvocationConversion.Rejected(listOf("unknown capability '${command.wire}'"))
+        val params = schema.parameters.associateBy { it.name }
+        val typed = linkedMapOf<String, CapabilityValue>()
+        for ((name, raw) in wireArguments.toMap()) {
+            val param = params[name] ?: return InvocationConversion.Rejected(listOf("unknown argument '$name'"))
+            if (raw.isBlank()) continue
+            val value = when (param.type) {
+                CapabilityValueType.TEXT -> CapabilityValue.Text(raw)
+                CapabilityValueType.INTEGER -> raw.trim().toLongOrNull()?.let(CapabilityValue::Integer)
+                CapabilityValueType.DECIMAL -> raw.trim().toBigDecimalOrNull()?.let(CapabilityValue::Decimal)
+                CapabilityValueType.BOOLEAN -> when {
+                    raw.trim().equals("true", ignoreCase = true) -> CapabilityValue.BooleanValue(true)
+                    raw.trim().equals("false", ignoreCase = true) -> CapabilityValue.BooleanValue(false)
+                    else -> null
+                }
+                CapabilityValueType.ENTITY -> null
+            } ?: return InvocationConversion.Rejected(listOf("argument '$name' must be ${param.type}"))
+            typed[name] = value
+        }
+        val invocation = CapabilityInvocation(command.wire, java.util.Collections.unmodifiableMap(typed))
+        val errors = registry.validate(invocation)
+        return if (errors.isEmpty()) InvocationConversion.Proposed(invocation)
+        else InvocationConversion.Rejected(errors)
+    }
+
+    fun legacyDeviceAction(
+        command: DeviceCommand,
+        wireArguments: Map<String, String>,
+        registry: AniobCapabilityRegistry
+    ): CapabilityConversion = when (val converted = legacyDeviceInvocation(command, wireArguments, registry)) {
+        is InvocationConversion.Proposed -> capabilityToAction(converted.invocation, registry)
+        is InvocationConversion.Rejected -> CapabilityConversion.Rejected(converted.reasons)
+    }
 
     /** Parses raw model text into the canonical action, or null when it is not a valid action. */
     fun parseToAction(rawText: String): AniobAction? = AniobActionSchema.parseActionJsonOrNull(rawText)

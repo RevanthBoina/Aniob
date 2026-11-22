@@ -404,8 +404,11 @@ class AniobViewModel(
         AniobForegroundService.onGrillChoiceWithIds = { taskId, questionId, answer ->
             resolveGrillAnswerFromNotification(taskId, questionId, answer, requireOption = true)
         }
-        AniobForegroundService.onGrillCancelForTask = { taskId ->
-            if (_uiState.value.activeTask?.id == taskId) cancelGrillMe()
+        AniobForegroundService.onGrillCancelForTask = { taskId, questionId ->
+            val state = _uiState.value
+            if (state.activeTask?.id == taskId && state.showGrillMeSheet &&
+                state.grillMeResult?.questions?.any { it.id == questionId } == true
+            ) cancelGrillMe()
         }
 
         viewModelScope.launch {

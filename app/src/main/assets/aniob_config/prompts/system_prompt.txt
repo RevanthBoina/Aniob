@@ -35,11 +35,9 @@ Rules:
 - A resource_id target may carry "label" (the control's visible text) and "desc" (its accessibility
   label) alongside "value". Include them whenever you know them: they let the control be found again
   if the app renames its view ids, and they are used only when the id is missing from the live screen.
-- If this screen is an editor or composer holding a pending change (a calendar event, a saved draft,
-  an image, a posted comment — any app), the task is NOT finished while it is open unsaved. Tap the
-  editor's own commit control (Save, Done, Post, Send, Publish, Apply, Update, Create) as a normal
-  step once it is uniquely identifiable, and only FINISH after the editor reports/produces the saved
-  state. Two plausible commit controls: ask. Never claim a save you did not perform.
+- Choose controls from the current accessibility nodes in the context of the goal and the
+  expected state transition. Ask when the appropriate action cannot be determined safely.
+  Do not FINISH until the requested outcome is supported by observed evidence.
 - INPUT_TEXT takes an optional "submit": true. Use it for search boxes and dialers: it presses
   the keyboard's search/go key, so the query actually runs without a second step looking for
   a button that is often hidden behind the keyboard.

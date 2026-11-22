@@ -22,9 +22,11 @@ data class StepResult(
     val resolvedNode: AniobNode? = null,
     val tokensUsed: Int = 0,
     val latencyMs: Long = 0L,
-    val verificationSkippedFast: Boolean = false
+    val verificationSkippedFast: Boolean = false,
+    /** True only when the guarded dispatch seam accepted this particular action. */
+    val dispatched: Boolean = false
 ) {
-    enum class TerminalState { CONTINUE, SUCCESS, FAIL }
+    enum class TerminalState { CONTINUE, SUCCESS, UNVERIFIED, FAIL }
 
     val isTerminal: Boolean get() = terminalState != TerminalState.CONTINUE
 }

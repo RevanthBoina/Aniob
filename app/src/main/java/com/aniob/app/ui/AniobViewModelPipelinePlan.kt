@@ -46,6 +46,28 @@ internal suspend fun AniobViewModel.pipelinePropose(
         val powerState = observed.powerState
         val userRouting = observed.userRouting
         val ladderResult = observed.ladderResult
+        // Resume the exact command that requested the choice. It still passes StepPipeline's
+        // live observation, injection and approval gates; the selected ID stays in task memory.
+        selectedContactReplay?.let { (action, _) ->
+            primaryProvider = "CONTACT_SELECTION"
+            return@with PipelineFlow.Next(ProposedStep(StepPipeline.Proposal.Model(action, primaryProvider), null, null))
+        }
+        // The remainder of a structured plan is only proposed one call at a time. Every call
+        // still passes fresh observation, injection, approval, and live device availability gates.
+        val queuedPlan = taskPlan
+        val queuedIndex = taskPlanCursor
+        if (queuedPlan != null && queuedIndex != null) {
+            val registry = com.aniob.core.capability.AniobCapabilityRegistry.deviceCommands {
+                AniobCapabilityProbe.snapshot(app)
+            }
+            val next = com.aniob.core.capability.AniobPlanRuntime.nextAction(queuedPlan, queuedIndex, registry)
+            val action = when (next) {
+                is com.aniob.core.providers.AniobToolCallParser.CapabilityConversion.Proposed -> next.action
+                is com.aniob.core.providers.AniobToolCallParser.CapabilityConversion.Rejected -> AniobAction.Fail(next.reasons.joinToString("; "))
+            }
+            taskPlanExpectedAction = action as? AniobAction.DeviceControl
+            return@with PipelineFlow.Next(ProposedStep(StepPipeline.Proposal.Model(action, "STRUCTURED_PLAN"), null, null))
+        }
         var proposal: StepPipeline.Proposal
         var targetNode: AniobNode? = null
         // Filled by a model burst or a remember-cache replay; executed below.
@@ -62,15 +84,45 @@ internal suspend fun AniobViewModel.pipelinePropose(
                 // screen it opened, so the next step plans from there instead of from the
                 // launcher. A shortcut that claims the whole task still has to be seen on
                 // the screen before it may close the run.
+                val deviceCommand = AniobReflexResolver.commandOf(shortcut)
+                val deviceArgs = AniobReflexResolver.argsOf(shortcut)
+                if (deviceCommand != null) {
+                    val registry = com.aniob.core.capability.AniobCapabilityRegistry.deviceCommands {
+                        AniobCapabilityProbe.snapshot(app)
+                    }
+                    when (val planned = com.aniob.core.capability.AniobPlanRuntime.fromDeviceShortcut(
+                        task.clarifiedGoal.ifBlank { task.rawPrompt }, deviceCommand, deviceArgs,
+                        resolvedCriteria, registry
+                    )) {
+                        is com.aniob.core.capability.AniobPlanRuntime.Result.Accepted -> {
+                            taskPlan = planned.plan
+                            taskPlanCursor = 0
+                            val converted = com.aniob.core.capability.AniobPlanRuntime.nextAction(planned.plan, 0, registry)
+                            val action = when (converted) {
+                                is com.aniob.core.providers.AniobToolCallParser.CapabilityConversion.Proposed -> converted.action
+                                is com.aniob.core.providers.AniobToolCallParser.CapabilityConversion.Rejected ->
+                                    AniobAction.Fail("Shortcut plan rejected: ${converted.reasons.joinToString("; ")}")
+                            }
+                            taskPlanExpectedAction = action as? AniobAction.DeviceControl
+                            // Keep the zero-model shortcut, but run it through the same
+                            // observed -> approval/safety -> dispatch -> verification path.
+                            return@with PipelineFlow.Next(ProposedStep(
+                                StepPipeline.Proposal.Model(action, "STRUCTURED_SHORTCUT"), null, null
+                            ))
+                        }
+                        is com.aniob.core.capability.AniobPlanRuntime.Result.Rejected -> {
+                            return@with PipelineFlow.Next(ProposedStep(
+                                StepPipeline.Proposal.Model(
+                                    AniobAction.Fail("Shortcut plan rejected: ${planned.reasons.joinToString("; ")}"),
+                                    "STRUCTURED_SHORTCUT"
+                                ), null, null
+                            ))
+                        }
+                    }
+                }
                 if (currentStep == 0) {
                     val beforePackage = accessibility?.currentForegroundPackage() ?: screenBefore?.packageName
-                    val deviceCommand = AniobReflexResolver.commandOf(shortcut)
-                    val deviceArgs = AniobReflexResolver.argsOf(shortcut)
-                    val dispatched = if (deviceCommand != null) {
-                        runDeviceShortcut(deviceCommand, deviceArgs)
-                    } else {
-                        dispatchSystemIntent(shortcut)
-                    }
+                    val dispatched = dispatchSystemIntent(shortcut)
                     if (dispatched) {
                         actionsDispatched++
                         app.researchTelemetry.recordStep()
@@ -135,14 +187,19 @@ internal suspend fun AniobViewModel.pipelinePropose(
                         // success nobody looked at is not a success this app reports.
                         // `currentStep + 1` because this dispatch already happened; the
                         // criterion set includes a min-steps check that would fail otherwise.
-                        val screenVerdict = if (resolvedCriteria?.hasObservableCheck == true) {
-                            landed?.let { resolvedCriteria.evaluateCriteria(it, currentStep + 1) }.orEmpty()
-                        } else {
-                            emptyList()
+                        val criteria = resolvedCriteria
+                        val verdict = when {
+                            criteria?.hasObservableCheck != true -> emptyList()
+                            criteria.hasScreenCheck && landed == null ->
+                                evalDeviceAssertions(criteria) + CriterionEvaluation(
+                                    "Final screen", CriterionState.INCONCLUSIVE,
+                                    "The target screen could not be observed"
+                                )
+                            else -> criteria.evaluateCriteria(
+                                landed ?: AniobScreenState(packageName = ""), currentStep + 1,
+                                probeDeviceState(criteria)
+                            )
                         }
-                        // World-state assertions (torch) are probed against the hardware —
-                        // no screen could ever prove them (BUG-06).
-                        val verdict = screenVerdict + evalDeviceAssertions(resolvedCriteria)
                         when {
                             verdict.isNotEmpty() && verdict.all {
                                 it.state == com.aniob.core.domain.CriterionState.PASSED
@@ -164,23 +221,8 @@ internal suspend fun AniobViewModel.pipelinePropose(
                                 currentStep++
                                 return PipelineFlow.Continue
                             }
-                            shortcut.completesOnDispatch && (deviceCommand?.completesOnDispatch == true || landed != null) && resolvedCriteria?.hasObservableCheck != true -> {
-                                // A system reflex (alarm/timer with SKIP_UI, torch, battery, dial,
-                                // URL, a settings panel that is the whole request): Android resolved
-                                // the intent or the system service accepted the call, and no
-                                // interactive screen is left to read. The dispatch IS the
-                                // verification, so the run is a verified success; recording it as
-                                // UNVERIFIED made research telemetry count a clean run as failed.
-                                app.researchTelemetry.markIntentShortcutUsed()
-                                completedByIntent = true
-                                finalOutcome = Outcome.SUCCESS
-                                terminalReason = shortcut.label?.let { "Dispatched $it" }
-                                    ?: "System intent dispatched"
-                                return PipelineFlow.Break
-                            }
                             else -> {
-                                // Nothing machine-checkable and not a finished reflex (an editor
-                                // that was only opened): honest, and never a claimed success.
+                                // No checkable condition means dispatch cannot establish completion.
                                 completedByIntent = true
                                 finalOutcome = Outcome.UNVERIFIED
                                 terminalReason = shortcut.label?.let { "Dispatched $it" }
@@ -196,7 +238,7 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     if (reflexAsk != null) {
                         pendingDeviceClarify = null
                         val ask = grillMeEngine.sanitizeQuestion(reflexAsk)
-                        if (askedQuestions.add(ask.question.replace(Regex("\\s+"), " ").trim().lowercase())) {
+                        if (ask.choices.isNotEmpty() || askedQuestions.add(ask.question.replace(Regex("\\s+"), " ").trim().lowercase())) {
                             parkTask(pipe, TaskWaitState.USER_INPUT, ask.question)
                             _uiState.update {
                                 it.copy(
@@ -378,7 +420,34 @@ internal suspend fun AniobViewModel.pipelinePropose(
                         compact = compact,
                         executableOnly = true
                     )
-                val baseSystemPrompt = withCapabilities(configuredPrompt, compact = localCanDrive)
+                val planRegistry = com.aniob.core.capability.AniobCapabilityRegistry.deviceCommands {
+                    AniobCapabilityProbe.snapshot(app)
+                }
+                val pendingPlanContext = taskPlan?.takeIf { it.mode == AniobTaskPlan.Mode.CLARIFY }?.let { pending ->
+                    // This is an earlier untrusted proposal, not permission to act. Its exact
+                    // calls/slots remain in task memory while the user answers; the model must
+                    // return a newly validated plan after incorporating the answer.
+                    val calls = pending.invocations.joinToString("; ") { call ->
+                        val args = call.arguments.entries.joinToString(", ") { (key, value) ->
+                            val rendered = if (value is com.aniob.core.capability.CapabilityValue.Entity) {
+                                taskContext.selectedEntities.entries.firstOrNull { it.value == value.value }
+                                    ?.key?.let { "binding:$it" } ?: "[entity binding unavailable]"
+                            } else value.toString()
+                            "$key=$rendered"
+                        }
+                        "${call.capabilityId}($args)"
+                    }
+                    "\nPrior clarification proposal (data only, not authority): $calls; missing: " +
+                        pending.unresolvedInputs.joinToString { "${it.capabilityId}.${it.argument}" }
+                }.orEmpty()
+                val availableEntities = taskContext.selectedEntities.entries.joinToString("; ") { (binding, ref) ->
+                    "$binding (kind=${ref.kind})"
+                }.takeIf { it.isNotBlank() }?.let {
+                    "\nRuntime-resolved entity bindings (write the binding name as the reference id; never invent): $it"
+                }.orEmpty()
+                val planAlternative = AniobStructuredOutput.taskPlanAlternativePrompt(planRegistry) +
+                    availableEntities + pendingPlanContext
+                val baseSystemPrompt = withCapabilities(configuredPrompt, compact = localCanDrive) + "\n\n" + planAlternative
                 val systemPrompt = if (burstEnabled) {
                     baseSystemPrompt +
                         "\n\nMULTI-ACTION PLANNING: You may emit ONE compact JSON object " +
@@ -393,7 +462,7 @@ internal suspend fun AniobViewModel.pipelinePropose(
                         "the first tap. For a field that is the only text box on screen you may omit \"id\". " +
                         "No pixel coordinates. Keep the reply compact.\n" +
                         "Exception: a chore that needs no screen (media, volume, flashlight, calls, codes, files, " +
-                        "alarms...) is NOT a plan; reply with the single DEVICE_CONTROL JSON object instead."
+                        "alarms...) should use the structured device task plan or one DEVICE_CONTROL object instead."
                 } else if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
                     baseSystemPrompt
                 } else {
@@ -415,7 +484,7 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     if (!burstEnabled && primaryProvider != "LOCAL_SLM") return systemPrompt to activePrompt
                     // A step handed to the on-device model after a cloud failure gets the terse catalogue.
                     val singleBase = if (primaryProvider == "LOCAL_SLM") {
-                        withCapabilities(configuredPrompt, compact = true)
+                        withCapabilities(configuredPrompt, compact = true) + "\n\n" + planAlternative
                     } else {
                         baseSystemPrompt
                     }
@@ -431,6 +500,24 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     ).toPromptString()
                     val singleTail = com.aniob.core.speed.PromptAssembler.Tail(observation = singleObservation)
                     return singleSystem to com.aniob.core.speed.PromptAssembler(singleSystem).assemble(singleTail).text
+                }
+
+                // A plan remains provisional until awaitModelRequest confirms the response was
+                // not superseded. The model never gets access to task-scoped opaque selections.
+                var candidatePlan: AniobTaskPlan? = null
+                fun parsePlanAction(text: String): AniobAction? {
+                    val planMarker = Regex("\"(mode|requested_outcome|invocations|entity_bindings|unresolved_inputs|postconditions)\"\\s*:")
+                    if (!planMarker.containsMatchIn(text)) return null
+                    return when (val parsed = AniobStructuredOutput.parseTaskPlan(
+                        text, planRegistry, knownEntityBindings = taskContext.selectedEntities
+                    )) {
+                        is AniobStructuredOutput.TaskPlanParse.Rejected ->
+                            AniobAction.Fail("Invalid structured task plan: ${parsed.errors.joinToString("; ")}")
+                        is AniobStructuredOutput.TaskPlanParse.Accepted -> {
+                            candidatePlan = parsed.plan
+                            com.aniob.core.capability.AniobPlanRuntime.firstAction(parsed.plan, planRegistry)
+                        }
+                    }
                 }
 
                 // Resilient provider ladder. A cloud step that comes back unusable (HTTP 4xx/5xx,
@@ -476,6 +563,8 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     val localPromptEst = (localSystem.length + localObservation.length) / 4
                     app.researchTelemetry.recordPromptTokens(localPromptEst)
                     totalTokens += localPromptEst.coerceAtLeast(80)
+                    val planAction = (gen as? AniobGenerationResult.Ready)?.let { parsePlanAction(it.fullText) }
+                    if (planAction != null) return planAction
                     val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
                     if (structured.usedFallback) {
                         app.eventLogger.warn(
@@ -544,6 +633,8 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     return raw.fold(
                         onSuccess = { text ->
                             totalTokens += (text.length / 4).coerceAtLeast(1)
+                            val planAction = parsePlanAction(text)
+                            if (planAction != null) return@fold planAction
                             // Burst reply: several actions for the screen we just observed.
                             val burst = if (burstEnabled) {
                                 AniobStructuredOutput.parseBurstOrRepair(
@@ -625,13 +716,18 @@ internal suspend fun AniobViewModel.pipelinePropose(
                             if (gen is AniobGenerationResult.Ready) {
                                 android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
                             }
-                            val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
-                            if (structured.usedFallback) {
-                                app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
+                            val planAction = (gen as? AniobGenerationResult.Ready)?.let { parsePlanAction(it.fullText) }
+                            if (planAction != null) {
+                                com.aniob.core.ladder.ExecutionLlmGateway.LocalAttempt(planAction, false)
+                            } else {
+                                val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
+                                if (structured.usedFallback) {
+                                    app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
+                                }
+                                com.aniob.core.ladder.ExecutionLlmGateway.LocalAttempt(
+                                    structured.action, structured.usedFallback, structured.reason
+                                )
                             }
-                            com.aniob.core.ladder.ExecutionLlmGateway.LocalAttempt(
-                                structured.action, structured.usedFallback, structured.reason
-                            )
                         },
                         cloud = { _ ->
                             // Same system and user prompt as the on-device attempt; the
@@ -683,6 +779,17 @@ internal suspend fun AniobViewModel.pipelinePropose(
                     return@with PipelineFlow.Continue
                 }
                 val plannedAction = (plannedOutcome as ModelRequestResult.Ready).value
+                candidatePlan?.let { plan ->
+                    taskPlan = plan
+                    // Additional plan checks can only strengthen existing task requirements. The
+                    // close gate separately prevents model-only criteria from certifying success.
+                    if (plan.mode == AniobTaskPlan.Mode.READ || plan.mode == AniobTaskPlan.Mode.EXECUTE) {
+                        resolvedCriteria = resolvedCriteria.requiringAlso(plan.postconditions)
+                        taskContext = taskContext.copy(successCriteria = resolvedCriteria)
+                    }
+                    taskPlanCursor = if (plan.mode == AniobTaskPlan.Mode.READ || plan.mode == AniobTaskPlan.Mode.EXECUTE) 0 else null
+                    taskPlanExpectedAction = plannedAction as? AniobAction.DeviceControl
+                }
 
                 // Watchdog check
                 val watchdogKey = currentScreen.screenHash.ifBlank { currentScreen.treeHash }

@@ -16,6 +16,9 @@ enum class DeviceCommandGroup(val label: String) {
 /** [CONFIRM] commands are hard to undo (they call, send or share) and always ask the user first. */
 enum class DeviceRisk { LOW, CONFIRM }
 
+/** Wire-value types for the structured capability bridge. Unspecified arguments are text. */
+enum class DeviceArgumentType { INTEGER, DECIMAL, BOOLEAN }
+
 /**
  * Closed catalogue of **direct device commands**: things a person does with the phone that have a
  * documented Android API and therefore never need a screen walk or a model round trip.
@@ -37,12 +40,14 @@ enum class DeviceCommand(
     val optional: List<String> = emptyList(),
     val risk: DeviceRisk = DeviceRisk.LOW,
     /**
-     * True when the dispatch *is* the outcome (volume set, torch on, pause). False when the command
-     * only opens something the user or the UI loop still has to finish (a message draft, an editor).
+     * True when this operation does not require an additional editor interaction. This is a
+     * routing hint only: accepted dispatch is not independent evidence of task completion.
      */
     val completesOnDispatch: Boolean = true,
     val needsAccessibility: Boolean = false,
-    val needsNotificationAccess: Boolean = false
+    val needsNotificationAccess: Boolean = false,
+    val argumentTypes: Map<String, DeviceArgumentType> = emptyMap(),
+    val readOnly: Boolean = false
 ) {
     // ---- Media -------------------------------------------------------------------------------
     MEDIA_PLAY_PAUSE("media_play_pause", DeviceCommandGroup.MEDIA, "toggle play/pause of the active player"),
@@ -57,28 +62,28 @@ enum class DeviceCommand(
     ),
     MEDIA_NOW_PLAYING(
         "media_now_playing", DeviceCommandGroup.MEDIA, "report the current track and player state",
-        needsNotificationAccess = true
+        needsNotificationAccess = true, readOnly = true
     ),
 
     // ---- Volume ------------------------------------------------------------------------------
     VOLUME_SET(
         "volume_set", DeviceCommandGroup.VOLUME, "set a volume stream to a percentage",
-        required = listOf("percent"), optional = listOf("stream")
+        required = listOf("percent"), optional = listOf("stream"), argumentTypes = mapOf("percent" to DeviceArgumentType.DECIMAL)
     ),
-    VOLUME_UP("volume_up", DeviceCommandGroup.VOLUME, "raise volume", optional = listOf("steps", "stream")),
-    VOLUME_DOWN("volume_down", DeviceCommandGroup.VOLUME, "lower volume", optional = listOf("steps", "stream")),
+    VOLUME_UP("volume_up", DeviceCommandGroup.VOLUME, "raise volume", optional = listOf("steps", "stream"), argumentTypes = mapOf("steps" to DeviceArgumentType.INTEGER)),
+    VOLUME_DOWN("volume_down", DeviceCommandGroup.VOLUME, "lower volume", optional = listOf("steps", "stream"), argumentTypes = mapOf("steps" to DeviceArgumentType.INTEGER)),
     VOLUME_MUTE("volume_mute", DeviceCommandGroup.VOLUME, "mute a stream", optional = listOf("stream")),
     VOLUME_UNMUTE("volume_unmute", DeviceCommandGroup.VOLUME, "unmute a stream", optional = listOf("stream")),
-    VOLUME_GET("volume_get", DeviceCommandGroup.VOLUME, "read current volumes", optional = listOf("stream")),
+    VOLUME_GET("volume_get", DeviceCommandGroup.VOLUME, "read current volumes", optional = listOf("stream"), readOnly = true),
 
     // ---- Hardware & system -------------------------------------------------------------------
     TORCH_ON(
         "torch_on", DeviceCommandGroup.HARDWARE, "flashlight on",
-        optional = listOf("then_command", "then_delay_ms")
+        optional = listOf("then_command", "then_delay_ms"), argumentTypes = mapOf("then_delay_ms" to DeviceArgumentType.INTEGER)
     ),
     TORCH_OFF(
         "torch_off", DeviceCommandGroup.HARDWARE, "flashlight off",
-        optional = listOf("then_command", "then_delay_ms")
+        optional = listOf("then_command", "then_delay_ms"), argumentTypes = mapOf("then_delay_ms" to DeviceArgumentType.INTEGER)
     ),
     SCREENSHOT("screenshot", DeviceCommandGroup.HARDWARE, "take a screenshot", needsAccessibility = true),
     OPEN_NOTIFICATIONS(
@@ -108,7 +113,8 @@ enum class DeviceCommand(
     // ---- Calls & messages --------------------------------------------------------------------
     CALL(
         "call", DeviceCommandGroup.COMMS, "place a call (speaker=true for speakerphone)",
-        required = listOf("number|contact"), optional = listOf("speaker"), risk = DeviceRisk.CONFIRM
+        required = listOf("number|contact"), optional = listOf("speaker"), risk = DeviceRisk.CONFIRM,
+        argumentTypes = mapOf("speaker" to DeviceArgumentType.BOOLEAN)
     ),
     MESSAGE_WHATSAPP(
         "whatsapp_message", DeviceCommandGroup.COMMS, "open a WhatsApp chat (number or saved contact name) with the text pre-filled, then tap Send",
@@ -126,11 +132,13 @@ enum class DeviceCommand(
     // ---- Notifications, OTP, clipboard -------------------------------------------------------
     NOTIFICATION_LIST(
         "notification_list", DeviceCommandGroup.NOTIFICATIONS, "read recent notifications (codes are masked)",
-        optional = listOf("package", "limit"), needsNotificationAccess = true
+        optional = listOf("package", "limit"), needsNotificationAccess = true,
+        argumentTypes = mapOf("limit" to DeviceArgumentType.INTEGER), readOnly = true
     ),
     NOTIFICATION_DISMISS(
         "notification_dismiss", DeviceCommandGroup.NOTIFICATIONS, "dismiss notifications (all=true, or match=<words in it>, package, key)",
-        optional = listOf("match", "package", "key", "all"), needsNotificationAccess = true
+        optional = listOf("match", "package", "key", "all"), needsNotificationAccess = true,
+        argumentTypes = mapOf("all" to DeviceArgumentType.BOOLEAN)
     ),
     NOTIFICATION_REPLY(
         "notification_reply", DeviceCommandGroup.NOTIFICATIONS, "reply inline to a messaging notification (match=<sender or words>)",
@@ -143,7 +151,7 @@ enum class DeviceCommand(
     ),
     OTP_STATUS(
         "otp_status", DeviceCommandGroup.NOTIFICATIONS, "is a fresh verification code waiting (never reveals digits)",
-        needsNotificationAccess = true
+        needsNotificationAccess = true, readOnly = true
     ),
     OTP_COPY(
         "otp_copy", DeviceCommandGroup.NOTIFICATIONS, "copy the newest verification code to the clipboard",
@@ -153,7 +161,7 @@ enum class DeviceCommand(
         "otp_paste", DeviceCommandGroup.NOTIFICATIONS, "type the newest verification code into the focused field",
         risk = DeviceRisk.CONFIRM, needsAccessibility = true, needsNotificationAccess = true
     ),
-    CLIPBOARD_GET("clipboard_get", DeviceCommandGroup.NOTIFICATIONS, "read the clipboard text"),
+    CLIPBOARD_GET("clipboard_get", DeviceCommandGroup.NOTIFICATIONS, "read the clipboard text", readOnly = true),
     CLIPBOARD_SET(
         "clipboard_set", DeviceCommandGroup.NOTIFICATIONS, "put text on the clipboard",
         required = listOf("text")
@@ -167,22 +175,26 @@ enum class DeviceCommand(
     FILE_FIND(
         "file_find", DeviceCommandGroup.FILES,
         "query MediaStore: kind=pdf|image|screenshot|download|audio|video|document; extension=py|xlsx|... for file type",
-        optional = listOf("query", "kind", "within_hours", "older_than_days", "limit", "extension")
+        optional = listOf("query", "kind", "within_hours", "older_than_days", "limit", "extension"),
+        argumentTypes = mapOf("within_hours" to DeviceArgumentType.INTEGER, "older_than_days" to DeviceArgumentType.INTEGER, "limit" to DeviceArgumentType.INTEGER),
+        readOnly = true
     ),
     FILE_OPEN(
         "file_open", DeviceCommandGroup.FILES, "open the newest match (or a uri) in its viewer",
-        optional = listOf("query", "kind", "uri", "within_hours"), completesOnDispatch = false
+        optional = listOf("query", "kind", "uri", "within_hours"), completesOnDispatch = false,
+        argumentTypes = mapOf("within_hours" to DeviceArgumentType.INTEGER)
     ),
     FILE_READ(
         "file_read", DeviceCommandGroup.FILES,
         "read the text of a file found by query/uri or picked from a cloud provider (Drive etc); " +
             "pdf/docx/pptx/xlsx are extracted best-effort (pdf reports limits honestly)",
-        optional = listOf("query", "kind", "uri", "within_hours", "limit"), completesOnDispatch = false
+        optional = listOf("query", "kind", "uri", "within_hours", "limit"), completesOnDispatch = false,
+        argumentTypes = mapOf("within_hours" to DeviceArgumentType.INTEGER, "limit" to DeviceArgumentType.INTEGER), readOnly = true
     ),
     FILE_SHARED(
         "file_shared", DeviceCommandGroup.FILES,
         "list files received into or picked by Aniob (shared via WhatsApp, Drive picker, share sheet)",
-        optional = listOf("limit", "query")
+        optional = listOf("limit", "query"), argumentTypes = mapOf("limit" to DeviceArgumentType.INTEGER), readOnly = true
     ),
     DOC_PICK(
         "doc_pick", DeviceCommandGroup.FILES,
@@ -192,24 +204,26 @@ enum class DeviceCommand(
     INSTALLED_APPS(
         "installed_apps", DeviceCommandGroup.HARDWARE,
         "list launchable apps installed on the device (name and package)",
-        optional = listOf("limit", "query")
+        optional = listOf("limit", "query"), argumentTypes = mapOf("limit" to DeviceArgumentType.INTEGER), readOnly = true
     ),
-    STORAGE_INFO("storage_info", DeviceCommandGroup.FILES, "free and total storage"),
+    STORAGE_INFO("storage_info", DeviceCommandGroup.FILES, "free and total storage", readOnly = true),
 
     // ---- Timers, alarms, calendar ------------------------------------------------------------
     TIMER_SET(
         "timer_set", DeviceCommandGroup.TIME, "start a countdown timer",
-        required = listOf("seconds|minutes"), optional = listOf("label")
+        required = listOf("seconds|minutes"), optional = listOf("label"),
+        argumentTypes = mapOf("seconds" to DeviceArgumentType.DECIMAL, "minutes" to DeviceArgumentType.DECIMAL)
     ),
     ALARM_SET(
         "alarm_set", DeviceCommandGroup.TIME, "set an alarm (24h clock)",
-        required = listOf("hour", "minute"), optional = listOf("label")
+        required = listOf("hour"), optional = listOf("minute", "label"),
+        argumentTypes = mapOf("hour" to DeviceArgumentType.INTEGER, "minute" to DeviceArgumentType.INTEGER)
     ),
     ALARM_DISMISS(
         "alarm_dismiss", DeviceCommandGroup.TIME, "dismiss the ringing/next alarm (mode=next|all or label)",
         optional = listOf("mode", "label")
     ),
-    ALARMS_SHOW("alarms_show", DeviceCommandGroup.TIME, "show the alarm list", completesOnDispatch = false),
+    ALARMS_SHOW("alarms_show", DeviceCommandGroup.TIME, "show the alarm list", completesOnDispatch = false, readOnly = true),
     CALENDAR_INSERT(
         "calendar_insert", DeviceCommandGroup.TIME,
         "open a prefilled calendar event/reminder (begin/end as ISO 2026-03-05T09:00); the run continues and taps the editor's save control when it can identify it, and never reports the event saved without observable evidence",
@@ -246,6 +260,8 @@ enum class DeviceCommand(
 
     /** Every argument name this command understands. */
     val argNames: List<String> = (required.flatMap { it.split('|') } + optional).distinct()
+
+    init { require(argumentTypes.keys.all { it in argNames }) { "argument type must name a declared argument" } }
 
     /** Human usage line for prompts: `volume_set(percent, [stream])`. */
     fun usage(): String {

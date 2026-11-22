@@ -91,9 +91,6 @@ data class ExecutorRequest(
                 AniobTokenOptimizer.buildOptimizedNodePrompt(actionableNodes)
             )
         )
-        // Save-class completion, for every editor-like screen: name the commit-like controls
-        // present so the model can finish the task instead of stopping at an open editor.
-        com.aniob.core.tools.AniobEditorCommit.promptHint(actionableNodes)?.let { appendLine(it) }
         appendLine()
         if (burstMode) {
             // The instruction asks for the whole next stretch of the task, not only the part this

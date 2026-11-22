@@ -170,6 +170,27 @@ internal fun AniobViewModel.deliverTaskInput(prompt: String): Boolean {
         )
     }
     app.eventLogger.info("AniobViewModel", "Instruction #${input.seq} appended to ${task.id}")
+    val parkedForInput = activePipeline?.takeIf {
+        it.task.id == task.id && it.parked && taskWaitState == TaskWaitState.USER_INPUT
+    }
+    if (parkedForInput != null) {
+        // New instructions supersede a parked question and any task-scoped entity bindings.
+        // Resume the same run so the channel is drained before another proposal is considered.
+        parkedForInput.taskPlan = null
+        parkedForInput.taskPlanCursor = null
+        parkedForInput.taskPlanExpectedAction = null
+        parkedForInput.pendingContactAction = null
+        parkedForInput.pendingContactChoices = null
+        parkedForInput.selectedContactReplay = null
+        parkedForInput.contactResolver = null
+        pendingDeviceClarify = null
+        parkedForInput.taskContext = parkedForInput.taskContext.copy(
+            selectedEntities = emptyMap(), pendingEntityResolution = null
+        )
+        AniobForegroundService.clearGrillQuestion(app)
+        _uiState.update { it.copy(grillMeResult = null, showGrillMeSheet = false) }
+        resumeParkedTask(task, emptyMap())
+    }
     // Cancels the outstanding model request only. A dispatched action keeps running and is
     // verified by the step that dispatched it.
     signalNewInput()
@@ -192,6 +213,20 @@ internal fun AniobViewModel.drainInstructionsInto(pipe: PipelineRun): Int {
     val taken = channel.takeInstructions()
     if (taken.isEmpty()) return 0
 
+    // A later instruction invalidates queued model proposals, never already dispatched work.
+    pipe.taskPlanCursor = null
+    pipe.taskPlanExpectedAction = null
+    pipe.taskPlan = null
+    // A newer instruction may change the recipient or the requested action. Do not replay a
+    // selection that was bound to an earlier instruction; let the next plan reflect the new input.
+    pipe.selectedContactReplay = null
+    pipe.pendingContactAction = null
+    pipe.pendingContactChoices = null
+    pipe.contactResolver = null
+    pendingDeviceClarify = null
+    // Opaque references are bound to the request that elicited the choice. Even a same-task
+    // continuation must resolve its recipient afresh rather than silently reusing a stale ID.
+    pipe.taskContext = pipe.taskContext.copy(selectedEntities = emptyMap(), pendingEntityResolution = null)
     // Goal, criteria, verified actions and history are kept; only the instruction list grows.
     pipe.taskContext = TaskContinuation.applyToContext(pipe.taskContext, taken)
     val notice = TaskContinuation.continuationNotice(taken)
@@ -216,7 +251,8 @@ internal fun AniobViewModel.hasPendingInstruction(): Boolean =
  * A turn may only close the task when every instruction the user typed has been processed. The
  * closing phases call this first, so a final response can never swallow a newer instruction.
  */
-internal fun AniobViewModel.mayCloseTask(): Boolean = TaskContinuation.mayClose(taskInputs)
+internal fun AniobViewModel.mayCloseTask(context: TaskContext? = null): Boolean =
+    TaskContinuation.mayClose(taskInputs, context)
 
 // ---------------------------------------------------------------------------------------------- //
 // Parking and resuming (PART 5)
@@ -230,6 +266,13 @@ internal fun AniobViewModel.mayCloseTask(): Boolean = TaskContinuation.mayClose(
  * this is so the UI can distinguish "answer me" from "do it on your phone and tell me when done".
  */
 internal fun AniobViewModel.parkTask(pipe: PipelineRun, wait: TaskWaitState, reason: String) {
+    if (wait == TaskWaitState.USER_INPUT && pipe.pendingContactAction != null) {
+        pipe.pendingContactChoices?.let { candidates ->
+            pipe.taskContext = pipe.taskContext.copy(
+                pendingEntityResolution = com.aniob.core.domain.PendingEntityResolution("contact_recipient", candidates)
+            )
+        }
+    }
     pipe.parked = true
     taskWaitState = wait
     _uiState.update {

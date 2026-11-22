@@ -51,6 +51,18 @@ class AniobCapabilityManifestTest {
     }
 
     @Test
+    fun executableManifestUsesTheRegistryOffer() {
+        val state = AniobCapabilityManifest.DeviceState(notificationAccess = false, accessibility = false)
+        val registry = AniobCapabilityRegistry.deviceCommands { state }
+        val offered = registry.available().map { it.id }.toSet()
+        val rendered = AniobCapabilityManifest.render(state, executableOnly = true)
+        for (command in DeviceCommand.entries) {
+            val linePresent = rendered.lines().any { it.trimStart().startsWith("- ${command.wire}(") }
+            assertEquals(command.wire, command.wire in offered, linePresent)
+        }
+    }
+
+    @Test
     fun refusalGuardCatchesTheForbiddenReplies() {
         assertTrue(AniobRefusalGuard.isRefusal("I'm sorry, but I can't operate your phone."))
         assertTrue(AniobRefusalGuard.isRefusal("As an AI language model, I cannot access your device."))

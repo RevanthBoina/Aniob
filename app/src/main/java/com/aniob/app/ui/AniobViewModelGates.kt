@@ -184,17 +184,14 @@ internal fun AniobViewModel.resolveGrillAnswerFromNotification(
     val currentTask = state.activeTask
     if (currentTask?.id != taskId || !state.showGrillMeSheet) {
         app.eventLogger.warn("AniobViewModel", "Ignored stale Grill notification answer for $taskId")
-        AniobForegroundService.clearGrillQuestion(app)
         return
     }
     val question = state.grillMeResult?.questions?.firstOrNull { it.id == questionId }
     if (question == null) {
         app.eventLogger.warn("AniobViewModel", "Ignored Grill answer for stale question $questionId")
-        AniobForegroundService.clearGrillQuestion(app)
         return
     }
-    val allowed = if (requireOption) answer in question.options
-    else question.allowFreeText || answer in question.options
+    val allowed = question.acceptsAnswer(answer, requireOption)
     if (!allowed) {
         app.eventLogger.warn("AniobViewModel", "Rejected unoffered Grill quick choice for $questionId")
         AniobForegroundService.notifyGrillQuestion(
@@ -222,6 +219,36 @@ internal fun AniobViewModel.resolveGrillAnswerFromNotification(
 
 fun AniobViewModel.onGrillAnswersSubmitted(answers: Map<String, String>, rememberKeys: Set<String> = emptySet()) {
     val currentTask = _uiState.value.activeTask ?: return
+    val question = _uiState.value.grillMeResult?.questions?.singleOrNull { it.choices.isNotEmpty() }
+    if (question != null) {
+        // Opaque references are meaningful only for the exact in-memory task and offered choices.
+        // Never fold them into the prompt, history or saved preferences, or resume after recreation.
+        val pipe = parkedRunFor(currentTask.id)
+        val pending = pipe?.taskContext?.pendingEntityResolution
+        val action = pipe?.pendingContactAction
+        val answer = answers[question.id]
+        val candidate = pending?.candidates?.candidates?.singleOrNull { it.reference.id == answer }
+        val selected = if (pipe != null && pending != null && candidate != null && question.acceptsAnswer(answer.orEmpty())) {
+            pipe.taskContext.withEntitySelection(EntitySelection(pending.binding, candidate.reference))
+        } else null
+        if (pipe == null || action == null || candidate == null || selected == null ||
+            pipe.contactResolver == null || pipe.taskGeneration != activeGeneration
+        ) {
+            _uiState.update { it.copy(statusMessage = "That contact choice has expired. Please select the contact again.") }
+            return
+        }
+        pipe.taskContext = selected
+        pipe.selectedContactReplay = action to candidate.reference
+        pipe.pendingContactAction = null
+        pipe.pendingContactChoices = null
+        notificationGrillAnswers.remove(currentTask.id)
+        AniobForegroundService.clearGrillQuestion(app)
+        if (!resumeParkedTask(currentTask, emptyMap())) {
+            pipe.selectedContactReplay = null
+            _uiState.update { it.copy(statusMessage = "That task can no longer be resumed. Please try again.") }
+        }
+        return
+    }
     notificationGrillAnswers.remove(currentTask.id)
     AniobForegroundService.clearGrillQuestion(app)
     if (answers.containsKey("target_miss")) {
