@@ -71,5 +71,9 @@ sealed interface DispatchCommand {
 
     companion object {
         fun groundingMiss(target: SemanticTarget): NoOp = NoOp("grounding_miss:${target.describe()}")
+
+        /** Grounding miss with a second, human-readable explanation (logs, clarifications). */
+        fun groundingMiss(target: SemanticTarget, detail: String?): NoOp =
+            if (detail.isNullOrBlank()) groundingMiss(target) else NoOp("grounding_miss:${target.describe()} ($detail)")
     }
 }

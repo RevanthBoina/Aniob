@@ -77,9 +77,13 @@ object BurstPlanScope {
         else -> true
     }
 
-    /** The one editable field on [screen], when there is exactly one. */
+    /**
+     * The one editable field on [screen], when there is exactly one. Single definition of
+     * "the obvious field", shared with [ActionTargetResolver] so the burst path and the
+     * ordinary executor can never disagree on which node an unnamed input means.
+     */
     fun soleEditable(screen: AniobScreenState): AniobNode? =
-        screen.nodes.filter { it.isEditable && it.isVisibleToUser && it.isEnabled }.singleOrNull()
+        ActionTargetResolver.soleEditableField(screen)
 
     /**
      * True when [action] can be dispatched against [screen] without inventing a target.

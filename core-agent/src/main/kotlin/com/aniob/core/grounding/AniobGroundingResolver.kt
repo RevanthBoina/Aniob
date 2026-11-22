@@ -33,16 +33,7 @@ object AniobGroundingResolver {
             else node.toResolved()
         }
 
-        is SemanticTarget.ResourceId -> {
-            val matches = liveScreen.fusedIndex.elements.filter {
-                it.isVisibleToUser && it.isEnabled && it.viewId.equals(target.id, ignoreCase = false)
-            }
-            if (matches.size == 1) matches.first().toResolved()
-            else if (matches.size > 1) {
-                val clickables = matches.filter { it.isClickable }
-                if (clickables.size == 1) clickables.first().toResolved() else null
-            } else null
-        }
+        is SemanticTarget.ResourceId -> resolveResourceId(target, liveScreen)
 
         is SemanticTarget.Text -> resolveText(target, liveScreen)
 
@@ -51,6 +42,56 @@ object AniobGroundingResolver {
         is SemanticTarget.NormalizedCoordinate -> resolveNormalizedCoordinate(target, liveScreen)
 
         is SemanticTarget.BoundingBox -> resolveBoundingBox(target, liveScreen)
+    }
+
+    /**
+     * Resource-id target: exact view-id match first (unchanged semantics, including the
+     * single-clickable tie-break), then — only when the id is stale — the semantic fallback the
+     * target carries. A fallback that does not land on exactly one control resolves to nothing.
+     */
+    private fun resolveResourceId(target: SemanticTarget.ResourceId, liveScreen: AniobScreenState): Resolved? {
+        val exact = liveScreen.fusedIndex.elements.filter {
+            it.isVisibleToUser && it.isEnabled && it.viewId.equals(target.id, ignoreCase = false)
+        }
+        if (exact.size == 1) return exact.first().toResolved()
+        if (exact.size > 1) {
+            val clickables = exact.filter { it.isClickable }
+            if (clickables.size == 1) return clickables.first().toResolved()
+            return null
+        }
+        return resolveResourceIdFallback(target, liveScreen)
+    }
+
+    /**
+     * Fallback for a stale resource id: fold-match the visible text ([SemanticTarget.ResourceId.label])
+     * or the accessibility label ([SemanticTarget.ResourceId.desc]) over the live tree. An
+     * [SemanticTarget.ResourceId.expectedClass] that contradicts every candidate refuses the match —
+     * a described control of the wrong type is a miss, never a neighbouring widget.
+     */
+    private fun resolveResourceIdFallback(target: SemanticTarget.ResourceId, screen: AniobScreenState): Resolved? {
+        if (target.label.isNullOrBlank() && target.desc.isNullOrBlank()) return null
+        val eligible = screen.fusedIndex.elements.filter { it.isVisibleToUser && it.isEnabled }
+        val labelHits = target.label?.takeIf { it.isNotBlank() }?.let { label ->
+            eligible.filter {
+                com.aniob.core.text.AniobTextFold.same(it.text, label) ||
+                    com.aniob.core.text.AniobTextFold.containsPhrase(it.text, label)
+            }
+        } ?: emptyList()
+        val descHits = target.desc?.takeIf { it.isNotBlank() }?.let { desc ->
+            eligible.filter {
+                com.aniob.core.text.AniobTextFold.same(it.contentDescription, desc) ||
+                    com.aniob.core.text.AniobTextFold.containsPhrase(it.contentDescription, desc)
+            }
+        } ?: emptyList()
+        var candidates = (labelHits + descHits).distinctBy { it.id }
+        target.expectedClass?.takeIf { it.isNotBlank() }?.let { cls ->
+            val classHits = candidates.filter { it.className.contains(cls, ignoreCase = true) }
+            if (classHits.isNotEmpty()) candidates = classHits
+            else return null
+        }
+        if (candidates.size == 1) return candidates.first().toResolved()
+        val clickable = candidates.filter { it.isClickable }
+        return if (clickable.size == 1) clickable.first().toResolved() else null
     }
 
     // A coordinate is not evidence of an element. Require an actual visible node rather

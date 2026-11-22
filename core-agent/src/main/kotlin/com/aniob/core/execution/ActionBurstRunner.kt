@@ -61,6 +61,7 @@ class ActionBurstRunner(
             semantic.index == ActionBurst.UNNAMED_TARGET
         ) {
             com.aniob.core.perception.BurstPlanScope.soleEditable(origin)
+                ?: com.aniob.core.perception.ActionTargetResolver.blockedSoleEditableField(origin)
         } else {
             resolveTarget(member, origin)
         }
@@ -85,7 +86,9 @@ class ActionBurstRunner(
             val plannedField = com.aniob.core.perception.BurstPlanScope.soleEditable(origin)
                 ?: return com.aniob.core.perception.BurstTargetGuard.Verdict(
                     allowed = false,
-                    reason = "the unnamed input no longer has one editable field"
+                    reason = if (com.aniob.core.perception.ActionTargetResolver.blockedSoleEditableField(origin) != null)
+                        "unnamed input is not allowed for a protected field"
+                    else "the unnamed input no longer has one editable field"
                 )
             if (plannedField.isPassword) {
                 return com.aniob.core.perception.BurstTargetGuard.Verdict(

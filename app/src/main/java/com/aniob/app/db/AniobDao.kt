@@ -16,6 +16,22 @@ interface SessionScoreDao {
 
     @Query("SELECT * FROM session_scores WHERE status = :status ORDER BY timestamp DESC")
     fun getScoresByStatus(status: String): Flow<List<SessionScoreEntity>>
+
+    /** One-shot "last N" for the task report; newest first. */
+    @Query("SELECT * FROM session_scores ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getLatest(limit: Int): List<SessionScoreEntity>
+
+    /** One-shot lookup of one task's record, for the task report. */
+    @Query("SELECT * FROM session_scores WHERE taskId = :taskId ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getByTaskId(taskId: String): SessionScoreEntity?
+
+    /**
+     * A 👍 on an unverified/failed run is user attestation of success: the row flips to SUCCESS
+     * so task history (Successful/Unsuccessful) shows what the user experienced, matching the
+     * sealed outcome's USER_ATTESTATION promotion. Never silently downgrades an existing SUCCESS.
+     */
+    @Query("UPDATE session_scores SET status = 'SUCCESS', decisionReason = decisionReason || ' [user-attested]' WHERE taskId = :taskId AND status != 'SUCCESS'")
+    suspend fun markUserAttestedSuccess(taskId: String): Int
 }
 
 @Dao

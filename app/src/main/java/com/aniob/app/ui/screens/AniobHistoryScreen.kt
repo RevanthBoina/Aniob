@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.PauseCircle
@@ -21,6 +22,16 @@ import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.ui.AniobUiState
 import java.text.SimpleDateFormat
 import java.util.*
+
+/**
+ * The marker appended to [SessionScoreEntity.decisionReason] when the user confirmed a run with a
+ * thumbs-up (see SessionScoreDao.markUserAttestedSuccess). Such a SUCCESS was not machine-verified;
+ * the UI says so instead of dressing it up as a verified one.
+ */
+private fun SessionScoreEntity.isUserAttested(): Boolean =
+    decisionReason.contains(USER_ATTESTED_MARKER)
+
+private const val USER_ATTESTED_MARKER = "[user-attested]"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -159,9 +170,16 @@ fun AniobHistoryScreen(
                 ) {
                     Text("Outcome:")
                     Text(
-                        text = s.status,
+                        text = if (s.isUserAttested() && s.status == "SUCCESS") "SUCCESS · you confirmed" else s.status,
                         fontWeight = FontWeight.Bold,
                         color = if (s.status == "SUCCESS") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    )
+                }
+                if (s.isUserAttested()) {
+                    Text(
+                        text = "Counted as successful because you confirmed it — not machine-verified.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Row(
@@ -255,6 +273,9 @@ fun HistorySessionCard(
     onClick: () -> Unit
 ) {
     val isSuccess = session.status == "SUCCESS"
+    // A thumbs-up on an unverified run flips the row to SUCCESS at the DAO layer; say why, here and
+    // in the details sheet, instead of dressing it up as a verified completion.
+    val attested = session.isUserAttested() && isSuccess
     val dateFormatted = remember(session.timestamp) {
         SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(session.timestamp))
     }
@@ -279,13 +300,21 @@ fun HistorySessionCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.Error,
+                        imageVector = when {
+                            attested -> Icons.Default.ThumbUp
+                            isSuccess -> Icons.Default.CheckCircle
+                            else -> Icons.Default.Error
+                        },
                         contentDescription = null,
                         tint = if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = if (isSuccess) "Completed" else "Failed",
+                        text = when {
+                            attested -> "Confirmed by you"
+                            isSuccess -> "Completed"
+                            else -> "Failed"
+                        },
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
                         color = if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error

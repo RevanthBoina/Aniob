@@ -387,6 +387,21 @@ fun AniobViewModel.onOutcomeDecision(decision: UserDecision) {
     val current = _uiState.value.lastSealedOutcome ?: return
     if (current.userDecision != null) return
     recordSealedOutcome(taskId, current.withUserDecision(decision, System.currentTimeMillis()))
+    // Item H: a 👍 on an unverified/failed/delegated run converts it to SUCCESS for history, exactly
+    // like a device-verified success — the user experienced it working. The audit chain and the sealed
+    // outcome still carry the USER_ATTESTATION evidence tag, so this never reads as machine-verified.
+    // The pending set closes the race with the pipeline's session_scores insert: whichever side runs
+    // second applies the flip (the SQL only touches non-SUCCESS rows, so a double call is a no-op).
+    if (decision == UserDecision.YES && current.outcome != RunOutcome.ANSWERED) {
+        app.metricsCollector.pendingAttestations.add(taskId)
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                if (app.database.sessionScoreDao().markUserAttestedSuccess(taskId) > 0) {
+                    app.metricsCollector.pendingAttestations.remove(taskId)
+                }
+            }.onFailure { app.eventLogger.warn("AniobViewModel", "User-attested history update failed: ${it.message}") }
+        }
+    }
     if (decision != UserDecision.YES || current.outcome !in setOf(RunOutcome.FAILED, RunOutcome.UNVERIFIED)) return
     val snapshot = lastCompletedLearningSnapshot?.takeIf { it.taskId == taskId } ?: return
     viewModelScope.launch(Dispatchers.IO) {

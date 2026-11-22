@@ -15,10 +15,26 @@ data class AggregateMetrics(
     val intentHitsCount: Int = 0
 )
 
-class MetricsCollector(private val database: AniobDatabase) {
+class MetricsCollector(
+    private val database: AniobDatabase,
+    /**
+     * Task ids the user attested with a thumbs-up while the run was still finishing. When the
+     * session row lands after the thumbs-up (the thumbs-up UPDATE would hit 0 rows), the collector
+     * flips the freshly inserted row instead of losing the attestation.
+     */
+    val pendingAttestations: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+) {
 
     fun getSessionScores(): Flow<List<SessionScoreEntity>> {
         return database.sessionScoreDao().getAllScores()
+    }
+
+    /** After the row lands, honour a thumbs-up that arrived before the insert. */
+    private suspend fun flipIfAttested(taskId: String) {
+        if (pendingAttestations.remove(taskId)) {
+            runCatching { database.sessionScoreDao().markUserAttestedSuccess(taskId) }
+        }
     }
 
     suspend fun recordSession(
@@ -41,7 +57,9 @@ class MetricsCollector(private val database: AniobDatabase) {
             providerUsed = providerUsed,
             decisionReason = decisionReason
         )
-        return database.sessionScoreDao().insertScore(entity)
+        val id = database.sessionScoreDao().insertScore(entity)
+        flipIfAttested(taskId)
+        return id
     }
 
     suspend fun recordWorkflowOutcome(
@@ -74,6 +92,8 @@ class MetricsCollector(private val database: AniobDatabase) {
             providerUsed = "NATIVE_WORKFLOW",
             decisionReason = decisionReason
         )
-        return database.sessionScoreDao().insertScore(entity)
+        val id = database.sessionScoreDao().insertScore(entity)
+        flipIfAttested(taskId)
+        return id
     }
 }

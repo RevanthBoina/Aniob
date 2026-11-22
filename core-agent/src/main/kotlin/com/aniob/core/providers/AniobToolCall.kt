@@ -75,6 +75,25 @@ object AniobToolCallParser {
         if (screen == null) return action
         val validIds = screen.nodes.map { it.id }.toSet()
         fun check(target: SemanticTarget, failReason: String): AniobAction? {
+            if (target is SemanticTarget.SomIndex && target.index == com.aniob.core.domain.ActionBurst.UNNAMED_TARGET) {
+                // The one intentional non-element target: an input without a named field. It is
+                // valid only when the live screen has exactly one obvious field to type into.
+                if (action is AniobAction.InputText) {
+                    val field = com.aniob.core.perception.ActionTargetResolver.soleEditableField(screen)
+                    return if (field != null && !field.isPassword) {
+                        null // accepted: the executor resolves it against the same rule
+                    } else {
+                        AniobAction.Fail(
+                            reason = "$failReason: the screen does not have exactly one usable editable field",
+                            thought = "unnamed input needs a single editable field"
+                        )
+                    }
+                }
+                return AniobAction.Fail(
+                    reason = "$failReason on missing SoM index ${target.index}",
+                    thought = "hallucinated target"
+                )
+            }
             if (target is SemanticTarget.SomIndex && target.index !in validIds) {
                 return AniobAction.Fail(
                     reason = "$failReason on missing SoM index ${target.index}",

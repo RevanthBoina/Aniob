@@ -573,8 +573,11 @@ object AniobDeviceControl {
         val speaker = args["speaker"]?.equals("true", ignoreCase = true) == true
         val number = args["number"]?.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }?.takeIf { it.isNotBlank() }
             ?: args["contact"]?.let { name ->
-                resolveContactNumber(context, name)
-                    ?: return contactsBlocked(context, name)
+                when (val r = resolveContact(context, name)) {
+                    is ContactResolution.Single -> r.number
+                    is ContactResolution.Multiple -> return contactAmbiguity(name, r.candidates)
+                    ContactResolution.Unavailable -> return contactsBlocked(context, name)
+                }
             }
             ?: return fail("call needs a number or a contact name.")
         val who = args["contact"] ?: number
@@ -627,7 +630,13 @@ object AniobDeviceControl {
     private fun whatsapp(context: Context, args: Map<String, String>): DeviceControlResult {
         val text = args["text"].orEmpty()
         val phone = args["phone"]?.filter { it.isDigit() }?.takeIf { it.isNotBlank() }
-            ?: args["contact"]?.let { resolveContactNumber(context, it)?.filter { c -> c.isDigit() } }
+            ?: args["contact"]?.let { name ->
+                when (val r = resolveContact(context, name)) {
+                    is ContactResolution.Single -> r.number.filter { c -> c.isDigit() }
+                    is ContactResolution.Multiple -> return contactAmbiguity(name, r.candidates)
+                    ContactResolution.Unavailable -> null
+                }
+            }
         val installed = WHATSAPP_PACKAGES.firstOrNull { isInstalled(context, it) }
             ?: return fail("WhatsApp is not installed.")
         if (phone == null) {
@@ -654,8 +663,12 @@ object AniobDeviceControl {
         val uri = when {
             to.none { it.isLetter() } && digits.length >= 6 -> Uri.parse("tg://msg?to=$digits$encodedText")
             Regex("^[A-Za-z0-9_]{5,32}$").matches(username) -> Uri.parse("tg://resolve?domain=$username$encodedText")
-            else -> resolveContactNumber(context, to)?.filter { it.isDigit() }
-                ?.let { Uri.parse("tg://msg?to=$it$encodedText") }
+            else -> when (val r = resolveContact(context, to)) {
+                is ContactResolution.Single ->
+                    Uri.parse("tg://msg?to=${r.number.filter { c -> c.isDigit() || c == '+' }}$encodedText")
+                is ContactResolution.Multiple -> return contactAmbiguity(to, r.candidates)
+                ContactResolution.Unavailable -> null
+            }
         }
         if (uri == null) {
             val pkg = listOf("org.telegram.messenger", "org.telegram.messenger.web").firstOrNull { isInstalled(context, it) }
@@ -670,7 +683,13 @@ object AniobDeviceControl {
 
     private fun sms(context: Context, args: Map<String, String>): DeviceControlResult {
         val phone = args["phone"]?.filter { it.isDigit() || it == '+' }?.takeIf { it.isNotBlank() }
-            ?: args["contact"]?.let { resolveContactNumber(context, it) ?: return contactsBlocked(context, it) }
+            ?: args["contact"]?.let { name ->
+                when (val r = resolveContact(context, name)) {
+                    is ContactResolution.Single -> r.number
+                    is ContactResolution.Multiple -> return contactAmbiguity(name, r.candidates)
+                    ContactResolution.Unavailable -> return contactsBlocked(context, name)
+                }
+            }
             ?: return fail("sms_message needs a phone number or contact name.")
         val intent = Intent(Intent.ACTION_SENDTO, Uri.fromParts("smsto", phone, null))
             .putExtra("sms_body", args["text"].orEmpty())
@@ -686,36 +705,80 @@ object AniobDeviceControl {
         } else fail("No contact called \"$name\" has a phone number.")
     }
 
-    /** Best match for [name] among saved numbers: exact > prefix > contains, shorter names first. */
-    private fun resolveContactNumber(context: Context, name: String): String? {
-        if (!AniobCapabilityProbe.granted(context, Manifest.permission.READ_CONTACTS)) return null
+    /**
+     * Outcome of looking up [name] among saved numbers. Ambiguity is a first-class result, never an
+     * arbitrary pick: the caller turns [Multiple] into a Grill-Me question so the user chooses.
+     */
+    private sealed class ContactResolution {
+        /** Exactly one usable number (best ranked, unique). */
+        data class Single(val number: String) : ContactResolution()
+        /** More than one distinct number matched: ask which one. */
+        data class Multiple(val candidates: List<Pair<String, String>>) : ContactResolution()
+        /** Permission missing or no match: caller reports / opens settings. */
+        object Unavailable : ContactResolution()
+    }
+
+    private fun resolveContact(context: Context, name: String): ContactResolution {
+        if (!AniobCapabilityProbe.granted(context, Manifest.permission.READ_CONTACTS)) return ContactResolution.Unavailable
         val projection = arrayOf(
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
             ContactsContract.CommonDataKinds.Phone.NUMBER
         )
-        var best: Pair<Int, String>? = null
-        var bestRank = Int.MAX_VALUE
+        val trimmed = name.trim()
+        val scored = mutableListOf<Pair<Int, Pair<String, String>>>() // rank to (display, number)
         context.contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI, projection,
-            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?", arrayOf("%${name.trim()}%"), null
+            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?", arrayOf("%$trimmed%"), null
         )?.use { cursor ->
             while (cursor.moveToNext()) {
                 val display = cursor.getString(0).orEmpty()
-                val number = cursor.getString(1).orEmpty()
-                if (number.isBlank()) continue
+                val number = cursor.getString(1).orEmpty().trim()
+                if (display.isBlank() || number.isBlank()) continue
                 val rank = when {
-                    display.equals(name.trim(), ignoreCase = true) -> 0
-                    display.startsWith(name.trim(), ignoreCase = true) -> 1000 + display.length
+                    display.equals(trimmed, ignoreCase = true) -> 0
+                    display.startsWith(trimmed, ignoreCase = true) -> 1000 + display.length
                     else -> 2000 + display.length
                 }
-                if (rank < bestRank) {
-                    bestRank = rank
-                    best = rank to number
-                }
+                scored.add(rank to (display to number))
             }
         }
-        return best?.second
+        if (scored.isEmpty()) return ContactResolution.Unavailable
+        val bestRank = scored.minOf { it.first }
+        val best = scored.filter { it.first == bestRank }
+            .map { it.second }
+            .distinctBy { it.second }
+        return if (best.size == 1) ContactResolution.Single(best.first().second)
+        else ContactResolution.Multiple(best.take(4))
     }
+
+    /**
+     * The Grill-Me question shown when a name matches several numbers. The options carry the digits
+     * so the confirmed choice is dialable without another lookup; the caller parks the run and the
+     * confirmed answer re-enters the same flow with the number it names.
+     */
+    internal fun contactChoiceQuestion(name: String, candidates: List<Pair<String, String>>): com.aniob.core.grillme.GrillQuestion {
+        val options = candidates.map { (display, number) ->
+            val digits = number.filter { it.isDigit() || it == '+' }
+            "${display.take(30)} — ${digits.take(20)}"
+        }
+        return com.aniob.core.grillme.GrillQuestion(
+            id = CONTACT_CHOICE_ID,
+            question = "Which \"${name.take(40)}\" did you mean? Pick the number to use.",
+            options = options,
+            allowFreeText = true,
+            defaultOption = null
+        )
+    }
+
+    const val CONTACT_CHOICE_ID = "contact_choice"
+
+    /** A contact name that matches several numbers must be chosen by the user, never picked arbitrarily. */
+    private fun contactAmbiguity(name: String, candidates: List<Pair<String, String>>): DeviceControlResult =
+        DeviceControlResult(
+            ok = false,
+            message = "That name matches ${candidates.size} numbers; ask which one.",
+            clarify = contactChoiceQuestion(name, candidates)
+        )
 
     // ============================================================================================
     // notifications, OTP, clipboard
