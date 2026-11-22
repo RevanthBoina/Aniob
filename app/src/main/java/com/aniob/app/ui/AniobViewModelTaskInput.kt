@@ -282,6 +282,15 @@ internal fun AniobViewModel.prepareResume(task: AniobTask, answers: Map<String, 
         return null
     }
 
+    // A resume still sitting at step 0 has not dispatched anything: the answer is part of the
+    // TASK (the missing slot), so fold it into the goal the ladder re-resolves — not only into
+    // the context as CLARIFICATIONS. A resume past step 0 keeps the goal untouched.
+    if (pipe.currentStep == 0 && pipe.taskContext.verifiedExecutionRecords().isEmpty() && answers.isNotEmpty()) {
+        pipe.task = pipe.task.copy(
+            clarifiedGoal = foldGrillAnswers(pipe.task.clarifiedGoal, answers.values)
+        )
+    }
+
     // The answer joins the SAME context: goal, verified actions, failed/uncertain outcomes,
     // condensed history and the last screen stay exactly as they were. Nothing is replayed.
     pipe.taskContext = TaskContinuation.applyAnswers(pipe.taskContext, answers)
@@ -456,3 +465,23 @@ internal fun AniobViewModel.resumeResumableTask(prompt: String): Boolean {
     }
     return true
 }
+
+/**
+ * Folds Grill-Me answers into the clarified goal. An answer that names a day is the user's
+ * freshest, explicit pick for that slot, so the base prompt's own day token is dropped when one
+ * does — otherwise resuming "… tomorrow …" with the answer "Tomorrow at 9am" would create the
+ * event on the wrong day or duplicate the day. When no answer names a day, the base's day wins.
+ */
+internal fun foldGrillAnswers(base: String, answers: Collection<String>): String {
+    val day = Regex("""\b(today|tonight|tomorrow)\b""", RegexOption.IGNORE_CASE)
+    val b = if (answers.any { day.containsMatchIn(it) }) {
+        day.replace(base, " ").replace(Regex("""\s{2,}"""), " ").trim()
+    } else base.trim()
+    val sb = StringBuilder(b)
+    answers.forEach { a ->
+        val v = a.trim().trim('"', '\'')
+        if (v.isNotEmpty()) sb.append(' ').append(v)
+    }
+    return sb.toString().trim()
+}
+

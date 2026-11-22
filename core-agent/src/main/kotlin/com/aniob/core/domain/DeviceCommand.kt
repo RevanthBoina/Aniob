@@ -212,7 +212,7 @@ enum class DeviceCommand(
     ALARMS_SHOW("alarms_show", DeviceCommandGroup.TIME, "show the alarm list", completesOnDispatch = false),
     CALENDAR_INSERT(
         "calendar_insert", DeviceCommandGroup.TIME,
-        "open a prefilled calendar event/reminder (begin/end as ISO 2026-03-05T09:00); the Save tap is still yours",
+        "open a prefilled calendar event/reminder (begin/end as ISO 2026-03-05T09:00); the run continues and taps the editor's save control when it can identify it, and never reports the event saved without observable evidence",
         required = listOf("title"), optional = listOf("begin", "end", "location", "description"),
         completesOnDispatch = false
     ),

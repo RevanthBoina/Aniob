@@ -1536,17 +1536,35 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     }
 
     /**
-     * Package currently owning the active window, read live from the accessibility root. Used to detect
-     * an OEM background-kill that invalidated our cached session before we reuse it.
+     * Package currently owning the active window, read live. Used to detect an OEM background-kill
+     * that invalidated our cached session before we reuse it.
+     *
+     * `rootInActiveWindow` is not the application foreground window on every device: a notification
+     * shade, volume panel, IME or system alert owned by the System UI can hold it, which reported
+     * `com.android.systemui` as "the foreground app" and let callers act on the wrong window. The
+     * application window is identified instead — the active (or top-layer) TYPE_APPLICATION window —
+     * and only then its root is read. Falls back to `rootInActiveWindow` when the window list is
+     * unavailable so behaviour degrades to the old, never crashes.
      */
     fun currentForegroundPackage(): String? =
         try {
-            val root = rootInActiveWindow ?: return null
-            val packageName = root.packageName?.toString()
-            root.recycle()
+            val appWindows = windows
+                ?.filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+                .orEmpty()
+            val appWindow = appWindows.firstOrNull { it.isActive }
+                ?: appWindows.maxByOrNull { it.layer }
+            val root = appWindow?.root ?: rootInActiveWindow
+            val packageName = root?.packageName?.toString()
+            root?.recycle()
+            appWindows.forEach { it.recycle() }
             packageName
         } catch (_: Exception) {
-            null
+            runCatching {
+                val root = rootInActiveWindow
+                val packageName = root?.packageName?.toString()
+                root?.recycle()
+                packageName
+            }.getOrNull()
         }
 
     private fun gateOnUiQuiescence(action: AniobAction) {

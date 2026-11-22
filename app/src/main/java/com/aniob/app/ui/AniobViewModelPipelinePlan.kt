@@ -1,7 +1,10 @@
 package com.aniob.app.ui
 
 import android.content.Intent
+import com.aniob.app.background.AniobForegroundService
 import com.aniob.app.device.AniobCapabilityProbe
+import com.aniob.core.grillme.AniobGrillMeResult
+import com.aniob.core.run.TaskWaitState
 import com.aniob.app.ui.model.Outcome
 import com.aniob.core.domain.*
 import com.aniob.core.execution.StepPipeline
@@ -184,6 +187,27 @@ internal suspend fun AniobViewModel.pipelinePropose(
                                     ?: "System intent dispatched without a checkable criterion"
                                 return PipelineFlow.Break
                             }
+                        }
+                    }
+                    // The dispatch failed because a choice is the user's to make (several contacts
+                    // match, a file picker must run): park with the question instead of planning
+                    // blindly — the reflex asks, it never guesses.
+                    val reflexAsk = pendingDeviceClarify
+                    if (reflexAsk != null) {
+                        pendingDeviceClarify = null
+                        val ask = grillMeEngine.sanitizeQuestion(reflexAsk)
+                        if (askedQuestions.add(ask.question.replace(Regex("\\s+"), " ").trim().lowercase())) {
+                            parkTask(pipe, TaskWaitState.USER_INPUT, ask.question)
+                            _uiState.update {
+                                it.copy(
+                                    activeTask = task,
+                                    grillMeResult = AniobGrillMeResult(needsClarification = true, questions = listOf(ask)),
+                                    showGrillMeSheet = true,
+                                    statusMessage = ask.question
+                                )
+                            }
+                            AniobForegroundService.notifyGrillQuestion(app, task.id, ask, task.clarifiedGoal.ifBlank { task.rawPrompt })
+                            return PipelineFlow.Return
                         }
                     }
                     app.eventLogger.warn(

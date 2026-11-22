@@ -3,6 +3,7 @@ package com.aniob.core.execution
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.KeyType
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import com.aniob.core.grounding.AniobGroundingResolver
 
@@ -16,6 +17,17 @@ import com.aniob.core.grounding.AniobGroundingResolver
 object AniobActionExecutor {
 
     private const val SWIPE_FALLBACK_DISTANCE_PX = 600
+
+    /** Why an action's target did not resolve, for the miss log. Null when there is nothing to add. */
+    private fun missReason(action: AniobAction): String? = when {
+        com.aniob.core.perception.ActionTargetResolver.isUnnamedInput(action) ->
+            "the screen does not have exactly one editable field (or the only field is protected)"
+        action.semanticTarget() is SemanticTarget.SomIndex &&
+            (action.semanticTarget() as SemanticTarget.SomIndex).index == com.aniob.core.domain.ActionBurst.UNNAMED_TARGET ->
+            "the unnamed target is only meaningful for an input into the single editable field"
+        action is AniobAction.InputText -> "the named element is not an editable field"
+        else -> null
+    }
 
     /**
      * @param liveScreen a fresh capture taken at dispatch time (never a cached planning screen).
@@ -56,8 +68,8 @@ object AniobActionExecutor {
     }
 
     private fun groundToTap(action: AniobAction.Tap, screen: AniobScreenState): DispatchCommand {
-        val resolved = AniobGroundingResolver.resolve(action.target, screen)
-            ?: return DispatchCommand.groundingMiss(action.target)
+        val resolved = com.aniob.core.perception.ActionTargetResolver.resolve(action, screen)
+            ?: return DispatchCommand.groundingMiss(action.target, missReason(action))
         return DispatchCommand.TapAt(
             x = resolved.x,
             y = resolved.y,
@@ -67,8 +79,8 @@ object AniobActionExecutor {
     }
 
     private fun groundToLongPress(action: AniobAction.LongPress, screen: AniobScreenState): DispatchCommand {
-        val resolved = AniobGroundingResolver.resolve(action.target, screen)
-            ?: return DispatchCommand.groundingMiss(action.target)
+        val resolved = com.aniob.core.perception.ActionTargetResolver.resolve(action, screen)
+            ?: return DispatchCommand.groundingMiss(action.target, missReason(action))
         return DispatchCommand.LongPressAt(
             x = resolved.x,
             y = resolved.y,
@@ -79,8 +91,8 @@ object AniobActionExecutor {
     }
 
     private fun groundToSetText(action: AniobAction.InputText, screen: AniobScreenState): DispatchCommand {
-        val resolved = AniobGroundingResolver.resolve(action.target, screen)
-            ?: return DispatchCommand.groundingMiss(action.target)
+        val resolved = com.aniob.core.perception.ActionTargetResolver.resolve(action, screen)
+            ?: return DispatchCommand.groundingMiss(action.target, missReason(action))
         return DispatchCommand.SetText(
             nodeId = resolved.node.id,
             text = action.text,
@@ -153,5 +165,5 @@ object AniobActionExecutor {
 
     /** Convenience for callers that need the grounded node alongside the command. */
     fun resolveTarget(action: AniobAction, liveScreen: AniobScreenState) =
-        action.semanticTarget()?.let { AniobGroundingResolver.resolve(it, liveScreen) }
+        com.aniob.core.perception.ActionTargetResolver.resolve(action, liveScreen)
 }

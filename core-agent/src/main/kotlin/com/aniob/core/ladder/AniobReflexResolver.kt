@@ -143,28 +143,79 @@ object AniobReflexResolver {
         RegexOption.IGNORE_CASE
     )
     private val DISMISS_NOTIFICATION_REGEX = Regex("""^(?:dismiss|clear|remove)\s+(?:the\s+)?(.+?)\s+notifications?$""")
-    private val REMIND_DAY_FIRST = Regex(
-        """^remind\s+me\s+(?:(today|tonight|tomorrow)\s+)?(?:at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+)?(?:to|that|about)\s+(.+)$""",
+    private val REMINDER_OPENER = Regex(
+        // The literal verb (misspellings included), or an explicit "… reminder" construction.
+        """^\s*(?:(?:remind|reminde|remainde|remainder|remindar|remindre|remimnd|remnd|remindd)\s+me\b|remind\b|""" +
+            """set\s+(?:a|an|the)?\s*(?:reminder|remainder|remindar|remindr)\b|""" +
+            """(?:create|add|schedule|make|new|start)\s+(?:a|an|the)?\s*(?:reminder|remainder|remindar)\b)""",
         RegexOption.IGNORE_CASE
     )
-    private val REMIND_TASK_FIRST = Regex(
-        """^remind\s+me\s+to\s+(.+?)\s+(?:(today|tonight|tomorrow)\s+)?at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)$""",
+    private val REMINDER_DAY = Regex(
+        """\b(today|tonight|tommorow|tommorrow|tomorow|tommorrow|tomr|tmrw|tmr|tomorrow)\b""",
         RegexOption.IGNORE_CASE
     )
+    private val REMINDER_TIME_AT = Regex(
+        """\bat\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|am|pm)?\b""",
+        RegexOption.IGNORE_CASE
+    )
+    // Bare time: allowed without "at" only when it carries a meridiem ("5pm"), never ambiguous "at 9".
+    private val REMINDER_TIME_BARE = Regex(
+        """\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|am|pm)\b""",
+        RegexOption.IGNORE_CASE
+    )
+    /** Connector words that may sit between the reminder opener and the subject, or after the date/time. */
+    private val connectorTokens = setOf(
+        "to", "that", "about", "for", "on", "at", "with", "of", "the", "a", "an", "saying", "regarding", "re"
+    )
+
+    /** Strips leading/trailing connector words and punctuation, in any stacking order. */
+    private fun stripConnectors(input: String): String {
+        var t = input.trim()
+        var changed = true
+        while (changed) {
+            changed = false
+            val lower = t.lowercase()
+            if (lower in connectorTokens) return "" // a single connector word is not a subject
+            for (c in connectorTokens) {
+                if (lower.startsWith("$c ")) { t = t.substring(c.length).trim(); changed = true; break }
+            }
+            if (changed) continue
+            for (c in connectorTokens) {
+                if (lower.endsWith(" $c")) { t = t.dropLast(c.length).trim(); changed = true; break }
+            }
+            if (changed) continue
+            val trimmed = t.trim('-', ':', ',', '.', '!', ' ', ';')
+            if (trimmed != t) { t = trimmed; changed = true }
+        }
+        return t
+    }
     private val CALENDAR_REGEX = Regex(
         """^(?:add|create|schedule|put)\s+(?:a\s+|an\s+)?(?:meeting|event|appointment)?\s*['"“]?(.+?)['"”]?\s+(?:to|in|on)\s+(?:my\s+|the\s+)?calendar(?:\s+(?:for|at|on)\s+(.+))?$""",
         RegexOption.IGNORE_CASE
     )
     private val CLOCK_TIME = Regex("""(\d{1,2})(?::(\d{2}))?\s*(am|pm)?""", RegexOption.IGNORE_CASE)
 
+    /** Neutral conversational openers, removed from the raw text too so "hello, remind me…" still parses. */
+    private val leadingGreeting = Regex(
+        """^(?:(?:hi|hello|hey|yo|hola|namaste|good\s+(?:morning|afternoon|evening|day))(?:\s+there)?\b[\s,!.:;\-–—]*)+""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** Politeness openers, removed without changing case (a title keeps its own spelling). */
+    private val politeOpeners = Regex(
+        """^(?:(?:please|kindly|can you|could you|would you|will you|just|go ahead and|i'd like to|i want to|i need to|help me)\b[\s,:-]*)+""",
+        RegexOption.IGNORE_CASE
+    )
+
     /**
      * @param raw the user's sentence with its own capitalisation (message text, titles).
      * @param lower [raw] lower-cased with trailing punctuation removed.
      */
     fun resolve(raw: String, lower: String, clock: Clock = Clock.systemDefaultZone()): ResolvedIntentShortcut? {
-        val text = AniobTaskIntentClassifier.stripPreamble(lower)
+        // Greetings are not part of the command: "hello, remind me…" is the reminder.
+        val text = AniobTaskIntentClassifier.normalizeCommandSurface(lower)
         if (text.isEmpty()) return null
-        val rawText = raw.trim().trimEnd('?', '.', '!', ' ', ',', ';')
+        val rawText = politeOpeners.replace(leadingGreeting.replace(raw.trim().trimEnd('?', '.', '!', ' ', ',', ';'), ""), "").trim()
 
         // Reminders and messages legitimately contain "and"/"then" inside their payload, so they are
         // matched before the multi-goal guard; everything else must be a single sentence of intent.
@@ -530,17 +581,77 @@ object AniobReflexResolver {
     // ------------------------------------------------------------------ reminders / calendar ---
 
     private fun reminder(rawText: String, clock: Clock): ResolvedIntentShortcut? {
-        // Task-first is tried first: "remind me to call mom tomorrow at 9" would otherwise be read as
-        // day-first with the time swallowed into the task text.
-        REMIND_TASK_FIRST.find(rawText)?.let { m ->
-            val begin = beginOf(m.groupValues[2], m.groupValues[3], clock)
-            return calendarShortcut(m.groupValues[1].trim(), begin)
+        val slots = extractReminderSlots(rawText) ?: return null
+        val begin = beginOf(slots.day, slots.time, clock)
+        return calendarShortcut(slots.title, begin)
+    }
+
+    private data class ReminderSlots(val title: String, val day: String, val time: String)
+
+    /**
+     * Order-independent reminder extraction, run on the RAW request (subject spelling and
+     * capitalisation preserved). Recognises "remind me …", "set/create/add a reminder …" and the
+     * common ASR misspellings of both verb and date words, in any word order:
+     *
+     *     Set an remainder for tommorow at 9am for holi
+     *     Remainde me tommorow about holi at 5pm
+     *     remind me to call mom tomorrow at 9
+     *
+     * The date and time slots are located and removed independently; whatever remains between the
+     * opener and the tail is the subject, with connector words stripped from both edges. The
+     * subject's own spelling is never "corrected". A time slot carries an meridiem or an explicit
+     * "at"; a bare hour ("at 9") keeps meaning midnight-ambiguous 09:00 exactly as before, and an
+     * absent time is left absent (the calendar opens with a blank time rather than inventing one).
+     */
+    internal fun extractReminderSlots(raw: String): ReminderSlots? {
+        var work = raw.trim().trimEnd('?', '.', '!', ',', ';', ' ', '-')
+        work = politeOpeners.replace(leadingGreeting.replace(work, ""), "").trim()
+        val opener = REMINDER_OPENER.find(work) ?: return null
+        if (opener.range.first != 0) return null
+        work = work.removeRange(opener.range).trim()
+
+        fun cutTime(input: String): Pair<String?, String> {
+            fun meridiemOf(g: String): String = g.replace(".", "").lowercase().let { if (it.startsWith("a")) "am" else "pm" }
+            REMINDER_TIME_AT.find(input)?.let { m ->
+                val hour = m.groupValues[1].toIntOrNull() ?: return@let
+                val minute = m.groupValues[2].toIntOrNull() ?: 0
+                val meridiem = m.groupValues[3].takeIf { it.isNotBlank() }?.let(::meridiemOf)
+                if (hour !in 0..23 || minute !in 0..59) return@let
+                val hourText = when (meridiem) {
+                    "pm" -> if (hour < 12) hour + 12 else hour
+                    "am" -> if (hour == 12) 0 else hour
+                    else -> hour
+                }
+                return "$hourText:${minute.toString().padStart(2, '0')}" to input.removeRange(m.range)
+            }
+            REMINDER_TIME_BARE.find(input)?.let { m ->
+                val hour = m.groupValues[1].toIntOrNull() ?: return@let
+                val minute = m.groupValues[2].toIntOrNull() ?: 0
+                if (hour !in 1..12 || minute !in 0..59) return@let
+                val meridiem = meridiemOf(m.groupValues[3])
+                val hourText = when (meridiem) {
+                    "pm" -> if (hour < 12) hour + 12 else hour
+                    "am" -> if (hour == 12) 0 else hour
+                    else -> hour
+                }
+                return "$hourText:${minute.toString().padStart(2, '0')}" to input.removeRange(m.range)
+            }
+            return null to input
         }
-        REMIND_DAY_FIRST.find(rawText)?.let { m ->
-            val begin = beginOf(m.groupValues[1], m.groupValues[2], clock)
-            return calendarShortcut(m.groupValues[3].trim(), begin)
+
+        var day = ""
+        REMINDER_DAY.find(work)?.let { m ->
+            day = if (m.value.lowercase().startsWith("ton")) "tonight"
+                else if (m.value.lowercase().startsWith("tod")) "today"
+                else "tomorrow"
+            work = work.removeRange(m.range)
         }
-        return null
+        val (time, remainder) = cutTime(work)
+        work = remainder
+
+        val title = stripConnectors(work.replace(Regex("""\s{2,}"""), " "))
+        if (title.isBlank()) return null
+        return ReminderSlots(title = title.trim('"', '\''), day = day, time = time.orEmpty())
     }
 
     private fun calendar(rawText: String, clock: Clock): ResolvedIntentShortcut? {

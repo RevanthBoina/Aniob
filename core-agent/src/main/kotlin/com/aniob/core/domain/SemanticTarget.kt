@@ -11,14 +11,28 @@ sealed interface SemanticTarget {
     /** Set-of-Mark index from the optimized node list ([1..60]). */
     data class SomIndex(val index: Int) : SemanticTarget
 
-    /** Android view id, e.g. `com.android.settings:id/search_action_bar`. */
-    data class ResourceId(val id: String) : SemanticTarget
-
     /** Visible text; [exact] requires a full match, otherwise contains. */
     data class Text(val text: String, val exact: Boolean = false) : SemanticTarget
 
     /** Content description (accessibility label); [exact] requires a full match. */
     data class ContentDesc(val desc: String, val exact: Boolean = false) : SemanticTarget
+
+    /**
+     * Android view id, e.g. `com.android.settings:id/search_action_bar`.
+     *
+     * View ids are a fragile handle: an app update that renames the id used to leave the action
+     * with nothing to fall back to. [label] (the control's visible text) and [desc] (its accessibility
+     * label) are the semantic fallbacks the resolver may use **only** when the exact id matches
+     * nothing on the live screen, and only with a unique match. [expectedClass], when present,
+     * further constrains the fallback (e.g. `EditText`): a contradictory class refuses the fallback
+     * instead of guessing. Pixels are still never representable here.
+     */
+    data class ResourceId(
+        val id: String,
+        val label: String? = null,
+        val desc: String? = null,
+        val expectedClass: String? = null
+    ) : SemanticTarget
 
     /** Coordinate-based fallback for Canvas-rendered, Flutter/Unity, or vision grounding ([0..1000]). */
     data class NormalizedCoordinate(val normX: Int, val normY: Int) : SemanticTarget
@@ -29,7 +43,11 @@ sealed interface SemanticTarget {
     /** Human-readable form for logs, prompts and watchdogs. */
     fun describe(): String = when (this) {
         is SomIndex -> "som:$index"
-        is ResourceId -> "id:$id"
+        is ResourceId -> buildString {
+            append("id:$id")
+            label?.takeIf { it.isNotBlank() }?.let { append(" label:'$it'") }
+            desc?.takeIf { it.isNotBlank() }?.let { append(" desc:'$it'") }
+        }
         is Text -> "text:'$text'${if (exact) " (exact)" else ""}"
         is ContentDesc -> "desc:'$desc'${if (exact) " (exact)" else ""}"
         is NormalizedCoordinate -> "coord:($normX,$normY)"
@@ -40,7 +58,7 @@ sealed interface SemanticTarget {
 /**
  * True when [node] satisfies this target. Matching rules per kind:
  * - [SemanticTarget.SomIndex]  → the node's (re-indexed) id equals the index
- * - [SemanticTarget.ResourceId]→ exact view-id match
+ * - [SemanticTarget.ResourceId]→ exact view-id match (label/desc fallbacks live in the resolver, never here)
  * - [SemanticTarget.Text]      → exact match when requested, else case-insensitive contains
  * - [SemanticTarget.ContentDesc]→ same, over contentDescription
  * - [SemanticTarget.NormalizedCoordinate] → node bounds contains normalized point

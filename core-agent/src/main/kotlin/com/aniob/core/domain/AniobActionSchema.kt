@@ -15,6 +15,8 @@ package com.aniob.core.domain
  *          | "DEVICE_CONTROL" | "WAIT" | "FINISH" | "FAIL",
  *   "command": "volume_set", "args": { "percent": "70" },   // DEVICE_CONTROL only
  *   "target": { "kind": "som_index"|"resource_id"|"text"|"content_desc", "value": "..." },
+ *             optional on resource_id: "label" (visible text), "desc" (accessibility label),
+ *             "expected_class" (e.g. "EditText") — fallbacks when the id breaks,
  *   "text": "...", "distance_px": 600, "direction": "DOWN",
  *   "package_name": "...", "key": "BACK", "duration_ms": 1000,
  *   "summary": "...", "reason": "..."
@@ -31,6 +33,7 @@ object AniobActionSchema {
   "thought": "why this step",
   "tool": "TAP|LONG_PRESS|INPUT_TEXT|SWIPE|OPEN_APP|SYSTEM_KEY|DEVICE_CONTROL|WAIT|FINISH|FAIL",
   "target": {"kind": "som_index|resource_id|text|content_desc", "value": "..."},
+  "target.resource_id may also carry 'label': visible text of the control, 'desc': its accessibility label, and 'expected_class': e.g. 'EditText' - they are used ONLY if the id is not found on the live screen, and only when they match exactly one control,
   "text": "for INPUT_TEXT",
   "submit": true,
   "direction": "UP|DOWN|LEFT|RIGHT for SWIPE",
@@ -453,7 +456,15 @@ Set "submit": true when the text is a query or a phone number and the field must
 
     private fun targetJson(target: SemanticTarget): String = when (target) {
         is SemanticTarget.SomIndex -> """{"kind":"som_index","value":${target.index}}"""
-        is SemanticTarget.ResourceId -> """{"kind":"resource_id","value":"${esc(target.id)}"}"""
+        is SemanticTarget.ResourceId -> {
+            // Same wire shape as before: {"kind":"resource_id","value":"…"} plus the optional
+            // fallback fields the parser reads back when it sees them.
+            val parts = mutableListOf(""""value":"${esc(target.id)}"""")
+            target.label?.takeIf { it.isNotBlank() }?.let { parts.add(""""label":"${esc(it)}"""") }
+            target.desc?.takeIf { it.isNotBlank() }?.let { parts.add(""""desc":"${esc(it)}"""") }
+            target.expectedClass?.takeIf { it.isNotBlank() }?.let { parts.add(""""expected_class":"${esc(it)}"""") }
+            parts.joinToString(",", prefix = "{\"kind\":\"resource_id\",", postfix = "}")
+        }
         is SemanticTarget.Text -> """{"kind":"text","value":"${esc(target.text)}","exact":${target.exact}}"""
         is SemanticTarget.ContentDesc -> """{"kind":"content_desc","value":"${esc(target.desc)}","exact":${target.exact}}"""
         is SemanticTarget.NormalizedCoordinate -> """{"kind":"coord","x":${target.normX},"y":${target.normY}}"""
@@ -485,7 +496,12 @@ Set "submit": true when the text is a query or a phone number and the field must
             if (kind == null || value == null) return null
             return when (kind) {
                 "som_index", "som", "index", "node" -> value.toIntOrNull()?.let { SemanticTarget.SomIndex(it) }
-                "resource_id", "id", "view_id" -> SemanticTarget.ResourceId(value)
+                "resource_id", "id", "view_id" -> SemanticTarget.ResourceId(
+                    value,
+                    label = str(block, "label")?.takeIf { it.isNotBlank() },
+                    desc = (str(block, "desc") ?: str(block, "description"))?.takeIf { it.isNotBlank() },
+                    expectedClass = (str(block, "expected_class") ?: str(block, "class"))?.takeIf { it.isNotBlank() }
+                )
                 "text" -> SemanticTarget.Text(value, exact)
                 "content_desc", "content_description", "desc" -> SemanticTarget.ContentDesc(value, exact)
                 else -> null

@@ -118,6 +118,9 @@ internal fun AniobViewModel.evalDeviceAssertions(
 /** Reflex path: 0 tokens. A command that cannot run says which setting to enable, then planning continues. */
 internal suspend fun AniobViewModel.runDeviceShortcut(command: DeviceCommand, args: Map<String, String>): Boolean {
     val result = runDeviceCommand(command, args)
+    // A command that needs a choice from the user (several matching contacts) carries its question
+    // here; the step fails, the question sheet shows, and the run parks instead of guessing.
+    if (result.clarify != null) pendingDeviceClarify = result.clarify
     app.eventLogger.info("AniobViewModel", "Device reflex ${command.wire}: ok=${result.ok}")
     postDeviceResult(result)
     return result.ok

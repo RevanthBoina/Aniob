@@ -13,6 +13,8 @@ import com.aniob.core.external.AniobExternalAiTrigger
 import com.aniob.core.outcome.SealedOutcome
 import com.aniob.core.intent.AniobIntent
 import com.aniob.core.intent.AniobTaskIntentClassifier
+import com.aniob.core.intent.TaskDisposition
+import com.aniob.core.ladder.AniobReflexResolver
 import com.aniob.core.knowledge.AniobAppRegistry
 import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.AniobLaunchHub
@@ -163,6 +165,35 @@ fun AniobViewModel.submitTask(prompt: String) {
         // posting, sharing, or calling.
         _uiState.update { it.copy(activeTask = effectiveTask) }
         val resolvedShortcut = AniobIntentResolver.resolve(effectivePrompt, { isLaunchablePackage(it) })
+
+        // A reminder/calendar request with no time named keeps the missing slot: guessing a time
+        // would silently create the wrong event. Ask for the time instead — the answer re-enters
+        // the same flow with the slot filled (the reflex extractor runs again on resume).
+        AniobReflexResolver.extractReminderSlots(effectivePrompt)?.takeIf { it.time.isBlank() }?.let { slots ->
+            questionsBeforeStart.merge(taskId, 1, Int::plus)
+            setPhase(com.aniob.core.narration.AgentPhase.ASKING)
+            val question = com.aniob.core.grillme.GrillQuestion(
+                id = "reminder_time",
+                question = "What time should I set \"${slots.title.take(80)}\" for?",
+                // Every canned option must round-trip through extractReminderSlots on resume —
+                // a fuzzy option ("tomorrow morning") would silently lose the time it provides.
+                options = listOf("Today at 6pm", "Tomorrow at 9am", "Tomorrow at 6pm"),
+                allowFreeText = true,
+                defaultOption = null
+            )
+            _uiState.update {
+                it.copy(
+                    grillMeResult = com.aniob.core.grillme.AniobGrillMeResult(needsClarification = true, questions = listOf(question)),
+                    showGrillMeSheet = true,
+                    statusMessage = question.question,
+                    isStreaming = false,
+                    streamingBubbleText = ""
+                )
+            }
+            AniobForegroundService.notifyGrillQuestion(app, taskId, question, effectivePrompt)
+            finishConversationTask(taskId, "WAITING", "Waiting for the time to set the reminder")
+            return@launch
+        }
         // FAST LANE: a solved launch / instant reflex needs no understanding echo,
         // feasibility court, Grill-Me pass or Doctor preflight. AskPolicy DECISIONS
         // still apply at dispatch time. "Solved" means the shortcut answers the WHOLE
@@ -272,7 +303,68 @@ fun AniobViewModel.submitTask(prompt: String) {
             return@launch
         }
 
-        if (intent != AniobIntent.DEVICE_AUTOMATION) {
+        // A bare imperative ("open", "call", "send") names an action but no target. Asking is
+        // cheaper than confidently acting on the wrong thing — this is the ask-first branch for
+        // the classifier's AMBIGUOUS_REQUEST disposition.
+        if (AniobTaskIntentClassifier.dispose(effectivePrompt) == TaskDisposition.AMBIGUOUS_REQUEST) {
+            val clarify = ChatMessage(
+                id = "msg_clarify_${System.currentTimeMillis()}",
+                role = "assistant",
+                content = ambiguousImperativeQuestion(effectivePrompt),
+                provider = "CLARIFY",
+                badge = "❓ Clarification"
+            )
+            updateToIdle {
+                it.copy(
+                    chatMessages = it.chatMessages + clarify,
+                    statusMessage = "Clarification needed",
+                    lastRoutingReason = "Bare imperative — asked instead of guessing"
+                )
+            }
+            finishConversationTask(taskId, "NEEDS_CLARIFICATION", "Bare imperative needs a target")
+            return@launch
+        }
+
+        // A report on previous tasks comes from Aniob's own database — zero model calls, so the
+        // answer can quote the run exactly as recorded (steps, tokens, latency, verdicts).
+        if (intent == AniobIntent.TASK_HISTORY) {
+            val report = runCatching {
+                buildTaskHistoryReport(
+                    AniobTaskIntentClassifier.taskHistoryRequest(effectivePrompt)
+                        ?: AniobTaskIntentClassifier.TaskHistoryQuery(limit = 10)
+                )
+            }.getOrElse { "Could not read Aniob's task database: ${it.message}" }
+            val reportMessage = ChatMessage(
+                id = "msg_hist_${java.util.UUID.randomUUID()}",
+                role = "assistant",
+                content = report,
+                provider = "TASK_HISTORY",
+                badge = "\uD83D\uDD52 Task history"
+            )
+            updateToIdle {
+                it.copy(
+                    chatMessages = it.chatMessages + reportMessage,
+                    lastProviderUsed = "TASK_HISTORY",
+                    lastRoutingReason = "Answered from Aniob's local task database",
+                    statusMessage = "Ready"
+                )
+            }
+            app.metricsCollector.recordSession(
+                taskId = taskId, prompt = trimmed, isSuccess = true, steps = 0,
+                durationMs = 0, tokensUsed = 0, providerUsed = "TASK_HISTORY",
+                decisionReason = "Deterministic local task report (no model, no device)"
+            )
+            recordSealedOutcome(taskId, SealedOutcome.answered("Task report (local database)"))
+            return@launch
+        }
+
+        // Only a request for information may be answered without executing. Anything that asks
+        // for a change — imperative, mixed, or an ambiguous action — goes to the task pipeline,
+        // where the outcome must prove itself or ask; prose is not an execution.
+        val disposition = AniobTaskIntentClassifier.dispose(effectivePrompt)
+        val conversational = intent != AniobIntent.DEVICE_AUTOMATION &&
+            disposition == TaskDisposition.INFORMATION_REQUEST
+        if (conversational) {
             _uiState.update {
                 it.copy(
                     statusMessage = "Answering query...",
@@ -389,5 +481,25 @@ fun AniobViewModel.submitTask(prompt: String) {
         if (failure != null) finishConversationTask(taskId,
             if (failure is kotlinx.coroutines.CancellationException) "STOPPED" else "FAILED",
             if (failure is kotlinx.coroutines.CancellationException) "Task cancelled" else "Task execution raised ${failure.javaClass.simpleName}")
+    }
+}
+
+/** The one honest follow-up to a bare imperative, per leading verb. Never guesses a target. */
+private fun ambiguousImperativeQuestion(prompt: String): String {
+    val verb = AniobTaskIntentClassifier.normalizeCommandSurface(prompt)
+        .split(Regex("[^a-z]+")).firstOrNull { it.isNotBlank() }.orEmpty()
+    return when (verb) {
+        "open", "launch", "start", "run" -> "Which app should I open?"
+        "call", "text", "message", "sms" -> "Who should I contact, and what should I say?"
+        "send" -> "What should I send, and to whom?"
+        "email", "mail" -> "Who should I email?"
+        "remind" -> "What should I remind you about?"
+        "install", "download" -> "Which app should I install?"
+        "play" -> "What should I play?"
+        "pause" -> "What should I pause?"
+        "set" -> "What should I set?"
+        "close" -> "Which app should I close?"
+        "delete", "remove" -> "Which one should I remove?"
+        else -> "Could you tell me which app, contact or thing you mean? The command is missing it."
     }
 }

@@ -256,10 +256,12 @@ fun AniobViewModel.onGrillAnswersSubmitted(answers: Map<String, String>, remembe
     val answeredTask = currentTask.copy(grillAnswers = currentTask.grillAnswers + answers)
     if (resumeParkedTask(answeredTask, answers)) return
 
-    val clarifiedPrompt = buildString {
-        append(currentTask.clarifiedGoal.ifBlank { currentTask.rawPrompt })
-        answers.forEach { (q, a) -> append(" [$q: $a]") }
-    }
+    // Fold the answers in as raw values (not bracketed key/value pairs) so the reflex/ladder
+    // re-resolution on the clarified goal sees the missing slot filled, e.g. "… tomorrow at 5pm".
+    val clarifiedPrompt = foldGrillAnswers(
+        currentTask.clarifiedGoal.ifBlank { currentTask.rawPrompt },
+        answers.values
+    )
     val updatedTask = currentTask.copy(
         clarifiedGoal = clarifiedPrompt,
         grillAnswers = answers,

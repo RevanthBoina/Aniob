@@ -16,7 +16,24 @@ enum class AniobIntent {
     KNOWLEDGE_QA,         // what is, who is, explain, summarize -> external AI
     VAULT_QUERY,          // my preference, remember, what did I -> SharedKnowledgeStore
     WEB_RESEARCH,         // search the web, latest news, find information -> external AI with web
-    EXTERNAL_AI_QUERY     // general generation, writing, coding -> external AI
+    EXTERNAL_AI_QUERY,    // general generation, writing, coding -> external AI
+    TASK_HISTORY          // deterministic report from Aniob's own task database -> no model, no device
+}
+
+/**
+ * What the prompt demands, independently of how it is phrased: an answer, an action, or an ask.
+ * The submit path routes on this so an action-bearing request can never be "completed" by a prose
+ * answer — the false-success cascade this file exists to prevent.
+ */
+enum class TaskDisposition {
+    /** A question, explanation, lookup or generation request: the conversational route is correct. */
+    INFORMATION_REQUEST,
+    /** Something must change on (or leave) the device: the task execution pipeline is required. */
+    ACTION_REQUEST,
+    /** Both: a request that acts and also asks. The task pipeline is required; chat answers come from inside it. */
+    MIXED_REQUEST,
+    /** Looks like an action but names no object/recipient/target, or matches nothing: ask, never guess. */
+    AMBIGUOUS_REQUEST
 }
 
 object AniobTaskIntentClassifier {
@@ -34,6 +51,47 @@ object AniobTaskIntentClassifier {
         var out = text
         for ((rx, replacement) in lexicalFixes) out = rx.replace(out, replacement)
         return out.trim()
+    }
+
+    /**
+     * Neutral conversational openers. They say the same as a comma — nothing about the task — so a
+     * request that starts with "hello, …" is the request that follows the greeting, not the greeting.
+     * Stacked ("hi, hey, open settings") and case-variant; stripped before any routing decision.
+     */
+    private val greetingOpener = Regex(
+        """^(?:(?:hi|hello|hey|yo|hola|namaste|good\s+(?:morning|afternoon|evening|day))(?:\s+there)?\b[\s,!.:;\-–—]*)+"""
+    )
+
+    /**
+     * Command-word spelling repair table: ASR/keyboard noise in the *command vocabulary itself*
+     * ("remainde me", "tommorow", "set an remainder"). Never applied to the payload of a task —
+     * the event name or message text keeps the user's own spelling end to end.
+     */
+    private val commandSpellingRepairs: List<Pair<Regex, String>> = listOf(
+        Regex("""\b(?:remainde|remminde|reminde|remimd|remide|reamind|remindd)\b""") to "remind",
+        // No capture groups: the replacement stays a plain literal (this is a routing surface, not stored text).
+        Regex("""\b(?:an?|the)\s+remainder\b""") to "a reminder",
+        Regex("""\b(?:tommorow|tommorrow|tomorow|tommorow|tommerow|tomrrw|tmrw|tmr)\b""") to "tomorrow",
+        Regex("""\bcalender\b""") to "calendar",
+        Regex("""\b(?:alram|alrm)\b""") to "alarm",
+        Regex("""\bwhats\s*app\b""") to "whatsapp",
+        Regex("""\blinkdin\b""") to "linkedin"
+    )
+
+    /**
+     * The single normalized command surface every intent decision sees: lowercased, greetings and
+     * polite openers removed, command-word spelling repaired, punctuation trimmed. All downstream
+     * matchers (classifier, reflex resolver, site-search planner, task pipeline) must derive from
+     * this — never from the raw prompt — so "Hello, open LinkedIn" and "open LinkedIn" are the
+     * same command everywhere.
+     */
+    fun normalizeCommandSurface(raw: String): String {
+        var text = raw.lowercase().trim()
+        text = greetingOpener.replace(text, "")
+        text = stripPreamble(text)
+        text = normalizeLexical(text)
+        for ((rx, replacement) in commandSpellingRepairs) text = rx.replace(text, replacement)
+        return text.trim('?', '.', '!', ',', ';', ' ', '-', ':')
     }
 
     /** Hardware nouns that unambiguously belong to the device domain, regardless of verb position. */
@@ -60,7 +118,7 @@ object AniobTaskIntentClassifier {
      * "answer text and claim success" path.
      */
     fun looksLikeDeviceToggle(prompt: String): Boolean {
-        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim()))
+        val lower = normalizeCommandSurface(prompt)
         return deviceNouns.containsMatchIn(lower) && toggleCues.containsMatchIn(lower)
     }
 
@@ -69,13 +127,13 @@ object AniobTaskIntentClassifier {
      * noun is usually the one the conversation was just about — see [impliedDeviceNoun].
      */
     fun looksLikeBareToggle(prompt: String): Boolean {
-        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim()))
+        val lower = normalizeCommandSurface(prompt)
         return !deviceNouns.containsMatchIn(lower) && toggleCues.containsMatchIn(lower)
     }
 
     /** The device noun a sentence refers to, if any — used to resolve bare toggles from context. */
     fun impliedDeviceNoun(sentence: String): String? {
-        val lower = normalizeLexical(sentence.lowercase())
+        val lower = normalizeCommandSurface(sentence)
         return when {
             torchNounRx.containsMatchIn(lower) -> "flashlight"
             Regex("""\bwi-fi\b""").containsMatchIn(lower) -> "wi-fi"
@@ -150,7 +208,7 @@ object AniobTaskIntentClassifier {
 
     /** True when the prompt asks for something to be composed or done in an app for a recipient. */
     fun looksLikeInAppCompose(prompt: String): Boolean {
-        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim())).trimEnd('.', '!', ' ')
+        val lower = normalizeCommandSurface(prompt)
         if (composeToRecipient.containsMatchIn(lower)) return true
         if (mailAsVerb.containsMatchIn(lower)) return true
         if (Regex("""^(?:e-?mail|mail)\s""").containsMatchIn(lower) && EMAIL_ADDRESS.containsMatchIn(lower)) return true
@@ -179,13 +237,14 @@ object AniobTaskIntentClassifier {
      * browser tab.
      */
     fun isWebResearch(prompt: String): Boolean {
-        val lower = prompt.lowercase()
+        val lower = normalizeCommandSurface(prompt)
         return webKeywords.any { lower.contains(it) }
     }
 
     fun classify(prompt: String): AniobIntent {
-        val lower = normalizeLexical(stripPreamble(prompt.lowercase().trim()))
+        val lower = normalizeCommandSurface(prompt)
         if (lower.isBlank()) return AniobIntent.EXTERNAL_AI_QUERY
+        taskHistoryRequest(prompt)?.let { return AniobIntent.TASK_HISTORY }
 
         val hasQuestionWord = lower.startsWith("what") || lower.startsWith("who") ||
                 lower.startsWith("when") || lower.startsWith("where") ||
@@ -257,6 +316,103 @@ object AniobTaskIntentClassifier {
         return AniobIntent.EXTERNAL_AI_QUERY
     }
 
+    /** Parsed "report on my tasks" request: a specific task id, or the most recent [limit] tasks. */
+    data class TaskHistoryQuery(val limit: Int = 10, val taskId: String? = null)
+
+    private val historyTaskIdRx = Regex("""\btask[_\s]?(?:id)?\s*(?:=|:|-)?\s*(task_\d{6,})\b|\b(task_\d{6,})\b""", RegexOption.IGNORE_CASE)
+    private val historyLimitRx = Regex("""\blast\s+(\d{1,3})\s+(?:tasks?|sessions?|runs?)\b""", RegexOption.IGNORE_CASE)
+    private val historyReportRx = Regex(
+        """\b(?:task|session|run|job)s?\s+(?:history|log|report|details?)\b""" +
+            """|\b(?:show|give|list|export|dump|report|summari[sz]e)\s+(?:me\s+)?(?:my\s+|the\s+)?(?:last|recent|latest|previous)\s*(?:\d+\s+)?(?:tasks?|sessions?|runs?|jobs?)\b""" +
+            """|\b(?:details?|breakdown|report)\s+(?:of|for|about|on)\s+(?:my\s+|the\s+)?(?:last|recent|latest)\s*(?:\d+\s+)?(?:tasks?|sessions?|runs?)\b""" +
+            """|\bcopy[-\s]?paste\s+format\b.*\btasks?\b|\btasks?\b.*\bcopy[-\s]?paste\b""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * True when the prompt asks for a report on previous tasks: "task history", "show my last
+     * 10 tasks", "give me details of the last 10 tasks in copy-paste format", "details of task
+     * task_173…". These are answered from Aniob's own database — no model, no device — so the
+     * agent can never invent a task that never happened.
+     */
+    fun taskHistoryRequest(prompt: String): TaskHistoryQuery? {
+        val lower = prompt.lowercase()
+        historyTaskIdRx.find(lower)?.let { m ->
+            val id = m.groupValues.drop(1).firstOrNull { it.isNotBlank() } ?: return null
+            return TaskHistoryQuery(limit = 1, taskId = id)
+        }
+        if (!historyReportRx.containsMatchIn(lower)) return null
+        val limit = historyLimitRx.find(lower)?.groupValues?.get(1)?.toIntOrNull()?.coerceIn(1, 50) ?: 10
+        return TaskHistoryQuery(limit = limit)
+    }
+
+    /** A bare imperative with no object at all: an ask, never an action with a guessed target. */
+    private val BARE_IMPERATIVE = Regex(
+        """^(?:open|launch|start|run|call|send|text|message|email|remind|install|set|play|pause|close|delete|remove)[\s.!]*$"""
+    )
+
+    /** Pure social filler carries no task and no question: it is chat, not a command or a query. */
+    private val socialFillerRx = Regex(
+        """^(?:thanks|thank\s+you|thx|ty|ok|okay|cool|nice|great|good|got\s+it|sure|yes|no|lol|haha|hmm+|wow|bye|goodbye)[.!\s]*$"""
+    )
+
+    /**
+     * Creation verbs double as generation verbs ("write a poem", "create a character"). They only mark
+     * an action when the capability planner/in-app-compose/device matchers say so; a bare leading
+     * verb on its own stays a generation request for the conversational route.
+     */
+    private val generationVerbs = setOf(
+        "write", "compose", "type", "create", "make", "draft", "generate",
+        "design", "imagine", "draw", "code", "build", "craft", "invent", "suggest"
+    )
+
+    /**
+     * The action/information disposition of a prompt, computed on the normalized command surface.
+     * Used by the submit path: only [TaskDisposition.INFORMATION_REQUEST] may be answered without
+     * executing, and every other disposition must enter the task pipeline or ask.
+     */
+    fun dispose(prompt: String): TaskDisposition {
+        val lower = normalizeCommandSurface(prompt)
+        if (lower.isBlank()) return TaskDisposition.INFORMATION_REQUEST
+        if (socialFillerRx.matches(lower)) return TaskDisposition.INFORMATION_REQUEST
+
+        val questionShaped = lower.startsWith("what") || lower.startsWith("who") ||
+            lower.startsWith("when") || lower.startsWith("where") ||
+            lower.startsWith("why") || lower.startsWith("how") || lower.contains("?")
+        val knowledgeHeaded = knowledgePrefixes.any { lower.startsWith(it) } || isWebResearch(prompt)
+
+        // Vault requests ("save my favorite color as blue", "my preference for …") are answered by
+        // the local knowledge store on the conversational route — checked before any device verb,
+        // exactly like the classifier does.
+        if (vaultKeywords.any { lower.contains(it) }) return TaskDisposition.INFORMATION_REQUEST
+
+        // A bare imperative names something to act on but names nothing to act on it with:
+        // "open", "call", "send" are asks, not instructions. Ask, never guess an app or recipient.
+        if (BARE_IMPERATIVE.matches(lower)) return TaskDisposition.AMBIGUOUS_REQUEST
+
+        val generationHeaded = generationVerbs.any { lower.startsWith("$it ") || lower == it }
+        var actionSignal = AniobAppDataRead.isReadRequest(prompt)
+        if (!actionSignal) {
+            val verbHeaded = deviceVerbs.any { lower.startsWith(it) }
+            actionSignal = (verbHeaded && !generationHeaded) ||
+                looksLikeDeviceToggle(prompt) ||
+                looksLikeInAppCompose(prompt)
+        }
+        if (!actionSignal) {
+            val plan = UniversalPlanner.plan(prompt)
+            actionSignal = plan.isExecutable && plan.atoms.any { it.capability.deviceDomain }
+        }
+
+        return when {
+            actionSignal && questionShaped && !knowledgeHeaded -> TaskDisposition.MIXED_REQUEST
+            actionSignal -> TaskDisposition.ACTION_REQUEST
+            knowledgeHeaded || questionShaped ->
+                TaskDisposition.INFORMATION_REQUEST
+            generationHeaded -> TaskDisposition.INFORMATION_REQUEST
+            else -> TaskDisposition.INFORMATION_REQUEST
+        }
+    }
+
     /**
      * Deterministically extracts [com.aniob.core.domain.SuccessCriteria] from a raw prompt plus any Grill-Me answers.
      *
@@ -306,7 +462,7 @@ object AniobTaskIntentClassifier {
         // device, never the pixels. The LAST toggle cue wins, so "on and off flash light" ends OFF.
         val deviceAsserts = mutableListOf<DeviceAssertion>()
         val mustBeInstalled = mutableListOf<String>()
-        val normalized = normalizeLexical(lower)
+        val normalized = normalizeCommandSurface(prompt)
         if (looksLikeDeviceToggle(prompt) && torchNounRx.containsMatchIn(normalized)) {
             val lastOn = normalized.lastIndexOf(" on")
             val lastOff = normalized.lastIndexOf("off")
